@@ -1,0 +1,25 @@
+# Environment variables and local secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Generated output and caches
+dist/
+build/
+.npm-cache/
+.vite*/
+coverage/
+
+# Logs
+*.log
+logs/
+
+# Editor and operating system files
+.git-temp/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
