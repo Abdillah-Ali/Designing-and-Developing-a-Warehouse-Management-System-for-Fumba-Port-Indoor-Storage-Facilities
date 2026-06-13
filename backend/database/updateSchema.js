@@ -21,6 +21,16 @@ const runUpdates = async () => {
     await client.query("BEGIN");
     console.log("Starting database schema updates...");
 
+    await client.query(`
+      ALTER TABLE users
+        ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active',
+        ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT TRUE,
+        ADD COLUMN IF NOT EXISTS is_system_user BOOLEAN NOT NULL DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS is_bootstrap_admin BOOLEAN NOT NULL DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS bootstrap_completed BOOLEAN NOT NULL DEFAULT FALSE;
+    `);
+    console.log("✔ Bootstrap administrator columns checked/added");
+
     // 1. Add active columns if missing
     await client.query(`
       ALTER TABLE zones ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
@@ -104,6 +114,139 @@ const runUpdates = async () => {
       );
     }
     console.log("✔ Seeded bin_rules defaults");
+
+    await client.query(`
+      ALTER TABLE cargo
+        ADD COLUMN IF NOT EXISTS workflow_status VARCHAR(40) NOT NULL DEFAULT 'Pending Review',
+        ADD COLUMN IF NOT EXISTS registration_status VARCHAR(40) NOT NULL DEFAULT 'Pending Review',
+        ADD COLUMN IF NOT EXISTS placement_status VARCHAR(40) NOT NULL DEFAULT 'Unplaced',
+        ADD COLUMN IF NOT EXISTS relocation_required BOOLEAN NOT NULL DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS relocation_reason TEXT,
+        ADD COLUMN IF NOT EXISTS relocation_flagged_at TIMESTAMP,
+        ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP,
+        ADD COLUMN IF NOT EXISTS archived_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS archive_reason TEXT;
+
+      ALTER TABLE cargo DROP CONSTRAINT IF EXISTS cargo_status_check;
+      ALTER TABLE cargo DROP CONSTRAINT IF EXISTS cargo_workflow_status_check;
+      ALTER TABLE cargo DROP CONSTRAINT IF EXISTS cargo_registration_status_check;
+      ALTER TABLE cargo DROP CONSTRAINT IF EXISTS cargo_placement_status_check;
+
+      UPDATE cargo
+      SET registration_status = CASE
+            WHEN workflow_status IN ('Rejected', 'Cancelled')
+              OR status IN ('Rejected', 'Cancelled')
+              THEN 'Rejected'
+            WHEN workflow_status = 'Correction Required'
+              OR status = 'Correction Required'
+              THEN 'Correction Required'
+            WHEN workflow_status IN (
+              'Approved',
+              'Approved For Placement',
+              'Stored',
+              'Blocked',
+              'Dispatch Pending',
+              'Released'
+            )
+              OR status IN (
+                'Approved',
+                'Approved For Placement',
+                'Stored',
+                'Blocked',
+                'Dispatch Approval Pending',
+                'Ready for Dispatch',
+                'Dispatch Pending',
+                'Released'
+              )
+              THEN 'Approved'
+            ELSE 'Pending Review'
+          END,
+          placement_status = CASE
+            WHEN workflow_status = 'Released'
+              OR status = 'Released'
+              OR placement_status = 'Dispatched'
+              THEN 'Dispatched'
+            WHEN placement_status = 'Relocated'
+              THEN 'Relocated'
+            WHEN current_bin_id IS NOT NULL
+              OR workflow_status = 'Stored'
+              OR status = 'Stored'
+              OR placement_status = 'Stored'
+              THEN 'Placed'
+            ELSE 'Unplaced'
+          END,
+          relocation_required = CASE
+            WHEN placement_status = 'Relocation Requested' THEN TRUE
+            ELSE relocation_required
+          END;
+
+      UPDATE cargo
+      SET status = registration_status,
+          workflow_status = registration_status;
+
+      ALTER TABLE cargo ALTER COLUMN status SET DEFAULT 'Pending Review';
+      ALTER TABLE cargo ALTER COLUMN workflow_status SET DEFAULT 'Pending Review';
+      ALTER TABLE cargo ALTER COLUMN registration_status SET DEFAULT 'Pending Review';
+      ALTER TABLE cargo ALTER COLUMN placement_status SET DEFAULT 'Unplaced';
+
+      ALTER TABLE cargo
+        ADD CONSTRAINT cargo_status_check
+        CHECK (status IN ('Pending Review', 'Approved', 'Correction Required', 'Rejected'));
+
+      ALTER TABLE cargo
+        ADD CONSTRAINT cargo_workflow_status_check
+        CHECK (workflow_status IN ('Pending Review', 'Approved', 'Correction Required', 'Rejected'));
+
+      ALTER TABLE cargo
+        ADD CONSTRAINT cargo_registration_status_check
+        CHECK (registration_status IN ('Pending Review', 'Approved', 'Correction Required', 'Rejected'));
+
+      ALTER TABLE cargo
+        ADD CONSTRAINT cargo_placement_status_check
+        CHECK (placement_status IN ('Unplaced', 'Placed', 'Relocated', 'Dispatched'));
+
+      CREATE INDEX IF NOT EXISTS idx_cargo_registration_status
+        ON cargo(registration_status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_cargo_placement_status
+        ON cargo(placement_status);
+      CREATE INDEX IF NOT EXISTS idx_cargo_archive_state
+        ON cargo(is_deleted, archived_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_cargo_active_delivery_note_identity
+        ON cargo (UPPER(REGEXP_REPLACE(BTRIM(delivery_note_number), '[^[:alnum:]]', '', 'g')))
+        WHERE is_deleted = FALSE
+          AND registration_status IN ('Pending Review', 'Correction Required', 'Approved')
+          AND placement_status <> 'Dispatched';
+      CREATE INDEX IF NOT EXISTS idx_cargo_active_container_identity
+        ON cargo (UPPER(REGEXP_REPLACE(BTRIM(container_number), '[^[:alnum:]]', '', 'g')))
+        WHERE is_deleted = FALSE
+          AND registration_status IN ('Pending Review', 'Correction Required', 'Approved')
+          AND placement_status <> 'Dispatched';
+      CREATE INDEX IF NOT EXISTS idx_cargo_active_vehicle_consignee_type
+        ON cargo (
+          UPPER(REGEXP_REPLACE(BTRIM(vehicle_number), '[^[:alnum:]]', '', 'g')),
+          LOWER(REGEXP_REPLACE(BTRIM(consignee_name), '[[:space:]]+', ' ', 'g')),
+          LOWER(REGEXP_REPLACE(BTRIM(cargo_type), '[[:space:]]+', ' ', 'g'))
+        )
+        WHERE is_deleted = FALSE
+          AND registration_status IN ('Pending Review', 'Correction Required', 'Approved')
+          AND placement_status <> 'Dispatched';
+
+      CREATE OR REPLACE FUNCTION sync_cargo_status_aliases()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        NEW.status := NEW.registration_status;
+        NEW.workflow_status := NEW.registration_status;
+        RETURN NEW;
+      END;
+      $$ LANGUAGE plpgsql;
+
+      DROP TRIGGER IF EXISTS sync_cargo_status_aliases_trigger ON cargo;
+      CREATE TRIGGER sync_cargo_status_aliases_trigger
+      BEFORE INSERT OR UPDATE ON cargo
+      FOR EACH ROW EXECUTE FUNCTION sync_cargo_status_aliases();
+    `);
+    console.log("✔ Independent cargo registration and placement statuses migrated");
 
     await client.query("COMMIT");
     console.log("All database updates applied successfully!");

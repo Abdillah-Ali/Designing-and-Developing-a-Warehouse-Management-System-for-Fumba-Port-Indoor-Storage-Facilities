@@ -1,11 +1,15 @@
 const dotenv = require("dotenv");
-const crypto = require("crypto");
 const fs = require("fs/promises");
 const path = require("path");
 const { Client } = require("pg");
 const bcrypt = require("bcryptjs");
+const {
+  defaultRoleDefinitions,
+  defaultShifts,
+  roleNames
+} = require("../config/systemConfig");
 
-dotenv.config();
+dotenv.config({ path: path.join(__dirname, "../.env") });
 
 const dbName = process.env.DB_NAME || "fumbaport_wms";
 const connectionConfig = {
@@ -53,68 +57,144 @@ const applySchema = async () => {
   try {
     await moveIncompatibleTables(client);
     await client.query(schema);
+    await seedOperationalConfiguration(client);
     console.log("✔ Roles seeded");
     console.log("✔ Warehouses seeded");
     console.log("✔ Shifts seeded");
-    await seedDefaultAdmin(client);
+    await seedBootstrapAdmin(client);
     console.log("Database schema applied successfully");
   } finally {
     await client.end();
   }
 };
 
-const seedDefaultAdmin = async (client) => {
-  const adminPassword = process.env.DEFAULT_ADMIN_PASSWORD || "Admin@123";
+const seedOperationalConfiguration = async (client) => {
+  for (const role of defaultRoleDefinitions) {
+    await client.query(
+      `INSERT INTO roles (role_name, role_description)
+       VALUES ($1, $2)
+       ON CONFLICT (role_name) DO UPDATE
+       SET role_description = EXCLUDED.role_description`,
+      [role.name, role.description || null]
+    );
+  }
+
+  for (const shift of defaultShifts) {
+    await client.query(
+      `INSERT INTO shifts (shift_name, start_time, end_time)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (shift_name) DO UPDATE
+       SET start_time = EXCLUDED.start_time,
+           end_time = EXCLUDED.end_time`,
+      [shift.name, shift.start, shift.end]
+    );
+  }
+
+  await client.query(
+    `INSERT INTO audit_logs (action, module, description, metadata)
+     VALUES ('APPLY_SYSTEM_CONFIGURATION', 'System Configuration', $1, $2)`,
+    [
+      "Applied configured portal role definitions and warehouse shift definitions.",
+      JSON.stringify({
+        roles: defaultRoleDefinitions.map((role) => role.name),
+        shifts: defaultShifts.map((shift) => shift.name)
+      })
+    ]
+  );
+};
+
+const readBootstrapAdminConfig = () => {
+  const envFields = {
+    fullName: "BOOTSTRAP_ADMIN_FULL_NAME",
+    username: "BOOTSTRAP_ADMIN_USERNAME",
+    email: "BOOTSTRAP_ADMIN_EMAIL",
+    phone: "BOOTSTRAP_ADMIN_PHONE",
+    password: "BOOTSTRAP_ADMIN_PASSWORD",
+    warehouse: "BOOTSTRAP_ADMIN_WAREHOUSE",
+    shift: "BOOTSTRAP_ADMIN_SHIFT"
+  };
+  const config = {};
+  const missing = [];
+
+  for (const [key, envName] of Object.entries(envFields)) {
+    const value = String(process.env[envName] || "").trim();
+    if (!value) {
+      missing.push(envName);
+    } else {
+      config[key] = value;
+    }
+  }
+
+  if (missing.length > 0) {
+    throw new Error(`Missing required bootstrap admin environment variables: ${missing.join(", ")}`);
+  }
+
+  return config;
+};
+
+const seedBootstrapAdmin = async (client) => {
+  const config = readBootstrapAdminConfig();
+  const passwordHash = await bcrypt.hash(config.password, 12);
 
   await client.query("BEGIN");
 
   try {
-    // 1. Existence check
-    const adminCheck = await client.query(
-      "SELECT id FROM users WHERE username = $1",
-      ["admin"]
+    const bootstrapCheck = await client.query(
+      `SELECT id, username
+       FROM users
+       WHERE is_bootstrap_admin = TRUE
+       LIMIT 1`
     );
 
-    if (adminCheck.rowCount > 0) {
-      console.log("Default admin already exists");
-      await client.query("ROLLBACK");
+    if (bootstrapCheck.rowCount > 0) {
+      console.log(`Bootstrap admin already exists (${bootstrapCheck.rows[0].username}); skipping creation`);
+      await client.query("COMMIT");
       return;
     }
 
-    // 2. Role lookup
+    const duplicateCheck = await client.query(
+      `SELECT username, email
+       FROM users
+       WHERE LOWER(username) = LOWER($1)
+          OR LOWER(email) = LOWER($2)
+       LIMIT 1`,
+      [config.username, config.email]
+    );
+    if (duplicateCheck.rowCount > 0) {
+      throw new Error("Configured bootstrap username or email is already used by another account.");
+    }
+
     const roleResult = await client.query(
       "SELECT id FROM roles WHERE role_name = $1",
-      ["System Admin"]
+      [roleNames.systemAdmin]
     );
     if (roleResult.rowCount === 0) {
       throw new Error("System Admin role not found.");
     }
     const roleId = roleResult.rows[0].id;
 
-    // 3. Warehouse lookup
     const warehouseResult = await client.query(
-      "SELECT id FROM warehouses WHERE warehouse_name = $1 OR warehouse_code = $2",
-      ["Warehouse A", "WHA"]
+      `SELECT id
+       FROM warehouses
+       WHERE LOWER(warehouse_name) = LOWER($1)
+          OR LOWER(warehouse_code) = LOWER($1)
+       LIMIT 1`,
+      [config.warehouse]
     );
     if (warehouseResult.rowCount === 0) {
-      throw new Error("Warehouse A not found.");
+      throw new Error(`Configured bootstrap warehouse was not found: ${config.warehouse}`);
     }
     const warehouseId = warehouseResult.rows[0].id;
 
-    // 4. Shift lookup
     const shiftResult = await client.query(
-      "SELECT id FROM shifts WHERE shift_name = $1",
-      ["Morning Shift"]
+      "SELECT id FROM shifts WHERE LOWER(shift_name) = LOWER($1)",
+      [config.shift]
     );
     if (shiftResult.rowCount === 0) {
-      throw new Error("Morning Shift not found.");
+      throw new Error(`Configured bootstrap shift was not found: ${config.shift}`);
     }
     const shiftId = shiftResult.rows[0].id;
 
-    // 5. Bcrypt password hashing
-    const passwordHash = await bcrypt.hash(adminPassword, 12);
-
-    // 6. Admin insertion
     const insertResult = await client.query(
       `INSERT INTO users (
         full_name,
@@ -127,39 +207,37 @@ const seedDefaultAdmin = async (client) => {
         shift_id,
         status,
         must_change_password,
-        is_system_user
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        is_system_user,
+        is_bootstrap_admin,
+        bootstrap_completed
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', TRUE, TRUE, TRUE, FALSE)
       RETURNING id`,
       [
-        "System Administrator",
-        "admin",
-        "admin@fumbaport.tz",
-        "+255000000000",
+        config.fullName,
+        config.username,
+        config.email,
+        config.phone,
         passwordHash,
         roleId,
         warehouseId,
-        shiftId,
-        "active",
-        true,
-        true
+        shiftId
       ]
     );
     const newUserId = insertResult.rows[0].id;
 
-    // 7. Audit log insertion
     await client.query(
       `INSERT INTO audit_logs (user_id, action, module, description)
        VALUES ($1, $2, $3, $4)`,
       [
         newUserId,
-        "SEED_DEFAULT_ADMIN",
+        "SEED_BOOTSTRAP_ADMIN",
         "User Management",
-        "Default system administrator account seeded during database initialization."
+        "Temporary bootstrap administrator account seeded from environment configuration."
       ]
     );
 
     await client.query("COMMIT");
-    console.log("✔ Default System Admin created successfully");
+    console.log("✔ Bootstrap System Admin created successfully");
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;

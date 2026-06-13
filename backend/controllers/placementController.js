@@ -1,5 +1,11 @@
 const db = require("../config/db");
 const { validatePlacement: runPlacementValidation } = require("../services/validationService");
+const {
+  CARGO_NOT_OPERATIONAL_MESSAGE,
+  PLACEMENT_STATUS,
+  REGISTRATION_STATUS
+} = require("../services/cargoWorkflowService");
+const { writeAuditLog } = require("../models/adminModel");
 
 const buildError = (message, statusCode = 400, errors) => {
   const error = new Error(message);
@@ -36,11 +42,33 @@ const writePlacementLog = (executor, validation, payload) => {
   );
 };
 
+const assertWarehouseCargoAccess = (req, validation) => {
+  if (
+    req.auth?.warehouseId
+    && validation.cargo
+    && Number(validation.cargo.warehouse_id) !== Number(req.auth.warehouseId)
+  ) {
+    throw buildError("Cargo record not found.", 404);
+  }
+};
+
 const validatePlacement = async (req, res, next) => {
   try {
     const validation = await runPlacementValidation(req.body);
+    assertWarehouseCargoAccess(req, validation);
 
     await writePlacementLog(db, validation, req.body);
+    await writeAuditLog({
+      user_id: req.auth?.userId || null,
+      action: validation.approved ? "VALIDATE_PLACEMENT" : "REJECT_PLACEMENT",
+      module: "Cargo Management",
+      description: `${validation.reason}: ${validation.detail}`,
+      metadata: {
+        cargo_barcode: readPlacementValue(req.body, ["cargo_barcode", "cargoBarcode"]),
+        bin_barcode: readPlacementValue(req.body, ["bin_barcode", "binBarcode"]),
+        approved: validation.approved
+      }
+    });
 
     res.json({
       success: true,
@@ -56,6 +84,7 @@ const confirmPlacement = async (req, res, next) => {
 
   try {
     validation = await runPlacementValidation(req.body);
+    assertWarehouseCargoAccess(req, validation);
   } catch (error) {
     return next(error);
   }
@@ -63,6 +92,16 @@ const confirmPlacement = async (req, res, next) => {
   if (!validation.approved) {
     try {
       await writePlacementLog(db, validation, req.body);
+      await writeAuditLog({
+        user_id: req.auth?.userId || null,
+        action: "REJECT_PLACEMENT",
+        module: "Cargo Management",
+        description: `${validation.reason}: ${validation.detail}`,
+        metadata: {
+          cargo_barcode: readPlacementValue(req.body, ["cargo_barcode", "cargoBarcode"]),
+          bin_barcode: readPlacementValue(req.body, ["bin_barcode", "binBarcode"])
+        }
+      });
     } catch (error) {
       return next(error);
     }
@@ -76,7 +115,7 @@ const confirmPlacement = async (req, res, next) => {
     await client.query("BEGIN");
 
     const cargoResult = await client.query(
-      "SELECT * FROM cargo WHERE id = $1 FOR UPDATE",
+      "SELECT * FROM cargo WHERE id = $1 AND is_deleted = FALSE FOR UPDATE",
       [validation.cargo.id]
     );
 
@@ -86,13 +125,16 @@ const confirmPlacement = async (req, res, next) => {
         l.id AS level_id,
         l.code AS level_code,
         l.level_number,
+        l.active AS level_active,
         r.id AS rack_id,
         r.code AS rack_code,
+        r.active AS rack_active,
         z.id AS zone_id,
         z.code AS zone_code,
         z.name AS zone_name,
         z.allowed_cargo_type,
-        z.is_hazard_zone
+        z.is_hazard_zone,
+        z.active AS zone_active
       FROM bins b
       JOIN levels l ON l.id = b.level_id
       JOIN racks r ON r.id = l.rack_id
@@ -106,41 +148,56 @@ const confirmPlacement = async (req, res, next) => {
       throw buildError("Cargo or bin record was not found during placement confirmation.", 404);
     }
 
+    validation = await runPlacementValidation(req.body, client);
+    if (!validation.approved) {
+      await writePlacementLog(client, validation, req.body);
+      await writeAuditLog(
+        {
+          user_id: req.auth?.userId || null,
+          action: "REJECT_PLACEMENT",
+          module: "Cargo Management",
+          description: `${validation.reason}: ${validation.detail}`,
+          metadata: {
+            cargo_barcode: readPlacementValue(req.body, ["cargo_barcode", "cargoBarcode"]),
+            bin_barcode: readPlacementValue(req.body, ["bin_barcode", "binBarcode"])
+          }
+        },
+        client
+      );
+      throw buildError(validation.detail, 400, [validation.reason]);
+    }
+
     const cargo = cargoResult.rows[0];
     const bin = binResult.rows[0];
     const cargoWeight = Number(cargo.weight || 0);
     const cargoVolume = Number(cargo.volume || 0);
-    const remainingWeight = Number(bin.max_weight || 0) - Number(bin.current_weight || 0);
-    const remainingVolume = Number(bin.max_volume || 0) - Number(bin.current_volume || 0);
     const alreadyPlacedInThisBin = Number(cargo.current_bin_id) === Number(bin.id);
+    const isRelocation = Boolean(cargo.current_bin_id) && !alreadyPlacedInThisBin;
 
-    if (cargo.current_bin_id && !alreadyPlacedInThisBin) {
-      throw buildError("Cargo is already placed in another bin. Move workflow is not enabled yet.", 409);
-    }
+    let previousBin = null;
+    if (isRelocation) {
+      const previousBinResult = await client.query(
+        "SELECT * FROM bins WHERE id = $1 FOR UPDATE",
+        [cargo.current_bin_id]
+      );
+      previousBin = previousBinResult.rows[0] || null;
 
-    if (!alreadyPlacedInThisBin) {
-      if (bin.status === "Blocked") {
-        throw buildError("Selected storage bin is blocked for operations.", 400);
-      }
-
-      if (bin.status === "Reserved" && bin.reserved_for_cargo_type && bin.reserved_for_cargo_type !== cargo.cargo_type) {
-        throw buildError("Selected storage bin is reserved for a different cargo type.", 400);
-      }
-
-      if (bin.allowed_cargo_type && bin.allowed_cargo_type !== cargo.cargo_type) {
-        throw buildError(`${cargo.cargo_type} cannot be placed in ${bin.zone_code}.`, 400);
-      }
-
-      if (bin.is_hazard_zone && cargo.cargo_type !== "Hazardous Cargo") {
-        throw buildError(`${cargo.cargo_type} cannot be placed in the hazardous cargo zone.`, 400);
-      }
-
-      if (cargo.cargo_type === "Hazardous Cargo" && !bin.is_hazard_zone) {
-        throw buildError("Hazardous cargo must be placed in the hazardous cargo zone.", 400);
-      }
-
-      if (cargoWeight > remainingWeight || cargoVolume > remainingVolume) {
-        throw buildError("Selected bin does not have enough remaining capacity.", 400);
+      if (previousBin) {
+        await client.query(
+          `UPDATE bins
+           SET current_weight = GREATEST(0, current_weight - $1),
+               current_volume = GREATEST(0, current_volume - $2),
+               status = CASE
+                 WHEN status IN ('Blocked', 'Reserved', 'Inactive') THEN status
+                 WHEN GREATEST(0, current_weight - $1) = 0
+                  AND GREATEST(0, current_volume - $2) = 0
+                   THEN 'Available'
+                 ELSE 'Occupied'
+               END,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = $3`,
+          [cargoWeight, cargoVolume, previousBin.id]
+        );
       }
     }
 
@@ -151,7 +208,11 @@ const confirmPlacement = async (req, res, next) => {
         SET
           current_weight = current_weight + $1,
           current_volume = current_volume + $2,
-          status = 'Occupied',
+          status = CASE
+            WHEN current_weight + $1 >= max_weight OR current_volume + $2 >= max_volume
+              THEN 'Full'
+            ELSE 'Occupied'
+          END,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = $3
         RETURNING *`,
@@ -161,13 +222,21 @@ const confirmPlacement = async (req, res, next) => {
     const updatedCargoResult = await client.query(
       `UPDATE cargo
       SET
-        status = 'Stored',
-        location = $1,
-        current_bin_id = $2,
+        placement_status = $1,
+        location = $2,
+        current_bin_id = $3,
+        relocation_required = FALSE,
+        relocation_reason = NULL,
+        relocation_flagged_at = NULL,
         updated_at = CURRENT_TIMESTAMP
-      WHERE id = $3
+      WHERE id = $4
       RETURNING *`,
-      [bin.barcode, bin.id, cargo.id]
+      [
+        isRelocation ? PLACEMENT_STATUS.RELOCATED : PLACEMENT_STATUS.PLACED,
+        bin.barcode,
+        bin.id,
+        cargo.id
+      ]
     );
 
     const movedBy = readPlacementValue(req.body, ["assigned_by", "assignedBy", "moved_by", "movedBy"]) || cargo.received_by || "Warehouse Staff";
@@ -177,10 +246,46 @@ const confirmPlacement = async (req, res, next) => {
         `INSERT INTO cargo_movements (cargo_id, from_location, to_location, moved_by, action)
         VALUES ($1, $2, $3, $4, $5)
         RETURNING *`,
-        [cargo.id, cargo.location || null, bin.barcode, movedBy, "Stored"]
+        [
+          cargo.id,
+          cargo.location || null,
+          bin.barcode,
+          movedBy,
+          isRelocation ? "Relocated" : "Placed"
+        ]
       );
 
+    if (!alreadyPlacedInThisBin) {
+      await client.query(
+        `UPDATE cargo_locations
+         SET is_current = FALSE, released_at = CURRENT_TIMESTAMP
+         WHERE cargo_id = $1 AND is_current = TRUE`,
+        [cargo.id]
+      );
+      await client.query(
+        `INSERT INTO cargo_locations
+         (cargo_id, bin_id, location, is_current, assigned_by)
+         VALUES ($1, $2, $3, TRUE, $4)`,
+        [cargo.id, bin.id, bin.barcode, req.auth?.userId || null]
+      );
+    }
+
     await writePlacementLog(client, validation, req.body);
+    await writeAuditLog(
+      {
+        user_id: req.auth?.userId || null,
+        action: isRelocation ? "CONFIRM_CARGO_RELOCATION" : "CONFIRM_CARGO_PLACEMENT",
+        module: "Cargo Management",
+        description: `${isRelocation ? "Relocated" : "Placed"} cargo ${cargo.cargo_id} in bin ${bin.barcode}.`,
+        metadata: {
+          cargo_id: cargo.id,
+          bin_id: bin.id,
+          previous_bin_id: previousBin?.id || null,
+          approval_request_id: validation.approval?.id || null
+        }
+      },
+      client
+    );
 
     await client.query("COMMIT");
 
@@ -227,7 +332,8 @@ const confirmPlacement = async (req, res, next) => {
           remaining_volume: Number(updatedBin.max_volume || 0) - currentVolume
         },
         movement: movementResult.rows[0] || null,
-        alreadyPlaced: alreadyPlacedInThisBin
+        alreadyPlaced: alreadyPlacedInThisBin,
+        relocated: isRelocation
       }
     });
   } catch (error) {
@@ -235,6 +341,98 @@ const confirmPlacement = async (req, res, next) => {
     next(error);
   } finally {
     client.release();
+  }
+};
+
+const requestPlacementOverride = async (req, res, next) => {
+  const client = await db.pool.connect();
+
+  try {
+    const validation = await runPlacementValidation(req.body);
+    assertWarehouseCargoAccess(req, validation);
+    if (validation.approved) {
+      throw buildError("This placement already passes validation and does not require an override.", 400);
+    }
+    if (!validation.cargo || !validation.bin) {
+      throw buildError("A registered cargo and known bin are required before requesting an override.", 400);
+    }
+    if (
+      validation.cargo.registration_status === REGISTRATION_STATUS.REJECTED
+      || validation.cargo.placement_status === PLACEMENT_STATUS.DISPATCHED
+    ) {
+      throw buildError(CARGO_NOT_OPERATIONAL_MESSAGE, 409);
+    }
+
+    await client.query("BEGIN");
+    const existing = await client.query(
+      `SELECT id
+       FROM approval_requests
+       WHERE cargo_id = $1
+         AND request_type = 'PLACEMENT_OVERRIDE'
+         AND status = 'Pending'
+         AND request_data->>'bin_id' = $2
+       LIMIT 1`,
+      [validation.cargo.id, String(validation.bin.id)]
+    );
+    if (existing.rowCount > 0) {
+      throw buildError("A placement override request is already pending for this cargo and bin.", 409);
+    }
+
+    const reason = String(req.body.reason || validation.detail).trim();
+    const result = await client.query(
+      `INSERT INTO approval_requests
+       (request_type, cargo_id, requested_by, reason, status, request_data)
+       VALUES ('PLACEMENT_OVERRIDE', $1, $2, $3, 'Pending', $4)
+       RETURNING *`,
+      [
+        validation.cargo.id,
+        req.auth?.userId || null,
+        reason,
+        JSON.stringify({
+          bin_id: validation.bin.id,
+          bin_barcode: validation.bin.barcode,
+          validation_reason: validation.reason,
+          validation_detail: validation.detail,
+          checks: validation.checks
+        })
+      ]
+    );
+
+    await writeAuditLog(
+      {
+        user_id: req.auth?.userId || null,
+        action: "REQUEST_PLACEMENT_OVERRIDE",
+        module: "Cargo Management",
+        description: `Requested placement override for cargo ${validation.cargo.cargo_id} and bin ${validation.bin.barcode}.`,
+        metadata: { approval_request_id: result.rows[0].id }
+      },
+      client
+    );
+
+    await client.query("COMMIT");
+    res.status(201).json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    next(error);
+  } finally {
+    client.release();
+  }
+};
+
+const getPlacementFailures = async (req, res, next) => {
+  try {
+    const result = await db.query(
+      `SELECT pvl.*, c.cargo_id AS cargo_identifier, b.barcode AS bin_identifier
+       FROM placement_validation_logs pvl
+       LEFT JOIN cargo c ON c.id = pvl.cargo_id
+       LEFT JOIN bins b ON b.id = pvl.bin_id
+       WHERE pvl.approved = FALSE
+       ORDER BY pvl.created_at DESC, pvl.id DESC
+       LIMIT 200`
+    );
+    res.json({ success: true, count: result.rowCount, data: result.rows });
+  } catch (error) {
+    next(error);
   }
 };
 
@@ -265,5 +463,7 @@ const getPlacementLogs = async (req, res, next) => {
 module.exports = {
   confirmPlacement,
   validatePlacement,
-  getPlacementLogs
+  getPlacementLogs,
+  getPlacementFailures,
+  requestPlacementOverride
 };

@@ -7,11 +7,18 @@ import Landing from "./pages/Landing.jsx";
 import Index from "./pages/Index.jsx";
 import AdminPortal from "./pages/AdminPortal.jsx";
 import NotFound from "./pages/NotFound.jsx";
+import ChangePassword from "./pages/ChangePassword.jsx";
+import BootstrapAdminSetup from "./pages/BootstrapAdminSetup.jsx";
+import SupervisorPortal from "./pages/SupervisorPortal.jsx";
 import {
   PORTAL_ROLES,
   getPortalDefaultPath,
   getStoredAuthRole,
+  isStoredBootstrapAdmin,
+  isStoredBootstrapCompleted,
+  isStoredBootstrapSetupPending,
   isPathAllowedForRole,
+  mustChangeStoredPassword,
 } from "./lib/portal-access.js";
 
 const queryClient = new QueryClient();
@@ -21,9 +28,18 @@ function PortalAccessGate({ role, children }) {
   const activeRole = getStoredAuthRole();
   const redirectedByRole = activeRole && activeRole !== role;
   const allowedPath = isPathAllowedForRole(role, location.pathname);
+  const mustChangePassword = mustChangeStoredPassword();
 
   if (!activeRole) {
     return <Navigate to="/" replace state={{ from: location.pathname }} />;
+  }
+
+  if (isStoredBootstrapAdmin()) {
+    return <Navigate to="/bootstrap-admin-setup" replace />;
+  }
+
+  if (mustChangePassword) {
+    return <Navigate to="/change-password" replace />;
   }
 
   if (redirectedByRole) {
@@ -37,6 +53,48 @@ function PortalAccessGate({ role, children }) {
   return children;
 }
 
+function PasswordChangeGate() {
+  const activeRole = getStoredAuthRole();
+
+  if (!activeRole) {
+    return <Navigate to="/" replace />;
+  }
+
+  if (isStoredBootstrapAdmin()) {
+    return <Navigate to="/bootstrap-admin-setup" replace />;
+  }
+
+  if (!mustChangeStoredPassword()) {
+    return <Navigate to={getPortalDefaultPath(activeRole)} replace />;
+  }
+
+  return <ChangePassword />;
+}
+
+function BootstrapSetupGate() {
+  const activeRole = getStoredAuthRole();
+
+  if (!activeRole) {
+    return <Navigate to="/" replace />;
+  }
+
+  if (!isStoredBootstrapAdmin()) {
+    return <Navigate to={getPortalDefaultPath(activeRole)} replace />;
+  }
+
+  if (isStoredBootstrapCompleted() || !isStoredBootstrapSetupPending()) {
+    return (
+      <Navigate
+        to="/"
+        replace
+        state={{ successMessage: "Bootstrap setup is complete. Please log in using the real administrator account." }}
+      />
+    );
+  }
+
+  return <BootstrapAdminSetup />;
+}
+
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
@@ -45,6 +103,8 @@ const App = () => (
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Landing />} />
+          <Route path="/bootstrap-admin-setup" element={<BootstrapSetupGate />} />
+          <Route path="/change-password" element={<PasswordChangeGate />} />
           <Route
             path="/admin/*"
             element={
@@ -58,6 +118,14 @@ const App = () => (
             element={
               <PortalAccessGate role={PORTAL_ROLES.WAREHOUSE_STAFF}>
                 <Index />
+              </PortalAccessGate>
+            }
+          />
+          <Route
+            path="/supervisor/*"
+            element={
+              <PortalAccessGate role={PORTAL_ROLES.WAREHOUSE_SUPERVISOR}>
+                <SupervisorPortal />
               </PortalAccessGate>
             }
           />

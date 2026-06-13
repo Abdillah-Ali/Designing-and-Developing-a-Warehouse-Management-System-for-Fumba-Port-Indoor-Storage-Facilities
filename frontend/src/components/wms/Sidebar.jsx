@@ -1,5 +1,4 @@
 import {
-  Activity,
   Boxes,
   ClipboardCheck,
   ClipboardList,
@@ -33,6 +32,8 @@ const navigation = [
     icon: PackagePlus,
     children: [
       { label: "Cargo Registration", icon: ClipboardList, to: "/staff/cargo/registration" },
+      { label: "My Registration Reviews", icon: ClipboardCheck, to: "/staff/cargo/registration-reviews" },
+      { label: "Placement Queue", icon: PackagePlus, to: "/staff/cargo/placement-queue" },
       { label: "Placement & Scanning", icon: ScanLine, to: "/staff/cargo/placement-scanning" },
       { label: "Cargo Tracking", icon: MapPin, to: "/staff/cargo/tracking" }
     ]
@@ -56,11 +57,6 @@ const navigation = [
       { label: "Gate Release", icon: DoorOpen, to: "/staff/dispatch/gate-release" },
       { label: "Released Cargo", icon: PackageCheck, to: "/staff/dispatch/released" }
     ]
-  },
-  {
-    label: "Activity Logs",
-    icon: Activity,
-    to: "/staff/activity-logs"
   },
   {
     label: "Profile",

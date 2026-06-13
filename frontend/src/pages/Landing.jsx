@@ -1,11 +1,16 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, Loader2, LockKeyhole, ShieldCheck, Warehouse } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { ArrowRight, ClipboardCheck, Loader2, LockKeyhole, ShieldCheck, Warehouse } from "lucide-react";
+import { useLocation, useNavigate } from "react-router-dom";
 import portImage from "@/assets/fumba-port.jpg";
 import {
+  clearStoredAuthToken,
   extractRoleFromToken,
   getPortalDefaultPath,
-  getStoredAuthRole
+  getStoredAuthRole,
+  isStoredBootstrapAdmin,
+  isStoredBootstrapCompleted,
+  isStoredBootstrapSetupPending,
+  mustChangeStoredPassword
 } from "@/lib/portal-access";
 import { login as signIn } from "@/services/api";
 
@@ -21,11 +26,18 @@ const portals = [
     description: "Receive cargo, register items, scan storage locations, track cargo, and prepare dispatch.",
     icon: Warehouse,
     accent: "border-sky-500 text-sky-700 bg-sky-50"
+  },
+  {
+    title: "Warehouse Supervisor Portal",
+    description: "Review cargo exceptions, approve placement and dispatch requests, and monitor warehouse operations.",
+    icon: ClipboardCheck,
+    accent: "border-cyan-500 text-cyan-700 bg-cyan-50"
   }
 ];
 
 const Landing = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -34,7 +46,19 @@ const Landing = () => {
   useEffect(() => {
     const role = getStoredAuthRole();
     if (role) {
-      navigate(getPortalDefaultPath(role), { replace: true });
+      if (isStoredBootstrapAdmin() && isStoredBootstrapCompleted()) {
+        clearStoredAuthToken();
+        return;
+      }
+
+      navigate(
+        isStoredBootstrapSetupPending()
+          ? "/bootstrap-admin-setup"
+          : mustChangeStoredPassword()
+            ? "/change-password"
+            : getPortalDefaultPath(role),
+        { replace: true }
+      );
     }
   }, [navigate]);
 
@@ -57,7 +81,28 @@ const Landing = () => {
         throw new Error("Your account role is not allowed in this portal.");
       }
 
-      navigate(getPortalDefaultPath(role), { replace: true });
+      const mustChangePassword = Boolean(
+        response.data?.user?.must_change_password
+        ?? response.data?.must_change_password
+        ?? mustChangeStoredPassword()
+      );
+      const bootstrapPending = Boolean(
+        response.data?.user?.is_bootstrap_admin
+        ?? response.data?.is_bootstrap_admin
+        ?? response.is_bootstrap_admin
+      ) && !(
+        response.data?.user?.bootstrap_completed
+        ?? response.data?.bootstrap_completed
+        ?? response.bootstrap_completed
+      );
+      navigate(
+        bootstrapPending
+          ? "/bootstrap-admin-setup"
+          : mustChangePassword
+            ? "/change-password"
+            : getPortalDefaultPath(role),
+        { replace: true }
+      );
     } catch (err) {
       setError(err.message || "Sign in failed.");
     } finally {
@@ -122,6 +167,12 @@ const Landing = () => {
                   />
                 </label>
               </div>
+
+              {location.state?.successMessage && (
+                <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700">
+                  {location.state.successMessage}
+                </div>
+              )}
 
               {error && (
                 <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">

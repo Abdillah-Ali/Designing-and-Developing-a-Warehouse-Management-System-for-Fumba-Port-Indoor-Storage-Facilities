@@ -1,11 +1,23 @@
 const express = require("express");
-const { getRacksByZone, createRack, updateRack, deleteRack } = require("../controllers/rackController");
+const {
+  getRacks,
+  getRackById,
+  getRacksByZone,
+  createRack,
+  updateRack,
+  updateRackStatus,
+  deleteRack
+} = require("../controllers/rackController");
+const { requireRole } = require("../middleware/authMiddleware");
 
 const router = express.Router();
 
-router.get("/:zoneId", getRacksByZone);
-router.post("/", createRack);
-router.put("/:id", updateRack);
-router.delete("/:id", deleteRack);
+router.get("/", getRacks);
+router.post("/", requireRole("System Admin"), createRack);
+router.get("/by-zone/:zoneId", getRacksByZone);
+router.patch("/:id/status", requireRole("System Admin"), updateRackStatus);
+router.get("/:id", getRackById);
+router.put("/:id", requireRole("System Admin"), updateRack);
+router.delete("/:id", requireRole("System Admin"), deleteRack);
 
 module.exports = router;

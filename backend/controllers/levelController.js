@@ -1,128 +1,175 @@
 const db = require("../config/db");
 const { buildError } = require("../utils/apiError");
 
-const getLevelsByRack = async (req, res, next) => {
+const LEVEL_CODE_PATTERN = /^L[1-9]\d*$/;
+
+const textValue = (value) => {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  return normalized || null;
+};
+
+const capacityValue = (value, fallback) => {
+  if (value === undefined || value === null || value === "") return fallback;
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized) || normalized < 0) {
+    throw buildError("Capacity values must be valid non-negative numbers.", 400);
+  }
+  return normalized;
+};
+
+const isAdmin = (req) => req.auth?.role === "system-admin";
+
+const levelSelect = (activeOnly) => `
+  SELECT
+    l.id,
+    l.id AS level_id,
+    l.rack_id,
+    l.code,
+    l.code AS level_code,
+    l.level_number,
+    l.max_weight,
+    l.max_volume,
+    l.status,
+    l.active,
+    l.created_at,
+    l.updated_at,
+    r.code AS rack_code,
+    z.id AS zone_id,
+    z.code AS zone_code,
+    z.name AS zone_name,
+    COUNT(b.id)::int AS bin_total,
+    (COUNT(b.id) FILTER (WHERE b.status = 'Available' AND b.active = TRUE))::int AS available_bins,
+    (COUNT(b.id) FILTER (WHERE b.status = 'Occupied' AND b.active = TRUE))::int AS occupied_bins,
+    (COUNT(b.id) FILTER (WHERE b.status = 'Blocked' AND b.active = TRUE))::int AS blocked_bins,
+    (COUNT(b.id) FILTER (WHERE b.status = 'Reserved' AND b.active = TRUE))::int AS reserved_bins,
+    COALESCE(SUM(b.current_weight), 0)::numeric(12, 2) AS current_weight_capacity,
+    COALESCE(SUM(b.current_volume), 0)::numeric(12, 2) AS current_volume_capacity,
+    CASE WHEN l.max_weight > 0
+      THEN ROUND((COALESCE(SUM(b.current_weight), 0) / l.max_weight) * 100, 2)
+      ELSE 0 END AS weight_occupancy_percent,
+    CASE WHEN l.max_volume > 0
+      THEN ROUND((COALESCE(SUM(b.current_volume), 0) / l.max_volume) * 100, 2)
+      ELSE 0 END AS volume_occupancy_percent
+  FROM levels l
+  JOIN racks r ON r.id = l.rack_id
+  JOIN zones z ON z.id = r.zone_id
+  LEFT JOIN bins b ON b.level_id = l.id ${activeOnly ? "AND b.active = TRUE" : ""}
+`;
+
+const runLevelList = async (req, res, next, rackId = null) => {
   try {
-    const searchId = req.params.rackId;
+    const activeOnly = !isAdmin(req);
     const conditions = [];
     const values = [];
 
-    // Try numeric ID match
-    if (/^\d+$/.test(searchId)) {
-      conditions.push(`r.id = $${conditions.length + 1}`);
-      values.push(Number(searchId));
+    if (rackId !== null) {
+      values.push(rackId);
+      conditions.push(`l.rack_id = $${values.length}`);
+    }
+    if (req.query.zone_id) {
+      values.push(req.query.zone_id);
+      conditions.push(`z.id = $${values.length}`);
+    }
+    if (activeOnly) {
+      conditions.push("l.active = TRUE");
+      conditions.push("r.active = TRUE");
+      conditions.push("z.active = TRUE");
     }
 
-    // Try code match (case-insensitive)
-    conditions.push(`r.code = UPPER($${conditions.length + 1})`);
-    values.push(searchId);
-
     const result = await db.query(
-      `SELECT
-        l.*,
-        l.id AS level_id,
-        l.code AS level_code,
-        r.id AS rack_id,
-        r.code AS rack_code,
-        z.id AS zone_id,
-        z.code AS zone_code,
-        z.name AS zone_name,
-        COUNT(b.id)::int AS bin_total,
-        (COUNT(b.id) FILTER (WHERE b.status = 'Available'))::int AS available_bins,
-        (COUNT(b.id) FILTER (WHERE b.status = 'Occupied'))::int AS occupied_bins,
-        (COUNT(b.id) FILTER (WHERE b.status = 'Blocked'))::int AS blocked_bins,
-        (COUNT(b.id) FILTER (WHERE b.status = 'Reserved'))::int AS reserved_bins,
-        COALESCE(SUM(b.max_weight), 0)::numeric(12, 2) AS max_weight_capacity,
-        COALESCE(SUM(b.max_volume), 0)::numeric(12, 2) AS max_volume_capacity,
-        COALESCE(SUM(b.current_weight), 0)::numeric(12, 2) AS current_weight_capacity,
-        COALESCE(SUM(b.current_volume), 0)::numeric(12, 2) AS current_volume_capacity,
-        CASE
-          WHEN COALESCE(SUM(b.max_weight), 0) > 0
-          THEN ROUND((SUM(b.current_weight) / SUM(b.max_weight)) * 100, 2)
-          ELSE NULL
-        END AS weight_occupancy_percent,
-        CASE
-          WHEN COALESCE(SUM(b.max_volume), 0) > 0
-          THEN ROUND((SUM(b.current_volume) / SUM(b.max_volume)) * 100, 2)
-          ELSE NULL
-        END AS volume_occupancy_percent
-      FROM levels l
-      JOIN racks r ON r.id = l.rack_id
-      JOIN zones z ON z.id = r.zone_id
-      LEFT JOIN bins b ON b.level_id = l.id AND b.active = true
-      WHERE (${conditions.join(" OR ")}) AND l.active = true AND r.active = true AND z.active = true
-      GROUP BY l.id, r.id, z.id
-      ORDER BY l.level_number`,
+      `${levelSelect(activeOnly)}
+       ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}
+       GROUP BY l.id, r.id, z.id
+       ORDER BY z.code, r.code, l.level_number`,
       values
     );
-
-    res.json({
-      success: true,
-      count: result.rowCount,
-      data: result.rows
-    });
+    res.json({ success: true, count: result.rowCount, data: result.rows });
   } catch (error) {
     next(error);
   }
 };
 
+const getLevels = (req, res, next) => runLevelList(req, res, next);
+const getLevelsByRack = (req, res, next) => runLevelList(req, res, next, req.params.rackId);
+
+const getLevelById = async (req, res, next) => {
+  try {
+    const activeOnly = !isAdmin(req);
+    const result = await db.query(
+      `${levelSelect(activeOnly)}
+       WHERE l.id = $1 ${activeOnly ? "AND l.active = TRUE AND r.active = TRUE AND z.active = TRUE" : ""}
+       GROUP BY l.id, r.id, z.id`,
+      [req.params.id]
+    );
+    if (result.rowCount === 0) throw buildError("Level not found.", 404);
+    res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const readLevelFields = (body) => {
+  const code = textValue(body.level_code ?? body.code)?.toUpperCase();
+  const levelNumber = Number(body.level_number);
+  if (!code || !LEVEL_CODE_PATTERN.test(code)) {
+    throw buildError("Level code must follow the format L1.", 400);
+  }
+  if (!Number.isInteger(levelNumber) || levelNumber <= 0) {
+    throw buildError("Level number must be a positive whole number.", 400);
+  }
+  if (code !== `L${levelNumber}`) {
+    throw buildError("Level code must match the level number, for example L2 and 2.", 400);
+  }
+  return { code, levelNumber };
+};
+
 const createLevel = async (req, res, next) => {
   const client = await db.pool.connect();
   try {
-    const { rack_id, code, level_number, max_weight, max_volume } = req.body;
-
-    if (!rack_id || !code || !level_number) {
-      throw buildError("Rack ID, level code, and level number are required.", 400);
-    }
-
-    const normalizedCode = String(code).trim().toUpperCase();
-    const num = Number(level_number);
-    const weight = Number(max_weight || 2500);
-    const volume = Number(max_volume || 20);
+    const rackId = req.body.rack_id;
+    if (!rackId) throw buildError("Rack ID is required.", 400);
+    const { code, levelNumber } = readLevelFields(req.body);
 
     await client.query("BEGIN");
-
-    // Verify rack exists and is active
-    const rackRes = await client.query("SELECT code FROM racks WHERE id = $1 AND active = true", [rack_id]);
-    if (rackRes.rowCount === 0) {
+    const rackResult = await client.query(
+      `SELECT r.code, z.active AS zone_active
+       FROM racks r JOIN zones z ON z.id = r.zone_id
+       WHERE r.id = $1 AND r.active = TRUE`,
+      [rackId]
+    );
+    if (rackResult.rowCount === 0 || !rackResult.rows[0].zone_active) {
       throw buildError("Rack not found or inactive.", 404);
     }
 
-    // Check if level code is taken on this rack and active
-    const levelCheck = await client.query(
-      "SELECT id FROM levels WHERE rack_id = $1 AND code = $2 AND active = true",
-      [rack_id, normalizedCode]
+    const duplicate = await client.query(
+      "SELECT id FROM levels WHERE rack_id = $1 AND (UPPER(code) = $2 OR level_number = $3)",
+      [rackId, code, levelNumber]
     );
-    if (levelCheck.rowCount > 0) {
-      throw buildError(`Level with code ${normalizedCode} already exists on this rack.`, 409);
+    if (duplicate.rowCount > 0) {
+      throw buildError(`Level ${code} already exists on the selected rack.`, 409);
     }
 
-    const insertResult = await client.query(
-      `INSERT INTO levels (rack_id, code, level_number, max_weight, max_volume, active)
-       VALUES ($1, $2, $3, $4, $5, TRUE)
-       RETURNING *`,
-      [rack_id, normalizedCode, num, weight, volume]
-    );
-
-    const newLevel = insertResult.rows[0];
-
-    await client.query(
-      `INSERT INTO audit_logs (user_id, action, module, description)
-       VALUES ($1, $2, $3, $4)`,
+    const result = await client.query(
+      `INSERT INTO levels (rack_id, code, level_number, max_weight, max_volume, status, active)
+       VALUES ($1, $2, $3, $4, $5, 'Active', TRUE)
+       RETURNING *, id AS level_id, code AS level_code`,
       [
-        req.auth?.userId || null,
-        "CREATE_LEVEL",
-        "Warehouse Configuration",
-        `Created level ${normalizedCode} (number ${num}) on rack ${rackRes.rows[0].code}.`
+        rackId,
+        code,
+        levelNumber,
+        capacityValue(req.body.max_weight, 2500),
+        capacityValue(req.body.max_volume, 20)
       ]
     );
 
+    await client.query(
+      `INSERT INTO audit_logs (user_id, action, module, description)
+       VALUES ($1, 'CREATE_LEVEL', 'Warehouse Configuration', $2)`,
+      [req.auth?.userId || null, `Created level ${code} on rack ${rackResult.rows[0].code}.`]
+    );
     await client.query("COMMIT");
-
-    res.status(201).json({
-      success: true,
-      data: newLevel
-    });
+    res.status(201).json({ success: true, data: result.rows[0] });
   } catch (error) {
     await client.query("ROLLBACK");
     next(error);
@@ -134,46 +181,52 @@ const createLevel = async (req, res, next) => {
 const updateLevel = async (req, res, next) => {
   const client = await db.pool.connect();
   try {
-    const { id } = req.params;
-    const { level_number, max_weight, max_volume } = req.body;
-
-    if (!level_number) {
-      throw buildError("Level number is required.", 400);
-    }
+    const rackId = req.body.rack_id;
+    if (!rackId) throw buildError("Rack ID is required.", 400);
+    const { code, levelNumber } = readLevelFields(req.body);
 
     await client.query("BEGIN");
+    const rackResult = await client.query(
+      `SELECT r.code, r.active, z.active AS zone_active
+       FROM racks r JOIN zones z ON z.id = r.zone_id WHERE r.id = $1`,
+      [rackId]
+    );
+    if (rackResult.rowCount === 0 || !rackResult.rows[0].active || !rackResult.rows[0].zone_active) {
+      throw buildError("Rack not found or inactive.", 404);
+    }
+
+    const duplicate = await client.query(
+      `SELECT id FROM levels
+       WHERE rack_id = $1 AND (UPPER(code) = $2 OR level_number = $3) AND id <> $4`,
+      [rackId, code, levelNumber, req.params.id]
+    );
+    if (duplicate.rowCount > 0) {
+      throw buildError(`Level ${code} already exists on the selected rack.`, 409);
+    }
 
     const result = await client.query(
       `UPDATE levels
-       SET level_number = $1, max_weight = $2, max_volume = $3, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $4 AND active = true
-       RETURNING *`,
-      [Number(level_number), Number(max_weight || 2500), Number(max_volume || 20), id]
+       SET rack_id = $1, code = $2, level_number = $3, max_weight = $4, max_volume = $5
+       WHERE id = $6
+       RETURNING *, id AS level_id, code AS level_code`,
+      [
+        rackId,
+        code,
+        levelNumber,
+        capacityValue(req.body.max_weight, 2500),
+        capacityValue(req.body.max_volume, 20),
+        req.params.id
+      ]
     );
-
-    if (result.rowCount === 0) {
-      throw buildError("Level not found or inactive.", 404);
-    }
-
-    const level = result.rows[0];
+    if (result.rowCount === 0) throw buildError("Level not found.", 404);
 
     await client.query(
       `INSERT INTO audit_logs (user_id, action, module, description)
-       VALUES ($1, $2, $3, $4)`,
-      [
-        req.auth?.userId || null,
-        "UPDATE_LEVEL",
-        "Warehouse Configuration",
-        `Updated details for level ${level.code}.`
-      ]
+       VALUES ($1, 'UPDATE_LEVEL', 'Warehouse Configuration', $2)`,
+      [req.auth?.userId || null, `Updated level ${code}.`]
     );
-
     await client.query("COMMIT");
-
-    res.json({
-      success: true,
-      data: level
-    });
+    res.json({ success: true, data: result.rows[0] });
   } catch (error) {
     await client.query("ROLLBACK");
     next(error);
@@ -182,64 +235,77 @@ const updateLevel = async (req, res, next) => {
   }
 };
 
-const deleteLevel = async (req, res, next) => {
+const updateLevelStatus = async (req, res, next) => {
   const client = await db.pool.connect();
   try {
-    const { id } = req.params;
+    const status = textValue(req.body.status);
+    if (!["Active", "Inactive"].includes(status)) {
+      throw buildError("Level status must be Active or Inactive.", 400);
+    }
 
     await client.query("BEGIN");
-
-    const levelRes = await client.query("SELECT code FROM levels WHERE id = $1 AND active = true", [id]);
-    if (levelRes.rowCount === 0) {
-      throw buildError("Level not found or already deleted.", 404);
-    }
-
-    const levelCode = levelRes.rows[0].code;
-
-    // Check if there is active cargo stored in this level
-    const cargoCheck = await client.query(
-      `SELECT c.id FROM cargo c
-       JOIN bins b ON b.id = c.current_bin_id
-       WHERE b.level_id = $1 AND c.status IN ('Stored', 'Blocked', 'Ready for Dispatch')`,
-      [id]
+    const levelResult = await client.query(
+      `SELECT l.*, r.active AS rack_active, z.active AS zone_active
+       FROM levels l
+       JOIN racks r ON r.id = l.rack_id
+       JOIN zones z ON z.id = r.zone_id
+       WHERE l.id = $1 FOR UPDATE OF l`,
+      [req.params.id]
     );
+    if (levelResult.rowCount === 0) throw buildError("Level not found.", 404);
+    const level = levelResult.rows[0];
 
-    if (cargoCheck.rowCount > 0) {
-      throw buildError("Cannot delete level because it contains stored cargo.", 400);
+    if (status === "Active" && (!level.rack_active || !level.zone_active)) {
+      throw buildError("Cannot activate a level beneath an inactive rack or zone.", 400);
     }
 
-    // Soft delete level and bins
-    await client.query("UPDATE levels SET active = false WHERE id = $1", [id]);
-    await client.query("UPDATE bins SET active = false WHERE level_id = $1", [id]);
+    if (status === "Inactive") {
+      const cargoResult = await client.query(
+        `SELECT 1
+         FROM cargo c JOIN bins b ON b.id = c.current_bin_id
+         WHERE b.level_id = $1
+           AND c.is_deleted = FALSE
+           AND c.placement_status IN ('Placed', 'Relocated')
+         LIMIT 1`,
+        [req.params.id]
+      );
+      if (cargoResult.rowCount > 0) {
+        throw buildError("Cannot deactivate a level that contains active stored cargo.", 400);
+      }
+      await client.query("UPDATE bins SET active = FALSE, status = 'Inactive' WHERE level_id = $1", [req.params.id]);
+    }
 
+    const result = await client.query(
+      "UPDATE levels SET active = $1, status = $2 WHERE id = $3 RETURNING *, id AS level_id, code AS level_code",
+      [status === "Active", status, req.params.id]
+    );
+    const action = status === "Active" ? "ACTIVATE_LEVEL" : "DEACTIVATE_LEVEL";
     await client.query(
       `INSERT INTO audit_logs (user_id, action, module, description)
-       VALUES ($1, $2, $3, $4)`,
-      [
-        req.auth?.userId || null,
-        "DELETE_LEVEL",
-        "Warehouse Configuration",
-        `Soft deleted level ${levelCode} and its underlying bins.`
-      ]
+       VALUES ($1, $2, 'Warehouse Configuration', $3)`,
+      [req.auth?.userId || null, action, `${status === "Active" ? "Activated" : "Deactivated"} level ${level.code}.`]
     );
-
     await client.query("COMMIT");
-
-    res.json({
-      success: true,
-      message: `Level ${levelCode} and its underlying bins soft deleted successfully.`
-    });
+    res.json({ success: true, data: result.rows[0] });
   } catch (error) {
     await client.query("ROLLBACK");
     next(error);
   } finally {
     client.release();
   }
+};
+
+const deleteLevel = (req, res, next) => {
+  req.body = { ...req.body, status: "Inactive" };
+  return updateLevelStatus(req, res, next);
 };
 
 module.exports = {
+  getLevels,
+  getLevelById,
   getLevelsByRack,
   createLevel,
   updateLevel,
+  updateLevelStatus,
   deleteLevel
 };

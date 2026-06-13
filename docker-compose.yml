@@ -1,0 +1,74 @@
+services:
+
+  postgres:
+    image: postgres:17
+    container_name: fumba-postgres
+
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: ./backend
+
+    container_name: fumba-backend
+
+    restart: unless-stopped
+
+    depends_on:
+      - postgres
+
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${POSTGRES_DB}
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      CARGO_DOCUMENT_UPLOAD_ROOT: ${CARGO_DOCUMENT_UPLOAD_ROOT:-/app/uploads/cargo-documents}
+      CARGO_DOCUMENT_MAX_BYTES: ${CARGO_DOCUMENT_MAX_BYTES:-10485760}
+      CARGO_DOCUMENT_TYPES_JSON: ${CARGO_DOCUMENT_TYPES_JSON:-}
+      SYSTEM_ADMIN_ROLE_NAME: ${SYSTEM_ADMIN_ROLE_NAME:-System Admin}
+      WAREHOUSE_STAFF_ROLE_NAME: ${WAREHOUSE_STAFF_ROLE_NAME:-Warehouse Staff}
+      WAREHOUSE_SUPERVISOR_ROLE_NAME: ${WAREHOUSE_SUPERVISOR_ROLE_NAME:-Supervisor}
+      WMS_ROLE_DEFINITIONS_JSON: ${WMS_ROLE_DEFINITIONS_JSON:-}
+      WMS_DEFAULT_SHIFTS_JSON: ${WMS_DEFAULT_SHIFTS_JSON:-}
+      WMS_REJECTION_CONDITIONS_JSON: ${WMS_REJECTION_CONDITIONS_JSON:-}
+
+    ports:
+      - "5000:5000"
+
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+
+  frontend:
+    build:
+      context: ./frontend
+
+    container_name: fumba-frontend
+
+    restart: unless-stopped
+
+    depends_on:
+      - backend
+
+    ports:
+      - "5173:5173"
+
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+volumes:
+  postgres_data:

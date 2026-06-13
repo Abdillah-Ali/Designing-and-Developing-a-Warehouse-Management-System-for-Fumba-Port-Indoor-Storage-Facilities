@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Navigate, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
 import {
-  Activity,
   Boxes,
   ClipboardCheck,
   ClipboardList,
@@ -16,12 +15,12 @@ import {
   Warehouse
 } from "lucide-react";
 import { AppLayout } from "@/components/wms/AppLayout";
+import { BarcodeLabel, printBarcodeLabel } from "@/components/wms/BarcodeLabel";
+import { CargoCorrectionModal } from "@/components/wms/CargoCorrectionModal";
 import { DetailForm } from "@/components/wms/DetailForm";
 import {
   DataTable,
-  EmptyState,
   ErrorState,
-  LoadingState,
   OperationalStatCard,
   PageHeader,
   SectionCard,
@@ -38,9 +37,11 @@ import {
   getBins,
   getCargo,
   getLevels,
-  getPlacementLogs,
+  getMyCargoSubmissions,
   getRacks,
-  getZones
+  getZones,
+  printCargoBarcode,
+  requestDispatchAuthorization
 } from "@/services/api";
 
 const inputClass =
@@ -117,6 +118,7 @@ function useCargo(status) {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -140,20 +142,17 @@ function useCargo(status) {
     return () => {
       active = false;
     };
-  }, [status]);
+  }, [status, refreshKey]);
 
-  return { records, loading, error };
+  return { records, loading, error, refresh: () => setRefreshKey((current) => current + 1) };
 }
 
 function DashboardPage() {
   const [cargo, setCargo] = useState([]);
-  const [logs, setLogs] = useState([]);
   const [zones, setZones] = useState([]);
   const [cargoLoading, setCargoLoading] = useState(true);
-  const [logsLoading, setLogsLoading] = useState(true);
   const [zonesLoading, setZonesLoading] = useState(true);
   const [cargoError, setCargoError] = useState("");
-  const [logsError, setLogsError] = useState("");
   const [zonesError, setZonesError] = useState("");
 
   useEffect(() => {
@@ -172,19 +171,6 @@ function DashboardPage() {
       }
     };
 
-    const loadLogs = async () => {
-      setLogsLoading(true);
-      setLogsError("");
-      try {
-        const response = await getPlacementLogs();
-        if (active) setLogs(response.data || []);
-      } catch (err) {
-        if (active) setLogsError(getErrorMessage(err));
-      } finally {
-        if (active) setLogsLoading(false);
-      }
-    };
-
     const loadZones = async () => {
       setZonesLoading(true);
       setZonesError("");
@@ -199,7 +185,6 @@ function DashboardPage() {
     };
 
     loadCargo();
-    loadLogs();
     loadZones();
 
     return () => {
@@ -208,15 +193,24 @@ function DashboardPage() {
   }, []);
 
   const pendingPlacement = useMemo(
-    () => cargo.filter((record) => record.status === "Registered" && !record.current_bin_id && !record.location),
+    () => cargo.filter((record) =>
+      record.placement_status === "Unplaced"
+      && record.registration_status !== "Rejected"
+    ),
     [cargo]
   );
-  const rejectedPlacement = useMemo(() => logs.filter((log) => log.approved === false), [logs]);
+  const storedCargo = useMemo(
+    () => cargo.filter((record) => ["Placed", "Relocated"].includes(record.placement_status)),
+    [cargo]
+  );
+  const dispatchPending = useMemo(
+    () => cargo.filter((record) => record.dispatch_authorization_status === "Pending"),
+    [cargo]
+  );
   const recentlyStored = useMemo(
-    () => cargo.filter((record) => record.status === "Stored").slice(0, 5),
+    () => cargo.filter((record) => ["Placed", "Relocated"].includes(record.placement_status)).slice(0, 5),
     [cargo]
   );
-  const recentActivity = logs.slice(0, 5);
 
   return (
     <>
@@ -247,13 +241,22 @@ function DashboardPage() {
             tone="info"
           />
           <OperationalStatCard
-            title="Rejected Placement"
+            title="Stored Cargo"
+            icon={PackageCheck}
+            loading={cargoLoading}
+            error={cargoError}
+            value={storedCargo.length}
+            emptyTitle="No stored cargo"
+            tone="success"
+          />
+          <OperationalStatCard
+            title="Dispatch Pending"
             icon={ClipboardCheck}
-            loading={logsLoading}
-            error={logsError}
-            value={rejectedPlacement.length}
-            emptyTitle="No rejected placements"
-            tone="destructive"
+            loading={cargoLoading}
+            error={cargoError}
+            value={dispatchPending.length}
+            emptyTitle="No dispatch approvals pending"
+            tone="warning"
           />
         </div>
 
@@ -268,7 +271,7 @@ function DashboardPage() {
                 { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
                 { key: "barcode", label: "Barcode", className: "font-mono text-muted-foreground" },
                 { key: "location", label: "Location", render: (row) => row.location || "Not recorded" },
-                { key: "status", label: "Status", render: (row) => <StatusBadge tone={statusTone(row.status)}>{row.status}</StatusBadge> }
+                { key: "status", label: "Placement", render: (row) => <StatusBadge tone={statusTone(row.placement_status)}>{row.placement_status}</StatusBadge> }
               ]}
             />
           </SectionCard>
@@ -288,39 +291,311 @@ function DashboardPage() {
             />
           </SectionCard>
         </div>
-
-        <div className="mt-3">
-          <SectionCard title="Recent Activity Feed" icon={Activity}>
-            {logsLoading ? (
-              <LoadingState />
-            ) : logsError ? (
-              <ErrorState message={logsError} />
-            ) : recentActivity.length ? (
-              <div className="space-y-2">
-                {recentActivity.map((log) => (
-                  <div key={log.id} className="grid gap-2 rounded border border-border bg-muted/20 p-2 text-xs md:grid-cols-[150px_110px_1fr]">
-                    <span className="font-mono text-muted-foreground">{formatDateTime(log.created_at)}</span>
-                    <StatusBadge tone={log.approved ? "success" : "destructive"}>{log.approved ? "Accepted" : "Rejected"}</StatusBadge>
-                    <span>{log.reason}: {log.detail || "No detail recorded"}</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <EmptyState title="No recent activity" />
-            )}
-          </SectionCard>
-        </div>
       </div>
     </>
   );
 }
 
+const placementQueueFilters = [
+  "Unplaced",
+  "Placed",
+  "Pending Review",
+  "Approved",
+  "Correction Required",
+  "Rejected",
+  "Relocation Required"
+];
+
+function PlacementQueuePage() {
+  const navigate = useNavigate();
+  const barcodeRef = useRef(null);
+  const [records, setRecords] = useState([]);
+  const [filter, setFilter] = useState("Unplaced");
+  const [selected, setSelected] = useState(null);
+  const [printCargo, setPrintCargo] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await getCargo({ limit: 500 });
+      setRecords(response.data || []);
+    } catch (loadError) {
+      setError(getErrorMessage(loadError));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  useEffect(() => {
+    if (!printCargo || !barcodeRef.current) return;
+
+    const print = async () => {
+      try {
+        await printCargoBarcode(printCargo.id);
+        if (!printBarcodeLabel(barcodeRef.current)) {
+          setError("The browser blocked the print preview window.");
+        }
+      } catch (printError) {
+        setError(getErrorMessage(printError));
+      } finally {
+        setPrintCargo(null);
+      }
+    };
+
+    print();
+  }, [printCargo]);
+
+  const visibleRecords = useMemo(() => records.filter((record) => {
+    if (filter === "Unplaced") {
+      return record.placement_status === "Unplaced"
+        && record.registration_status !== "Rejected";
+    }
+    if (filter === "Placed") {
+      return ["Placed", "Relocated"].includes(record.placement_status);
+    }
+    if (filter === "Relocation Required") {
+      return record.relocation_required;
+    }
+    return record.registration_status === filter;
+  }), [filter, records]);
+
+  const startPlacement = (cargo) => {
+    navigate(`/staff/cargo/placement-scanning?cargo=${encodeURIComponent(cargo.barcode)}`);
+  };
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Cargo Operations"
+        title="Placement Queue"
+        description="Select registered cargo when warehouse staff are ready to begin the scan-based placement session."
+      />
+      <div className="flex-1 overflow-auto p-4">
+        <div className="space-y-3">
+          {error && <ErrorState message={error} />}
+          <SectionCard title="Queue Filters" icon={ClipboardList}>
+            <div className="flex flex-wrap gap-2">
+              {placementQueueFilters.map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  onClick={() => setFilter(item)}
+                  className={`rounded border px-3 py-2 text-xs font-semibold ${
+                    filter === item
+                      ? "border-info bg-info/10 text-info"
+                      : "border-border bg-background text-muted-foreground"
+                  }`}
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+          </SectionCard>
+
+          <SectionCard title={`${filter} Cargo`} icon={PackagePlus}>
+            <DataTable
+              loading={loading}
+              rows={visibleRecords}
+              emptyTitle={`No ${filter.toLowerCase()} cargo in the placement queue`}
+              columns={[
+                { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
+                { key: "barcode", label: "Barcode", className: "font-mono" },
+                { key: "cargo_type", label: "Cargo Type" },
+                { key: "quantity", label: "Quantity", render: (row) => formatCount(row.quantity) },
+                { key: "weight", label: "Weight", render: (row) => formatMeasure(row.weight, "kg") },
+                { key: "created_at", label: "Registered", render: (row) => formatDateTime(row.created_at) },
+                {
+                  key: "registration_status",
+                  label: "Registration",
+                  render: (row) => <StatusBadge tone={statusTone(row.registration_status)}>{row.registration_status}</StatusBadge>
+                },
+                {
+                  key: "placement_status",
+                  label: "Placement",
+                  render: (row) => <StatusBadge tone={statusTone(row.placement_status)}>{row.placement_status}</StatusBadge>
+                },
+                {
+                  key: "location",
+                  label: "Current Location",
+                  render: (row) => row.location || "Not placed"
+                },
+                {
+                  key: "actions",
+                  label: "Actions",
+                  render: (row) => {
+                    const canStart = row.registration_status !== "Rejected"
+                      && row.placement_status !== "Dispatched"
+                      && (row.placement_status === "Unplaced" || row.relocation_required);
+                    return (
+                      <div className="flex flex-wrap gap-1.5">
+                        <button
+                          type="button"
+                          disabled={!canStart}
+                          onClick={() => startPlacement(row)}
+                          className="rounded bg-success px-2 py-1 text-[11px] font-semibold text-success-foreground disabled:opacity-40"
+                        >
+                          {row.relocation_required ? "Start Relocation" : "Start Placement"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelected(row)}
+                          className="rounded border border-info/30 bg-info/10 px-2 py-1 text-[11px] font-semibold text-info"
+                        >
+                          View Details
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPrintCargo(row)}
+                          className="rounded border border-border px-2 py-1 text-[11px] font-semibold"
+                        >
+                          Print Barcode
+                        </button>
+                        {row.registration_status === "Correction Required" && (
+                          <button
+                            type="button"
+                            onClick={() => setSelected(row)}
+                            className="rounded bg-warning px-2 py-1 text-[11px] font-semibold text-warning-foreground"
+                          >
+                            View Correction
+                          </button>
+                        )}
+                      </div>
+                    );
+                  }
+                }
+              ]}
+            />
+          </SectionCard>
+
+          {selected && (
+            <SectionCard title={`Cargo Details: ${selected.cargo_id}`} icon={PackageCheck}>
+              <div className="grid gap-3 text-xs md:grid-cols-2 xl:grid-cols-4">
+                <div><span className="text-muted-foreground">Consignee:</span> <strong>{selected.consignee_name}</strong></div>
+                <div><span className="text-muted-foreground">Volume:</span> <strong>{formatMeasure(selected.volume, "m3")}</strong></div>
+                <div><span className="text-muted-foreground">Hazard Class:</span> <strong>{selected.hazard_class || "Not applicable"}</strong></div>
+                <div><span className="text-muted-foreground">Current Bin:</span> <strong>{selected.bin_barcode || "Not placed"}</strong></div>
+                <div className="md:col-span-2 xl:col-span-4">
+                  <span className="text-muted-foreground">Supervisor Message:</span>{" "}
+                  <strong>{selected.correction_notes || selected.rejection_reason || "No correction message"}</strong>
+                </div>
+                {selected.relocation_required && (
+                  <div className="md:col-span-2 xl:col-span-4 text-warning">
+                    <strong>Relocation required:</strong> {selected.relocation_reason}
+                  </div>
+                )}
+              </div>
+            </SectionCard>
+          )}
+        </div>
+        {printCargo && (
+          <div className="fixed -left-[10000px] top-0">
+            <BarcodeLabel ref={barcodeRef} cargo={printCargo} />
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function RegistrationReviewsPage() {
+  const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [selectedId, setSelectedId] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await getMyCargoSubmissions();
+      setRecords(response.data || []);
+    } catch (loadError) {
+      setError(getErrorMessage(loadError));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const selected = records.find((record) => String(record.id) === selectedId) || null;
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Cargo Registration"
+        title="My Registration Reviews"
+        description="Review pending, rejected, and correction-required cargo registrations submitted by your account."
+      />
+      <div className="flex-1 overflow-auto p-4">
+        <div className="space-y-3">
+          {error && <ErrorState message={error} />}
+          <SectionCard title="Registration Review Status" icon={ClipboardCheck}>
+            <DataTable
+              loading={loading}
+              rows={records}
+              emptyTitle="No registrations are awaiting review or correction"
+              columns={[
+                { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
+                { key: "consignee_name", label: "Consignee" },
+                { key: "cargo_type", label: "Cargo Type" },
+                {
+                  key: "registration_status",
+                  label: "Review Status",
+                  render: (row) => <StatusBadge tone={statusTone(row.registration_status)}>{row.registration_status}</StatusBadge>
+                },
+                {
+                  key: "review_notes",
+                  label: "Supervisor Notes",
+                  render: (row) => row.correction_notes || row.corrective_notes || row.rejection_reason || "Awaiting review"
+                },
+                {
+                  key: "action",
+                  label: "Action",
+                  render: (row) => ["Correction Required", "Rejected"].includes(row.registration_status) ? (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedId(String(row.id))}
+                      className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground"
+                    >
+                      {row.registration_status === "Rejected" ? "Revise Registration" : "Correct Details"}
+                    </button>
+                  ) : <span className="text-[11px] text-muted-foreground">Read only</span>
+                }
+              ]}
+            />
+          </SectionCard>
+        </div>
+      </div>
+      <CargoCorrectionModal
+        open={Boolean(selected)}
+        cargo={selected}
+        onClose={() => setSelectedId("")}
+        onCompleted={load}
+      />
+    </>
+  );
+}
+
 function CargoWorkflowPage({ tab, title, description }) {
+  const [searchParams] = useSearchParams();
   return (
     <>
       <PageHeader eyebrow="Cargo Operations" title={title} description={description} />
       <div className="flex-1 min-h-0 overflow-hidden p-3">
-        <DetailForm initialTab={tab} />
+        <DetailForm
+          initialTab={tab}
+          initialCargoBarcode={searchParams.get("cargo") || ""}
+        />
       </div>
     </>
   );
@@ -622,37 +897,64 @@ function DispatchOperationPage({ mode }) {
     queue: {
       title: "Dispatch Queue",
       icon: Truck,
-      status: "Ready for Dispatch",
+      status: undefined,
       emptyTitle: "No cargo queued for dispatch",
       description: "Cargo prepared for outbound handling will appear here after dispatch readiness is recorded."
     },
     gate: {
       title: "Gate Release",
       icon: DoorOpen,
-      status: "Ready for Dispatch",
+      status: undefined,
       emptyTitle: "No cargo ready for gate release",
       description: "Readonly gate release preparation queue for warehouse staff."
     },
     released: {
       title: "Released Cargo",
       icon: PackageCheck,
-      status: "Released",
+      status: "Dispatched",
       emptyTitle: "No released cargo",
       description: "Cargo released from the warehouse."
     }
   }[mode];
 
-  const { records, loading, error } = useCargo(config.status);
+  const { records, loading, error, refresh } = useCargo(config.status);
+  const [actionError, setActionError] = useState("");
+  const [busyId, setBusyId] = useState("");
+  const visibleRecords = mode === "queue"
+    ? records.filter((record) =>
+      ["Placed", "Relocated"].includes(record.placement_status)
+      && record.registration_status === "Approved"
+    )
+    : mode === "gate"
+      ? records.filter((record) => record.dispatch_authorization_status === "Approved")
+      : records;
+
+  const requestDispatch = async (cargo) => {
+    setBusyId(String(cargo.id));
+    setActionError("");
+    try {
+      await requestDispatchAuthorization({
+        cargo_id: cargo.id,
+        reason: "Cargo prepared by Warehouse Staff for supervisor dispatch authorization."
+      });
+      refresh();
+    } catch (requestError) {
+      setActionError(getErrorMessage(requestError));
+    } finally {
+      setBusyId("");
+    }
+  };
 
   return (
     <>
       <PageHeader eyebrow="Dispatch Operations" title={config.title} description={config.description} />
       <div className="flex-1 overflow-auto p-4">
+        {actionError && <ErrorState message={actionError} />}
         <SectionCard title={config.title} icon={config.icon}>
           <DataTable
             loading={loading}
             error={error}
-            rows={records}
+            rows={visibleRecords}
             emptyTitle={config.emptyTitle}
             columns={[
               { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
@@ -660,64 +962,23 @@ function DispatchOperationPage({ mode }) {
               { key: "consignee_name", label: "Consignee", render: (row) => row.consignee_name || "Not recorded" },
               { key: "location", label: "Storage Location", render: (row) => row.location || "Not assigned" },
               { key: "clearance_status", label: "Clearance Status", render: (row) => row.clearance_status || "Not recorded" },
-              { key: "status", label: "Status", render: (row) => <StatusBadge tone={statusTone(row.status)}>{row.status}</StatusBadge> }
-            ]}
-          />
-        </SectionCard>
-      </div>
-    </>
-  );
-}
-
-function ActivityLogsPage() {
-  const [logs, setLogs] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let active = true;
-
-    const load = async () => {
-      setLoading(true);
-      setError("");
-
-      try {
-        const response = await getPlacementLogs();
-        if (active) setLogs(response.data || []);
-      } catch (err) {
-        if (active) setError(getErrorMessage(err));
-      } finally {
-        if (active) setLoading(false);
-      }
-    };
-
-    load();
-
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  return (
-    <>
-      <PageHeader
-        eyebrow="Activity Logs"
-        title="Warehouse Activity Logs"
-        description="Placement validation and scanner activity for warehouse operations."
-      />
-      <div className="flex-1 overflow-auto p-4">
-        <SectionCard title="System & Validation Logs" icon={Activity}>
-          <DataTable
-            loading={loading}
-            error={error}
-            rows={logs}
-            emptyTitle="No recent activity"
-            columns={[
-              { key: "created_at", label: "Time", render: (row) => formatDateTime(row.created_at), className: "font-mono text-muted-foreground" },
-              { key: "cargo_identifier", label: "Cargo", render: (row) => row.cargo_identifier || row.cargo_barcode || "Not recorded" },
-              { key: "bin_identifier", label: "Bin", render: (row) => row.bin_identifier || row.bin_barcode || "Not recorded" },
-              { key: "approved", label: "Result", render: (row) => <StatusBadge tone={row.approved ? "success" : "destructive"}>{row.approved ? "Accepted" : "Rejected"}</StatusBadge> },
-              { key: "detail", label: "Detail", render: (row) => `${row.reason}: ${row.detail || "No detail recorded"}` }
+              { key: "status", label: "Placement", render: (row) => <StatusBadge tone={statusTone(row.placement_status)}>{row.placement_status}</StatusBadge> },
+              ...(mode === "queue" ? [{
+                key: "action",
+                label: "Action",
+                render: (row) => !row.dispatch_authorization_status ? (
+                  <button
+                    type="button"
+                    disabled={busyId === String(row.id)}
+                    onClick={() => requestDispatch(row)}
+                    className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground disabled:opacity-50"
+                  >
+                    {busyId === String(row.id) ? "Requesting..." : "Request Authorization"}
+                  </button>
+                ) : <StatusBadge tone={row.dispatch_authorization_status === "Approved" ? "success" : "pending"}>
+                  {row.dispatch_authorization_status}
+                </StatusBadge>
+              }] : [])
             ]}
           />
         </SectionCard>
@@ -794,6 +1055,8 @@ const Index = () => {
             />
           }
         />
+        <Route path="cargo/registration-reviews" element={<RegistrationReviewsPage />} />
+        <Route path="cargo/placement-queue" element={<PlacementQueuePage />} />
         <Route
           path="cargo/placement-scanning"
           element={
@@ -822,7 +1085,6 @@ const Index = () => {
         <Route path="dispatch/queue" element={<DispatchOperationPage mode="queue" />} />
         <Route path="dispatch/gate-release" element={<DispatchOperationPage mode="gate" />} />
         <Route path="dispatch/released" element={<DispatchOperationPage mode="released" />} />
-        <Route path="activity-logs" element={<ActivityLogsPage />} />
         <Route path="profile" element={<ProfilePage />} />
         <Route path="*" element={<Navigate to="/staff" replace />} />
       </Routes>

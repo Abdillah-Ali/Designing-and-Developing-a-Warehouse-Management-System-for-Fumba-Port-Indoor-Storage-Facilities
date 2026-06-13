@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { toast } from "sonner";
 import {
   Activity,
   AlertTriangle,
@@ -38,7 +39,6 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   SquareStack,
-  Trash2,
   Truck,
   UserCircle2,
   UserPlus,
@@ -56,7 +56,9 @@ import {
   SectionCard,
   StatusBadge
 } from "@/components/wms/OperationalUi";
+import { ReviewActionModal } from "@/components/wms/ReviewActionModal";
 import { cn } from "@/lib/utils";
+import { getStoredAuthUserId } from "@/lib/portal-access";
 import {
   formatCount,
   formatDateTime,
@@ -65,43 +67,69 @@ import {
   statusTone
 } from "@/lib/wms-operational";
 import {
+  approveSupervisorApproval,
+  createBin,
+  createLevel,
+  createRack,
+  createZone,
   createUser,
-  deleteUser,
+  deactivateUser,
+  generateDefaultWarehouseStructure,
   getAuditLogs,
   getBins,
   getCargo,
+  getCargoById,
   getLevels,
   getPlacementLogs,
   getRacks,
   getRoles,
   getShifts,
+  getSupervisorApprovals,
+  getSupervisorReviewConfiguration,
   getUserSessions,
   getUsers,
   getWarehouses,
   getZones,
   logout,
-  updateUser
+  rejectSupervisorApproval,
+  resetUserPassword,
+  updateBin,
+  updateBinStatus,
+  updateLevel,
+  updateLevelStatus,
+  updateRack,
+  updateRackStatus,
+  updateZone,
+  updateZoneStatus,
+  updateUser,
+  updateUserStatus
 } from "@/services/api";
 
 const inputClass =
   "h-9 w-full rounded border border-input bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring";
 
-const adminRoles = [
-  "System Admin",
-  "Warehouse Staff",
-  "Supervisor",
-  "Customs Officer",
-  "Billing Officer"
-];
-
-const shiftNames = ["Morning Shift", "Evening Shift", "Night Shift"];
+const emptyAuditFilters = {
+  user: "",
+  role: "",
+  action: "",
+  module: "",
+  date_from: "",
+  date_to: "",
+  status: "",
+  cargo_id: "",
+  warehouse: ""
+};
 
 const cargoStatuses = [
-  "Registered",
-  "Pending Placement",
-  "Stored",
-  "Blocked",
-  "Released"
+  "Pending Review",
+  "Approved",
+  "Correction Required",
+  "Rejected",
+  "Unplaced",
+  "Placed",
+  "Relocated",
+  "Dispatched",
+  "Archived"
 ];
 
 const adminNavigation = [
@@ -133,6 +161,7 @@ const adminNavigation = [
     icon: PackageSearch,
     children: [
       { label: "Cargo Records", icon: ClipboardList, to: "/admin/cargo/records" },
+      { label: "Approval Overrides", icon: ShieldCheck, to: "/admin/cargo/approval-overrides" },
       { label: "Placement Monitoring", icon: ClipboardCheck, to: "/admin/cargo/placement-monitoring" },
       { label: "Cargo Tracking", icon: Search, to: "/admin/cargo/tracking" },
       { label: "Blocked Cargo", icon: Ban, to: "/admin/cargo/blocked" }
@@ -151,6 +180,8 @@ const adminNavigation = [
     label: "Operational Review",
     icon: Activity,
     children: [
+      { label: "System Logs", icon: Settings, to: "/admin/monitoring/system-logs" },
+      { label: "Placement Logs", icon: ScanLine, to: "/admin/monitoring/placement-logs" },
       { label: "Validation Logs", icon: FileWarning, to: "/admin/monitoring/validation-logs" }
     ]
   },
@@ -159,9 +190,9 @@ const adminNavigation = [
     icon: Shield,
     children: [
       { label: "Audit Logs", icon: ClipboardList, to: "/admin/audit/logs" },
-      { label: "User Activity", icon: Activity, to: "/admin/audit/user-activity" },
+      { label: "Activity Logs", icon: Activity, to: "/admin/audit/user-activity" },
       { label: "Login Sessions", icon: LockKeyhole, to: "/admin/audit/login-sessions" },
-      { label: "Security Events", icon: AlertTriangle, to: "/admin/audit/security-events" }
+      { label: "Security Logs", icon: AlertTriangle, to: "/admin/audit/security-events" }
     ]
   },
   { label: "Profile", icon: UserCircle2, to: "/admin/profile" }
@@ -279,8 +310,8 @@ function getBinCode(record) {
 }
 
 function cargoOperationalStatus(record) {
-  if (record?.status === "Registered" && !record.current_bin_id && !record.location) return "Pending Placement";
-  return record?.status || "No status";
+  if (record?.is_deleted) return "Archived";
+  return record?.registration_status || "No status";
 }
 
 function formatOccupancy(record) {
@@ -644,19 +675,25 @@ function DashboardPage() {
   const zones = useApiCollection(() => getZones(), "zones");
   const users = useApiCollection(() => getUsers({ status: "active" }), "active-users");
 
-  const activeOperations = useMemo(
-    () => cargo.rows.filter((record) => record.status !== "Released"),
+  const registeredCargo = useMemo(() => cargo.rows.filter((record) => record.placement_status === "Unplaced" && record.registration_status !== "Rejected"), [cargo.rows]);
+  const storedCargo = useMemo(() => cargo.rows.filter((record) => ["Placed", "Relocated"].includes(record.placement_status)), [cargo.rows]);
+  const blockedCargo = useMemo(() => cargo.rows.filter((record) => record.relocation_required), [cargo.rows]);
+  const pendingSupervisor = useMemo(
+    () => cargo.rows.filter((record) => record.registration_status === "Pending Review"),
     [cargo.rows]
   );
-  const placementQueue = useMemo(
-    () => cargo.rows.filter((record) => cargoOperationalStatus(record) === "Pending Placement"),
-    [cargo.rows]
-  );
+  const placementFailures = useMemo(() => logs.rows.filter((record) => record.approved === false), [logs.rows]);
   const recentActivity = useMemo(() => logs.rows.slice(0, 5), [logs.rows]);
+  const activeBootstrapAdmin = useMemo(
+    () => users.rows.find((user) => user.is_bootstrap_admin && user.status === "active"),
+    [users.rows]
+  );
   const statusRows = useMemo(
     () => cargoStatuses.map((status) => ({
       status,
-      count: cargo.rows.filter((record) => cargoOperationalStatus(record) === status).length
+      count: cargo.rows.filter((record) =>
+        cargoOperationalStatus(record) === status || record.placement_status === status
+      ).length
     })),
     [cargo.rows]
   );
@@ -669,25 +706,35 @@ function DashboardPage() {
         description="Operational overview for warehouse activity, storage readiness, users, and cargo oversight."
       />
       <div className="flex-1 overflow-auto p-4">
+        {activeBootstrapAdmin && (
+          <div className="mb-3 flex items-start gap-3 rounded-md border border-warning/35 bg-warning/10 px-4 py-3 text-warning">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <div className="text-xs font-semibold">Bootstrap admin account is still active</div>
+              <p className="mt-1 text-xs leading-5">
+                For security, deactivate it after verifying the new admin account.
+              </p>
+            </div>
+          </div>
+        )}
         <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-4">
           <OperationalStatCard
-            title="Active Warehouse Operations"
+            title="Total Cargo"
             icon={Warehouse}
             loading={cargo.loading}
             error={cargo.error}
-            value={activeOperations.length}
-            emptyTitle="No active operations loaded"
+            value={cargo.rows.length}
+            emptyTitle="No cargo records loaded"
             emptyBody="Operational cargo activity will appear as records are created."
             tone="info"
           />
           <OperationalStatCard
-            title="Storage Occupancy Summary"
-            icon={Boxes}
-            loading={zones.loading}
-            error={zones.error}
-            value={zones.rows.length}
-            emptyTitle="No warehouse hierarchy loaded"
-            emptyBody="Zone occupancy will appear when storage areas are configured."
+            title="Placement Queue"
+            icon={ClipboardList}
+            loading={cargo.loading}
+            error={cargo.error}
+            value={registeredCargo.length}
+            emptyTitle="No cargo awaiting placement"
             tone="success"
           />
           <section className="rounded-md border border-border bg-card p-3">
@@ -710,15 +757,18 @@ function DashboardPage() {
             </div>
           </section>
           <OperationalStatCard
-            title="Placement Validation Queue"
+            title="Pending Review"
             icon={ClipboardCheck}
             loading={cargo.loading}
             error={cargo.error}
-            value={placementQueue.length}
-            emptyTitle="No placement queue loaded"
-            emptyBody="Pending placement cargo will appear when registered cargo awaits storage."
+            value={pendingSupervisor.length}
+            emptyTitle="No supervisor approvals pending"
             tone="warning"
           />
+          <OperationalStatCard title="Placed Cargo" icon={PackageCheck} loading={cargo.loading} error={cargo.error} value={storedCargo.length} emptyTitle="No placed cargo" tone="success" />
+          <OperationalStatCard title="Relocation Required" icon={Ban} loading={cargo.loading} error={cargo.error} value={blockedCargo.length} emptyTitle="No cargo requires relocation" tone="destructive" />
+          <OperationalStatCard title="Placement Failures" icon={FileWarning} loading={logs.loading} error={logs.error} value={placementFailures.length} emptyTitle="No placement failures" tone="destructive" />
+          <OperationalStatCard title="Warehouse Zones" icon={Boxes} loading={zones.loading} error={zones.error} value={zones.rows.length} emptyTitle="No warehouse hierarchy loaded" tone="info" />
           <section className="rounded-md border border-border bg-card p-3">
             <div className="text-xs font-semibold text-muted-foreground">Cargo Status Overview</div>
             {cargo.loading ? (
@@ -789,6 +839,7 @@ function UsersPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [actionError, setActionError] = useState("");
   const [busyUserId, setBusyUserId] = useState("");
+  const currentUserId = getStoredAuthUserId();
   const users = useApiCollection(() => getUsers(), `users-${refreshKey}`);
   const roles = useApiCollection(() => getRoles(), "roles");
   const warehouses = useApiCollection(() => getWarehouses(), "warehouses");
@@ -826,6 +877,7 @@ function UsersPage() {
     const response = userId ? await updateUser(userId, payload) : await createUser(payload);
     closeDrawer();
     refreshUsers();
+    toast.success(userId ? "User account updated." : "User account created.");
     return response;
   };
 
@@ -835,8 +887,9 @@ function UsersPage() {
     setActionError("");
 
     try {
-      await updateUser(user.id, { status: nextStatus });
+      await updateUserStatus(user.id, nextStatus);
       refreshUsers();
+      toast.success(nextStatus === "active" ? "User account reactivated." : "User account deactivated.");
     } catch (error) {
       setActionError(getErrorMessage(error));
     } finally {
@@ -844,20 +897,34 @@ function UsersPage() {
     }
   };
 
-  const removeUserAccount = async (user) => {
-    if (!window.confirm(`Delete ${user.full_name || user.username}?`)) return;
+  const disableUserAccount = async (user) => {
+    if (!window.confirm(`Disable the account for ${user.full_name || user.username}? The user history will be preserved.`)) return;
 
-    setBusyUserId(`delete-${user.id}`);
+    setBusyUserId(`deactivate-${user.id}`);
     setActionError("");
 
     try {
-      await deleteUser(user.id);
+      await deactivateUser(user.id);
       refreshUsers();
+      toast.success("User account disabled.");
     } catch (error) {
       setActionError(getErrorMessage(error));
     } finally {
       setBusyUserId("");
     }
+  };
+
+  const openResetPasswordDrawer = (user) => {
+    setSelectedUser(user);
+    setActionError("");
+    setDrawerMode("reset-password");
+  };
+
+  const saveResetPassword = async (password) => {
+    await resetUserPassword(selectedUser.id, password);
+    closeDrawer();
+    refreshUsers();
+    toast.success("Temporary password set. The user must change it at next sign-in.");
   };
 
   return (
@@ -865,7 +932,7 @@ function UsersPage() {
       <PageHeader
         eyebrow="System Management"
         title="Users"
-        description="Create, update, activate, deactivate, and remove administrative and warehouse staff accounts."
+        description="Create, assign, secure, activate, and deactivate WMS user accounts with full audit history."
         action={
           <div className="flex flex-wrap gap-2">
             <ToolbarButton icon={RefreshCw} variant="secondary" onClick={refreshUsers}>Refresh</ToolbarButton>
@@ -916,7 +983,21 @@ function UsersPage() {
               emptyTitle="No users loaded"
               emptyBody="Create a user or clear the filters to see account records."
               columns={[
-                { key: "full_name", label: "Full Name", className: "font-semibold" },
+                {
+                  key: "full_name",
+                  label: "Full Name",
+                  render: (row) => (
+                    <div>
+                      <div className="font-semibold">{row.full_name}</div>
+                      {(row.is_bootstrap_admin || row.is_system_user) && (
+                        <div className="mt-1 flex flex-wrap gap-1">
+                          {row.is_bootstrap_admin && <StatusBadge tone="warning">Bootstrap Admin</StatusBadge>}
+                          {row.is_system_user && <StatusBadge tone="info">System User</StatusBadge>}
+                        </div>
+                      )}
+                    </div>
+                  )
+                },
                 { key: "username", label: "Username", className: "font-mono text-muted-foreground" },
                 { key: "email", label: "Email" },
                 { key: "phone_number", label: "Phone Number" },
@@ -924,7 +1005,7 @@ function UsersPage() {
                 {
                   key: "assigned_warehouse",
                   label: "Assigned Warehouse",
-                  render: (row) => row.warehouse_code ? `${row.warehouse_code} - ${row.warehouse_name}` : "All warehouses"
+                  render: (row) => row.warehouse_code ? `${row.warehouse_code} - ${row.warehouse_name}` : "No warehouse assigned"
                 },
                 { key: "assigned_shift", label: "Assigned Shift", render: (row) => row.shift_name || "No shift" },
                 {
@@ -948,8 +1029,26 @@ function UsersPage() {
                       </button>
                       <button
                         type="button"
+                        onClick={() => openResetPasswordDrawer(row)}
+                        disabled={Number(row.id) === Number(currentUserId)}
+                        className="inline-flex h-8 items-center gap-1 rounded border border-info/35 bg-info/10 px-2 text-[11px] font-semibold text-info hover:bg-info/20 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <KeyRound className="h-3.5 w-3.5" />
+                        Reset Password
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => toggleUserStatus(row)}
-                        disabled={busyUserId === `status-${row.id}`}
+                        disabled={
+                          busyUserId === `status-${row.id}`
+                          || (
+                            row.status === "active"
+                            && (
+                              (row.is_system_user && !row.is_bootstrap_admin)
+                              || Number(row.id) === Number(currentUserId)
+                            )
+                          )
+                        }
                         className="inline-flex h-8 items-center gap-1 rounded border border-warning/35 bg-warning/10 px-2 text-[11px] font-semibold text-warning hover:bg-warning/20 disabled:opacity-50"
                       >
                         {busyUserId === `status-${row.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Power className="h-3.5 w-3.5" />}
@@ -957,12 +1056,17 @@ function UsersPage() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => removeUserAccount(row)}
-                        disabled={busyUserId === `delete-${row.id}`}
+                        onClick={() => disableUserAccount(row)}
+                        disabled={
+                          busyUserId === `deactivate-${row.id}`
+                          || row.status === "inactive"
+                          || (row.is_system_user && !row.is_bootstrap_admin)
+                          || Number(row.id) === Number(currentUserId)
+                        }
                         className="inline-flex h-8 items-center gap-1 rounded border border-destructive/35 bg-destructive/10 px-2 text-[11px] font-semibold text-destructive hover:bg-destructive/20 disabled:opacity-50"
                       >
-                        {busyUserId === `delete-${row.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                        Delete
+                        {busyUserId === `deactivate-${row.id}` ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Power className="h-3.5 w-3.5" />}
+                        Disable Account
                       </button>
                     </div>
                   )
@@ -981,15 +1085,19 @@ function UsersPage() {
           warehouses={warehouses.rows}
           shifts={shifts.rows}
           referenceLoading={roles.loading || warehouses.loading || shifts.loading}
+          currentUserId={currentUserId}
           onCancel={closeDrawer}
           onSave={saveUser}
         />
+      </Drawer>
+      <Drawer open={drawerMode === "reset-password"} title="Reset User Password" onClose={closeDrawer}>
+        <ResetUserPasswordForm user={selectedUser} onCancel={closeDrawer} onSave={saveResetPassword} />
       </Drawer>
     </>
   );
 }
 
-function UserForm({ mode, user, roles, warehouses, shifts, referenceLoading, onCancel, onSave }) {
+function UserForm({ mode, user, roles, warehouses, shifts, referenceLoading, currentUserId, onCancel, onSave }) {
   const [form, setForm] = useState({
     full_name: "",
     username: "",
@@ -1022,6 +1130,17 @@ function UserForm({ mode, user, roles, warehouses, shifts, referenceLoading, onC
   const updateField = (field, value) => {
     setForm((current) => ({ ...current, [field]: value }));
   };
+
+  const selectedRole = roles.find((role) => String(role.id) === String(form.role_id));
+  const isWarehouseStaff = selectedRole?.role_name === "Warehouse Staff";
+  const isWarehouseSupervisor = selectedRole?.role_name === "Supervisor";
+  const requiresWarehouse = isWarehouseStaff || isWarehouseSupervisor;
+  const unsupportedRole = selectedRole && !["System Admin", "Warehouse Staff", "Supervisor"].includes(selectedRole.role_name);
+  const isCurrentUser = Boolean(user?.id && Number(user.id) === Number(currentUserId));
+  const protectedRole = Boolean(user?.is_system_user || isCurrentUser);
+  const protectedStatus = Boolean(
+    (user?.is_system_user && !user?.is_bootstrap_admin) || isCurrentUser
+  );
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -1069,14 +1188,19 @@ function UserForm({ mode, user, roles, warehouses, shifts, referenceLoading, onC
           <input className={inputClass} value={form.phone_number} onChange={(event) => updateField("phone_number", event.target.value)} placeholder="Phone number" required />
         </FormField>
         <FormField label="Role">
-          <SelectField value={form.role_id} onChange={(value) => updateField("role_id", value)} required disabled={referenceLoading}>
+          <SelectField value={form.role_id} onChange={(value) => updateField("role_id", value)} required disabled={referenceLoading || protectedRole}>
             <option value="">Select role</option>
             {roles.map((role) => <option key={role.id} value={String(role.id)}>{role.role_name}</option>)}
           </SelectField>
+          {unsupportedRole && (
+            <span className="block text-[10px] font-normal leading-4 text-warning">
+              This role does not currently have a portal dashboard. The user can be created, but login access will be limited until the portal is implemented.
+            </span>
+          )}
         </FormField>
         <FormField label="Assigned Warehouse">
-          <SelectField value={form.warehouse_id} onChange={(value) => updateField("warehouse_id", value)} disabled={referenceLoading}>
-            <option value="">All warehouses</option>
+          <SelectField value={form.warehouse_id} onChange={(value) => updateField("warehouse_id", value)} disabled={referenceLoading} required={requiresWarehouse}>
+            <option value="">No warehouse assigned</option>
             {warehouses.map((warehouse) => (
               <option key={warehouse.id} value={String(warehouse.id)}>
                 {warehouse.warehouse_code} - {warehouse.warehouse_name}
@@ -1085,7 +1209,7 @@ function UserForm({ mode, user, roles, warehouses, shifts, referenceLoading, onC
           </SelectField>
         </FormField>
         <FormField label="Assigned Shift">
-          <SelectField value={form.shift_id} onChange={(value) => updateField("shift_id", value)} disabled={referenceLoading}>
+          <SelectField value={form.shift_id} onChange={(value) => updateField("shift_id", value)} disabled={referenceLoading} required={isWarehouseStaff}>
             <option value="">No shift assigned</option>
             {shifts.map((shift) => (
               <option key={shift.id} value={String(shift.id)}>
@@ -1095,7 +1219,7 @@ function UserForm({ mode, user, roles, warehouses, shifts, referenceLoading, onC
           </SelectField>
         </FormField>
         <FormField label="Account Status">
-          <SelectField value={form.status} onChange={(value) => updateField("status", value)}>
+          <SelectField value={form.status} onChange={(value) => updateField("status", value)} disabled={protectedStatus}>
             {accountStatuses.map((status) => <option key={status} value={status}>{formatAccountStatus(status)}</option>)}
           </SelectField>
         </FormField>
@@ -1109,8 +1233,28 @@ function UserForm({ mode, user, roles, warehouses, shifts, referenceLoading, onC
             required={mode !== "edit"}
             minLength={form.password || mode !== "edit" ? 8 : undefined}
           />
+          <span className="block text-[10px] font-normal leading-4 text-muted-foreground">
+            Minimum 8 characters, including uppercase, lowercase, number, and special character.
+          </span>
         </FormField>
       </div>
+      {isWarehouseStaff && (
+        <div className="rounded border border-info/30 bg-info/10 px-3 py-2 text-[11px] text-info">
+          Warehouse Staff require both a warehouse and shift assignment.
+        </div>
+      )}
+      {isWarehouseSupervisor && (
+        <div className="rounded border border-info/30 bg-info/10 px-3 py-2 text-[11px] text-info">
+          Warehouse Supervisors require a warehouse assignment. Shift assignment is optional.
+        </div>
+      )}
+      {protectedRole && (
+        <div className="rounded border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning">
+          {user?.is_bootstrap_admin
+            ? "The bootstrap role is protected. Its account may be deactivated only after another active System Administrator exists."
+            : "This administrator account cannot be demoted or disabled from User Management."}
+        </div>
+      )}
       <div className="flex justify-end gap-2 border-t border-border pt-3">
         <ToolbarButton icon={X} variant="secondary" onClick={onCancel} disabled={saving}>Cancel</ToolbarButton>
         <ToolbarButton icon={saving ? Loader2 : CheckCircle2} type="submit" disabled={saving || referenceLoading}>
@@ -1121,11 +1265,62 @@ function UserForm({ mode, user, roles, warehouses, shifts, referenceLoading, onC
   );
 }
 
+function ResetUserPasswordForm({ user, onCancel, onSave }) {
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setError("");
+
+    if (password !== confirmation) {
+      setError("Password confirmation does not match.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await onSave(password);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form className="space-y-3" onSubmit={handleSubmit}>
+      <div className="rounded border border-border bg-muted/20 px-3 py-3 text-xs">
+        <div className="font-semibold">{user?.full_name || user?.username}</div>
+        <div className="mt-1 text-muted-foreground">
+          Existing sessions will be closed and this temporary password must be changed at the next sign-in.
+        </div>
+      </div>
+      {error && <ErrorState message={error} />}
+      <FormField label="Temporary Password">
+        <input className={inputClass} type="password" value={password} onChange={(event) => setPassword(event.target.value)} required />
+        <span className="block text-[10px] font-normal leading-4 text-muted-foreground">
+          Minimum 8 characters, including uppercase, lowercase, number, and special character.
+        </span>
+      </FormField>
+      <FormField label="Confirm Temporary Password">
+        <input className={inputClass} type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} required />
+      </FormField>
+      <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <ToolbarButton variant="secondary" onClick={onCancel} disabled={saving}>Cancel</ToolbarButton>
+        <ToolbarButton icon={saving ? Loader2 : KeyRound} type="submit" disabled={saving}>
+          {saving ? "Resetting..." : "Reset Password"}
+        </ToolbarButton>
+      </div>
+    </form>
+  );
+}
+
 function RolesPermissionsPage() {
   const roles = useApiCollection(() => getRoles(), "roles-permissions");
-  const roleRows = roles.rows.length
-    ? roles.rows
-    : adminRoles.map((role) => ({ role_name: role, role_description: role === "System Admin" ? "Full access" : "Scoped operational access" }));
+  const roleRows = roles.rows;
 
   return (
     <>
@@ -1176,9 +1371,7 @@ function RolesPermissionsPage() {
 function ShiftAssignmentPage() {
   const shifts = useApiCollection(() => getShifts(), "shift-assignment");
   const users = useApiCollection(() => getUsers(), "shift-users");
-  const shiftRows = shifts.rows.length
-    ? shifts.rows
-    : shiftNames.map((shift) => ({ shift_name: shift }));
+  const shiftRows = shifts.rows;
 
   return (
     <>
@@ -1336,6 +1529,7 @@ function useWarehouseHierarchy() {
   const [selectedRack, setSelectedRack] = useState("");
   const [selectedLevel, setSelectedLevel] = useState("");
   const [error, setError] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
   const [loading, setLoading] = useState({
     zones: true,
     racks: false,
@@ -1364,7 +1558,7 @@ function useWarehouseHierarchy() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [refreshKey]);
 
   useEffect(() => {
     setRacks([]);
@@ -1394,7 +1588,7 @@ function useWarehouseHierarchy() {
     return () => {
       active = false;
     };
-  }, [selectedZone]);
+  }, [selectedZone, refreshKey]);
 
   useEffect(() => {
     setLevels([]);
@@ -1422,7 +1616,7 @@ function useWarehouseHierarchy() {
     return () => {
       active = false;
     };
-  }, [selectedRack]);
+  }, [selectedRack, refreshKey]);
 
   useEffect(() => {
     setBins([]);
@@ -1448,7 +1642,7 @@ function useWarehouseHierarchy() {
     return () => {
       active = false;
     };
-  }, [selectedLevel]);
+  }, [selectedLevel, refreshKey]);
 
   return {
     zones,
@@ -1461,45 +1655,268 @@ function useWarehouseHierarchy() {
     setSelectedZone,
     setSelectedRack,
     setSelectedLevel,
+    refresh: () => setRefreshKey((current) => current + 1),
     loading,
     error
   };
 }
 
-function ConfigActionDrawer({ action, onClose }) {
+function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
+  const [form, setForm] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!action) return;
+
+    const row = action.row || {};
+    setError("");
+    setForm({
+      zone_id: String(row.zone_id || hierarchy.selectedZone || ""),
+      rack_id: String(row.rack_id || hierarchy.selectedRack || ""),
+      level_id: String(row.level_id || hierarchy.selectedLevel || ""),
+      zone_code: row.zone_code || row.code || "",
+      zone_name: row.zone_name || row.name || "",
+      zone_type: row.zone_type || "Standard",
+      allowed_cargo_type: row.allowed_cargo_type || "",
+      description: row.description || "",
+      rack_code: row.rack_code || row.code || "",
+      name: row.rack_name || row.name || "",
+      level_code: row.level_code || row.code || "",
+      level_number: row.level_number || "",
+      bin_code: row.bin_code || row.code || "",
+      barcode: row.barcode || "",
+      max_weight: row.max_weight ?? "",
+      max_volume: row.max_volume ?? "",
+      reserved_for_cargo_type: row.reserved_for_cargo_type || ""
+    });
+  }, [action, hierarchy.selectedLevel, hierarchy.selectedRack, hierarchy.selectedZone]);
+
+  if (!action) return null;
+
+  const setField = (field, value) => {
+    setForm((current) => ({ ...current, [field]: value }));
+  };
+
+  const isStatusAction = action.kind === "status";
+  const actionLabel = action.kind === "create"
+    ? `Add ${scope.slice(0, -1).replace(/^./, (character) => character.toUpperCase())}`
+    : action.kind === "edit"
+      ? `Edit ${scope.slice(0, -1).replace(/^./, (character) => character.toUpperCase())}`
+      : `${action.status} ${scope === "bins" ? "Bin" : scope.slice(0, -1).replace(/^./, (character) => character.toUpperCase())}`;
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+
+    try {
+      const id = getRecordId(action.row, `${scope.slice(0, -1)}_id`);
+
+      if (isStatusAction) {
+        if (scope === "zones") await updateZoneStatus(id, action.status);
+        if (scope === "racks") await updateRackStatus(id, action.status);
+        if (scope === "levels") await updateLevelStatus(id, action.status);
+        if (scope === "bins") {
+          await updateBinStatus(id, action.status, form.reserved_for_cargo_type);
+        }
+      } else if (scope === "zones") {
+        const payload = {
+          zone_code: form.zone_code,
+          zone_name: form.zone_name,
+          zone_type: form.zone_type,
+          allowed_cargo_type: form.allowed_cargo_type,
+          description: form.description,
+          max_weight: form.max_weight,
+          max_volume: form.max_volume,
+          is_hazard_zone: form.zone_type === "Hazardous"
+        };
+        if (action.kind === "create") await createZone(payload);
+        else await updateZone(id, payload);
+      } else if (scope === "racks") {
+        const payload = {
+          zone_id: form.zone_id,
+          rack_code: form.rack_code,
+          name: form.name,
+          max_weight: form.max_weight,
+          max_volume: form.max_volume
+        };
+        if (action.kind === "create") await createRack(payload);
+        else await updateRack(id, payload);
+      } else if (scope === "levels") {
+        const payload = {
+          rack_id: form.rack_id,
+          level_code: form.level_code,
+          level_number: form.level_number,
+          max_weight: form.max_weight,
+          max_volume: form.max_volume
+        };
+        if (action.kind === "create") await createLevel(payload);
+        else await updateLevel(id, payload);
+      } else if (scope === "bins") {
+        const payload = {
+          level_id: form.level_id,
+          bin_code: form.bin_code,
+          barcode: form.barcode,
+          capacity_weight: form.max_weight,
+          capacity_volume: form.max_volume,
+          reserved_for_cargo_type: form.reserved_for_cargo_type
+        };
+        if (action.kind === "create") await createBin(payload);
+        else await updateBin(id, payload);
+      }
+
+      onSaved(`${actionLabel} completed successfully.`);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const statusDescription = action.status === "Inactive"
+    ? "This is a soft deactivation. The record remains in PostgreSQL and cannot be deactivated while it contains active stored cargo."
+    : action.status === "Blocked"
+      ? "Blocked bins remain visible but cannot receive cargo placement."
+      : action.status === "Reserved"
+        ? "Reserved bins cannot be used for normal cargo placement."
+        : "The record will become active and available only when its parent storage locations are active.";
+
   return (
-    <Drawer open={Boolean(action)} title={action || "Warehouse Action"} onClose={onClose}>
-      <div className="space-y-3">
-        <ActionPlaceholder
-          title="Configuration write pending"
-          body="This action panel is prepared for future configuration changes."
-        />
-        <div className="grid gap-3 md:grid-cols-2">
-          <FormField label="Code"><input className={inputClass} placeholder="Code" /></FormField>
-          <FormField label="Name / Label"><input className={inputClass} placeholder="Name or label" /></FormField>
-          <FormField label="Max Weight"><input className={inputClass} placeholder="kg" /></FormField>
-          <FormField label="Max Volume"><input className={inputClass} placeholder="m3" /></FormField>
-          <FormField label="Status">
-            <SelectField defaultValue="">
-              <option value="">Select status</option>
-              <option>Available</option>
-              <option>Reserved</option>
-              <option>Blocked</option>
-            </SelectField>
-          </FormField>
-          <FormField label="Reserved Cargo Type"><input className={inputClass} placeholder="Optional" /></FormField>
+    <Drawer open title={actionLabel} onClose={onClose}>
+      <form className="space-y-3" onSubmit={submit}>
+        {error && <ErrorState message={error} />}
+
+        {isStatusAction ? (
+          <>
+            <div className="rounded border border-border bg-muted/20 p-3 text-xs text-muted-foreground">
+              <div className="font-semibold text-foreground">
+                {scope === "bins" ? getBinCode(action.row) : readValue(action.row, [`${scope.slice(0, -1)}_code`, "code"])}
+              </div>
+              <div className="mt-1">{statusDescription}</div>
+            </div>
+            {scope === "bins" && action.status === "Reserved" && (
+              <FormField label="Reservation note / cargo type">
+                <input
+                  className={inputClass}
+                  value={form.reserved_for_cargo_type || ""}
+                  onChange={(event) => setField("reserved_for_cargo_type", event.target.value)}
+                  placeholder="Optional administrative note"
+                />
+              </FormField>
+            )}
+          </>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-2">
+            {scope === "zones" && (
+              <>
+                <FormField label="Zone Code">
+                  <input className={inputClass} value={form.zone_code || ""} onChange={(event) => setField("zone_code", event.target.value)} placeholder="Z-A" required />
+                </FormField>
+                <FormField label="Zone Name">
+                  <input className={inputClass} value={form.zone_name || ""} onChange={(event) => setField("zone_name", event.target.value)} required />
+                </FormField>
+                <FormField label="Zone Type">
+                  <SelectField value={form.zone_type || "Standard"} onChange={(value) => setField("zone_type", value)}>
+                    <option value="Standard">Standard</option>
+                    <option value="Hazardous">Hazardous</option>
+                    <option value="Controlled">Controlled</option>
+                  </SelectField>
+                </FormField>
+                <FormField label="Allowed Cargo Type">
+                  <input className={inputClass} value={form.allowed_cargo_type || ""} onChange={(event) => setField("allowed_cargo_type", event.target.value)} required />
+                </FormField>
+                <FormField label="Description">
+                  <input className={inputClass} value={form.description || ""} onChange={(event) => setField("description", event.target.value)} />
+                </FormField>
+              </>
+            )}
+
+            {scope === "racks" && (
+              <>
+                <FormField label="Parent Zone">
+                  <SelectField value={form.zone_id || ""} onChange={(value) => setField("zone_id", value)} required>
+                    <option value="">Select zone</option>
+                    {hierarchy.zones.map((zone) => (
+                      <option key={getRecordId(zone, "zone_id")} value={getRecordId(zone, "zone_id")}>{getZoneLabel(zone)}</option>
+                    ))}
+                  </SelectField>
+                </FormField>
+                <FormField label="Rack Code">
+                  <input className={inputClass} value={form.rack_code || ""} onChange={(event) => setField("rack_code", event.target.value)} placeholder="R-A01" required />
+                </FormField>
+                <FormField label="Rack Name">
+                  <input className={inputClass} value={form.name || ""} onChange={(event) => setField("name", event.target.value)} />
+                </FormField>
+              </>
+            )}
+
+            {scope === "levels" && (
+              <>
+                <FormField label="Parent Rack">
+                  <SelectField value={form.rack_id || ""} onChange={(value) => setField("rack_id", value)} required>
+                    <option value="">Select rack</option>
+                    {hierarchy.racks.map((rack) => (
+                      <option key={getRecordId(rack, "rack_id")} value={getRecordId(rack, "rack_id")}>{getRackCode(rack)}</option>
+                    ))}
+                  </SelectField>
+                </FormField>
+                <FormField label="Level Code">
+                  <input className={inputClass} value={form.level_code || ""} onChange={(event) => setField("level_code", event.target.value)} placeholder="L1" required />
+                </FormField>
+                <FormField label="Level Number">
+                  <input className={inputClass} type="number" min="1" step="1" value={form.level_number || ""} onChange={(event) => setField("level_number", event.target.value)} required />
+                </FormField>
+              </>
+            )}
+
+            {scope === "bins" && (
+              <>
+                <FormField label="Parent Level">
+                  <SelectField value={form.level_id || ""} onChange={(value) => setField("level_id", value)} required>
+                    <option value="">Select level</option>
+                    {hierarchy.levels.map((level) => (
+                      <option key={getRecordId(level, "level_id")} value={getRecordId(level, "level_id")}>{getLevelCode(level)}</option>
+                    ))}
+                  </SelectField>
+                </FormField>
+                <FormField label="Bin Code">
+                  <input className={inputClass} value={form.bin_code || ""} onChange={(event) => setField("bin_code", event.target.value)} placeholder="BIN-A01-L2-03" required />
+                </FormField>
+                <FormField label="Barcode">
+                  <input className={inputClass} value={form.barcode || ""} onChange={(event) => setField("barcode", event.target.value)} placeholder="BIN-A01-L2-03" required />
+                </FormField>
+                <FormField label="Reservation Note">
+                  <input className={inputClass} value={form.reserved_for_cargo_type || ""} onChange={(event) => setField("reserved_for_cargo_type", event.target.value)} placeholder="Optional" />
+                </FormField>
+              </>
+            )}
+
+            <FormField label="Max Weight (kg)">
+              <input className={inputClass} type="number" min="0" step="0.01" value={form.max_weight ?? ""} onChange={(event) => setField("max_weight", event.target.value)} required />
+            </FormField>
+            <FormField label="Max Volume (m3)">
+              <input className={inputClass} type="number" min="0" step="0.01" value={form.max_volume ?? ""} onChange={(event) => setField("max_volume", event.target.value)} required />
+            </FormField>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 border-t border-border pt-3">
+          <ToolbarButton variant="secondary" onClick={onClose} disabled={saving}>Cancel</ToolbarButton>
+          <ToolbarButton icon={saving ? Loader2 : CheckCircle2} type="submit" disabled={saving}>
+            {saving ? "Saving..." : actionLabel}
+          </ToolbarButton>
         </div>
-        <div className="flex justify-end border-t border-border pt-3">
-          <ToolbarButton icon={CheckCircle2} disabled>Save Configuration</ToolbarButton>
-        </div>
-      </div>
+      </form>
     </Drawer>
   );
 }
 
 function WarehouseConfigPage({ scope }) {
   const hierarchy = useWarehouseHierarchy();
-  const [action, setAction] = useState("");
+  const [action, setAction] = useState(null);
+  const [binStatusFilter, setBinStatusFilter] = useState("");
+  const [generating, setGenerating] = useState(false);
   const config = {
     zones: {
       title: "Zones",
@@ -1543,40 +1960,108 @@ function WarehouseConfigPage({ scope }) {
     }
   }[scope];
 
-  const baseColumns = [
-    {
-      key: "code",
-      label: scope === "zones" ? "Zone" : scope === "racks" ? "Rack" : "Level",
-      render: (row) => {
-        if (scope === "zones") return getZoneLabel(row);
-        if (scope === "racks") return getRackCode(row) || "No rack data";
-        return getLevelCode(row) || "No level data";
-      },
-      className: "font-mono font-semibold"
-    },
-    { key: "capacity", label: "Capacity", render: (row) => formatCapacity(row) },
-    { key: "occupancy", label: "Occupancy", render: (row) => formatOccupancy(row) },
-    { key: "available_bins", label: "Available Bins", render: (row) => formatCount(row.available_bins) },
-    { key: "blocked_bins", label: "Blocked Bins", render: (row) => formatCount(row.blocked_bins) },
-    { key: "reserved_bins", label: "Reserved Bins", render: (row) => formatCount(row.reserved_bins) },
-    { key: "status", label: "Status", render: (row) => <StatusBadge tone={row.active === false ? "destructive" : "success"}>{row.active === false ? "Inactive" : "Active"}</StatusBadge> }
-  ];
+  const actionButtonClass = "rounded border border-border bg-background px-2 py-1 text-[10px] font-semibold hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50";
 
-  const binColumns = [
-    { key: "barcode", label: "Bin Barcode", render: (row) => getBinCode(row), className: "font-mono font-semibold" },
-    { key: "status", label: "Status", render: (row) => <StatusBadge tone={statusTone(row.status)}>{row.status || "No data"}</StatusBadge> },
-    { key: "location", label: "Hierarchy", render: (row) => `${row.zone_code || "No zone"} / ${row.rack_code || "No rack"} / ${row.level_code || "No level"}` },
-    { key: "capacity", label: "Capacity", render: (row) => formatCapacity(row) },
-    { key: "occupancy", label: "Occupancy", render: (row) => formatOccupancy(row) },
-    { key: "reserved_for_cargo_type", label: "Reserved For", render: (row) => row.reserved_for_cargo_type || "Not reserved" }
-  ];
+  const hierarchyActions = (row) => (
+    <div className="flex flex-wrap gap-1">
+      <button className={actionButtonClass} type="button" onClick={() => setAction({ kind: "edit", row })}>Edit</button>
+      <button
+        className={actionButtonClass}
+        type="button"
+        onClick={() => setAction({ kind: "status", row, status: row.active === false ? "Active" : "Inactive" })}
+      >
+        {row.active === false ? "Activate" : "Deactivate"}
+      </button>
+    </div>
+  );
+
+  const columnsByScope = {
+    zones: [
+      { key: "zone_code", label: "Code", render: (row) => row.zone_code, className: "font-mono font-semibold" },
+      { key: "zone_name", label: "Zone Name", render: (row) => row.zone_name },
+      { key: "allowed_cargo_type", label: "Allowed Cargo", render: (row) => row.allowed_cargo_type },
+      { key: "max_weight", label: "Max Weight", render: (row) => formatMeasure(row.max_weight, "kg") },
+      { key: "max_volume", label: "Max Volume", render: (row) => formatMeasure(row.max_volume, "m3") },
+      { key: "rack_total", label: "Racks", render: (row) => formatCount(row.rack_total) },
+      { key: "bin_total", label: "Bins", render: (row) => formatCount(row.bin_total) },
+      { key: "occupancy", label: "Occupancy", render: (row) => formatOccupancy(row) },
+      { key: "status", label: "Status", render: (row) => <StatusBadge tone={row.active ? "success" : "destructive"}>{row.status}</StatusBadge> },
+      { key: "actions", label: "Actions", render: hierarchyActions }
+    ],
+    racks: [
+      { key: "rack_code", label: "Rack", render: (row) => row.rack_code, className: "font-mono font-semibold" },
+      { key: "zone", label: "Parent Zone", render: (row) => `${row.zone_code} - ${row.zone_name}` },
+      { key: "max_weight", label: "Max Weight", render: (row) => formatMeasure(row.max_weight, "kg") },
+      { key: "max_volume", label: "Max Volume", render: (row) => formatMeasure(row.max_volume, "m3") },
+      { key: "level_total", label: "Levels", render: (row) => formatCount(row.level_total) },
+      { key: "bin_total", label: "Bins", render: (row) => formatCount(row.bin_total) },
+      { key: "status", label: "Status", render: (row) => <StatusBadge tone={row.active ? "success" : "destructive"}>{row.status}</StatusBadge> },
+      { key: "actions", label: "Actions", render: hierarchyActions }
+    ],
+    levels: [
+      { key: "level_code", label: "Level", render: (row) => row.level_code, className: "font-mono font-semibold" },
+      { key: "zone", label: "Parent Zone", render: (row) => row.zone_code },
+      { key: "rack", label: "Parent Rack", render: (row) => row.rack_code },
+      { key: "max_weight", label: "Max Weight", render: (row) => formatMeasure(row.max_weight, "kg") },
+      { key: "max_volume", label: "Max Volume", render: (row) => formatMeasure(row.max_volume, "m3") },
+      { key: "bin_total", label: "Bins", render: (row) => formatCount(row.bin_total) },
+      { key: "status", label: "Status", render: (row) => <StatusBadge tone={row.active ? "success" : "destructive"}>{row.status}</StatusBadge> },
+      { key: "actions", label: "Actions", render: hierarchyActions }
+    ],
+    bins: [
+      { key: "bin_code", label: "Bin Code", render: (row) => row.bin_code, className: "font-mono font-semibold" },
+      { key: "barcode", label: "Barcode", className: "font-mono" },
+      { key: "zone", label: "Zone", render: (row) => row.zone_code },
+      { key: "rack", label: "Rack", render: (row) => row.rack_code },
+      { key: "level", label: "Level", render: (row) => row.level_code },
+      { key: "capacity_weight", label: "Capacity Weight", render: (row) => formatMeasure(row.capacity_weight, "kg") },
+      { key: "capacity_volume", label: "Capacity Volume", render: (row) => formatMeasure(row.capacity_volume, "m3") },
+      { key: "current_weight", label: "Current Weight", render: (row) => formatMeasure(row.current_weight, "kg") },
+      { key: "current_volume", label: "Current Volume", render: (row) => formatMeasure(row.current_volume, "m3") },
+      { key: "status", label: "Status", render: (row) => <StatusBadge tone={statusTone(row.status)}>{row.status}</StatusBadge> },
+      { key: "active", label: "Active", render: (row) => <StatusBadge tone={row.active ? "success" : "destructive"}>{row.active ? "Active" : "Inactive"}</StatusBadge> },
+      {
+        key: "actions",
+        label: "Actions",
+        render: (row) => (
+          <div className="flex min-w-[180px] flex-wrap gap-1">
+            <button className={actionButtonClass} type="button" onClick={() => setAction({ kind: "edit", row })}>Edit</button>
+            <button className={actionButtonClass} type="button" disabled={!row.active || row.status === "Blocked"} onClick={() => setAction({ kind: "status", row, status: "Blocked" })}>Block</button>
+            <button className={actionButtonClass} type="button" disabled={!row.active || row.status === "Reserved"} onClick={() => setAction({ kind: "status", row, status: "Reserved" })}>Reserve</button>
+            <button className={actionButtonClass} type="button" disabled={row.active && row.status === "Available"} onClick={() => setAction({ kind: "status", row, status: "Available" })}>Activate</button>
+            <button className={actionButtonClass} type="button" disabled={!row.active} onClick={() => setAction({ kind: "status", row, status: "Inactive" })}>Deactivate</button>
+          </div>
+        )
+      }
+    ]
+  };
 
   const emptyTitle = {
-    zones: "No zones loaded",
+    zones: "No warehouse structure configured yet.",
     racks: hierarchy.selectedZone ? "No racks loaded" : "Select a zone to load racks",
     levels: hierarchy.selectedRack ? "No levels loaded" : "Select a zone and rack to load levels",
     bins: hierarchy.selectedLevel ? "No bins loaded" : "Select a zone, rack, and level to load bins"
   }[scope];
+
+  const visibleRows = scope === "bins" && binStatusFilter
+    ? config.rows.filter((row) => row.status === binStatusFilter)
+    : config.rows;
+
+  const handleGenerate = async () => {
+    setGenerating(true);
+    try {
+      const response = await generateDefaultWarehouseStructure();
+      const summary = response.data || {};
+      toast.success(response.message, {
+        description: `${summary.zones_created || 0} zones, ${summary.racks_created || 0} racks, ${summary.levels_created || 0} levels, and ${summary.bins_created || 0} bins created.`
+      });
+      hierarchy.refresh();
+    } catch (err) {
+      toast.error("Default structure could not be generated.", { description: getErrorMessage(err) });
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   return (
     <>
@@ -1586,13 +2071,17 @@ function WarehouseConfigPage({ scope }) {
         description={config.description}
         action={
           <div className="flex flex-wrap gap-2">
-            <ToolbarButton icon={Plus} onClick={() => setAction(config.addAction)}>{config.addAction}</ToolbarButton>
-            <ToolbarButton icon={Ruler} variant="secondary" onClick={() => setAction("Edit Capacity")}>Edit Capacity</ToolbarButton>
-            {scope === "bins" && (
-              <>
-                <ToolbarButton icon={Ban} variant="warning" onClick={() => setAction("Block Bin")}>Block Bin</ToolbarButton>
-                <ToolbarButton icon={LockKeyhole} variant="secondary" onClick={() => setAction("Reserve Bin")}>Reserve Bin</ToolbarButton>
-              </>
+            <ToolbarButton
+              icon={Plus}
+              onClick={() => setAction({ kind: "create" })}
+              disabled={(scope === "racks" && !hierarchy.selectedZone) || (scope === "levels" && !hierarchy.selectedRack) || (scope === "bins" && !hierarchy.selectedLevel)}
+            >
+              {config.addAction}
+            </ToolbarButton>
+            {scope === "zones" && (
+              <ToolbarButton icon={generating ? Loader2 : RefreshCw} variant="secondary" onClick={handleGenerate} disabled={generating}>
+                {generating ? "Generating..." : "Generate Default Structure"}
+              </ToolbarButton>
             )}
           </div>
         }
@@ -1615,21 +2104,47 @@ function WarehouseConfigPage({ scope }) {
                 needLevel={config.needLevel}
                 loading={hierarchy.loading}
               />
+              {scope === "bins" && (
+                <div className="mt-3 max-w-xs">
+                  <FormField label="Bin Status">
+                    <SelectField value={binStatusFilter} onChange={setBinStatusFilter}>
+                      <option value="">All statuses</option>
+                      <option value="Available">Available</option>
+                      <option value="Occupied">Occupied</option>
+                      <option value="Reserved">Reserved</option>
+                      <option value="Blocked">Blocked</option>
+                      <option value="Inactive">Inactive</option>
+                    </SelectField>
+                  </FormField>
+                </div>
+              )}
             </SectionCard>
           )}
           <SectionCard title={`${config.title} Structure`} icon={config.icon}>
             <DataTable
-              rows={config.rows}
+              rows={visibleRows}
               loading={config.loading}
               error={hierarchy.error}
               emptyTitle={emptyTitle}
-              emptyBody="Warehouse configuration records will appear when storage areas are configured."
-              columns={scope === "bins" ? binColumns : baseColumns}
+              emptyBody={scope === "zones"
+                ? "Use \"Generate Default Structure\" to create the official Fumba Port layout."
+                : "Warehouse configuration records will appear when the parent storage area is selected."}
+              columns={columnsByScope[scope]}
             />
           </SectionCard>
         </div>
       </div>
-      <ConfigActionDrawer action={action} onClose={() => setAction("")} />
+      <WarehouseConfigDrawer
+        action={action}
+        scope={scope}
+        hierarchy={hierarchy}
+        onClose={() => setAction(null)}
+        onSaved={(message) => {
+          toast.success(message);
+          setAction(null);
+          hierarchy.refresh();
+        }}
+      />
     </>
   );
 }
@@ -1735,7 +2250,7 @@ function CapacityTable({ title, icon, rows, loading, error, label, labelRenderer
 function CargoFilters({ filters, setFilters }) {
   return (
     <SectionCard title="Cargo Filters" icon={Filter}>
-      <div className="grid gap-3 md:grid-cols-4">
+      <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
         <FormField label="Cargo status">
           <SelectField value={filters.status} onChange={(value) => setFilters((current) => ({ ...current, status: value }))}>
             <option>All statuses</option>
@@ -1751,25 +2266,169 @@ function CargoFilters({ filters, setFilters }) {
         <FormField label="Cargo type">
           <input className={inputClass} value={filters.cargoType} onChange={(event) => setFilters((current) => ({ ...current, cargoType: event.target.value }))} placeholder="Cargo type" />
         </FormField>
+        <FormField label="Consignee">
+          <input className={inputClass} value={filters.consignee} onChange={(event) => setFilters((current) => ({ ...current, consignee: event.target.value }))} placeholder="Consignee" />
+        </FormField>
+        <FormField label="Barcode">
+          <input className={inputClass} value={filters.barcode} onChange={(event) => setFilters((current) => ({ ...current, barcode: event.target.value }))} placeholder="Cargo barcode" />
+        </FormField>
       </div>
     </SectionCard>
   );
 }
 
+function CargoApprovalOverridesPage() {
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [busyId, setBusyId] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [selectedApproval, setSelectedApproval] = useState(null);
+  const [actionMode, setActionMode] = useState("");
+  const [rejectionConditions, setRejectionConditions] = useState([]);
+  const approvals = useApiCollection(
+    () => getSupervisorApprovals({ status: "Pending", request_type: "CARGO_REGISTRATION" }),
+    `admin-cargo-approvals-${refreshKey}`
+  );
+
+  useEffect(() => {
+    getSupervisorReviewConfiguration()
+      .then((response) => setRejectionConditions(response.data?.rejection_conditions || []))
+      .catch((error) => setActionError(getErrorMessage(error)));
+  }, []);
+
+  const decide = async (payload) => {
+    if (!selectedApproval || !actionMode) return;
+    setActionError("");
+    setBusyId(`${actionMode}-${selectedApproval.id}`);
+    try {
+      if (actionMode === "approve") {
+        await approveSupervisorApproval(selectedApproval.id, payload);
+      } else {
+        await rejectSupervisorApproval(selectedApproval.id, payload);
+      }
+      setRefreshKey((current) => current + 1);
+      setSelectedApproval(null);
+      setActionMode("");
+    } catch (error) {
+      setActionError(getErrorMessage(error));
+    } finally {
+      setBusyId("");
+    }
+  };
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Cargo Oversight"
+        title="Approval Overrides"
+        description="Administrative override authority for pending cargo registrations. Routine approvals remain a Warehouse Supervisor responsibility."
+      />
+      <div className="flex-1 overflow-auto p-4">
+        {actionError && <ErrorState message={actionError} />}
+        <SectionCard title="Pending Registration Approvals" icon={ShieldCheck}>
+          <DataTable
+            loading={approvals.loading}
+            error={approvals.error}
+            rows={approvals.rows}
+            emptyTitle="No cargo registrations require an override"
+            columns={[
+              { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
+              { key: "cargo_barcode", label: "Barcode", className: "font-mono" },
+              { key: "consignee_name", label: "Consignee" },
+              { key: "cargo_type", label: "Cargo Type" },
+              { key: "registered_by_name", label: "Registered By", render: (row) => row.registered_by_name || "System" },
+              { key: "registration_date", label: "Registered", render: (row) => formatDateTime(row.registration_date) },
+              {
+                key: "actions",
+                label: "Override",
+                render: (row) => (
+                  <div className="flex gap-2">
+                    <button
+                      disabled={Boolean(busyId)}
+                      onClick={() => {
+                        setSelectedApproval(row);
+                        setActionMode("approve");
+                      }}
+                      className="rounded bg-success px-2 py-1 text-[11px] font-semibold text-success-foreground"
+                    >
+                      Force Approve
+                    </button>
+                    <button
+                      disabled={Boolean(busyId)}
+                      onClick={() => {
+                        setSelectedApproval(row);
+                        setActionMode("reject");
+                      }}
+                      className="rounded bg-destructive px-2 py-1 text-[11px] font-semibold text-destructive-foreground"
+                    >
+                      Force Reject
+                    </button>
+                  </div>
+                )
+              }
+            ]}
+          />
+        </SectionCard>
+      </div>
+      <ReviewActionModal
+        open={Boolean(selectedApproval && actionMode)}
+        mode={actionMode}
+        cargo={selectedApproval}
+        busy={Boolean(busyId)}
+        apiError={actionError}
+        rejectionConditions={rejectionConditions}
+        subjectLabel="Administrative Cargo Override"
+        onClose={() => {
+          if (!busyId) {
+            setSelectedApproval(null);
+            setActionMode("");
+            setActionError("");
+          }
+        }}
+        onSubmit={decide}
+      />
+    </>
+  );
+}
+
 function CargoRecordsPage({ mode = "records" }) {
-  const statusParam = mode === "blocked" ? "Blocked" : undefined;
-  const cargo = useApiCollection(() => getCargo(statusParam ? { status: statusParam } : {}), `cargo-${statusParam || "all"}`);
-  const [filters, setFilters] = useState({ status: "All statuses", warehouse: "", date: "", cargoType: "" });
+  const cargo = useApiCollection(
+    () => getCargo({ include_archived: "true" }),
+    `cargo-${mode}`
+  );
+  const [filters, setFilters] = useState({ status: "All statuses", warehouse: "", date: "", cargoType: "", consignee: "", barcode: "" });
+  const [selectedCargoId, setSelectedCargoId] = useState("");
+  const [selectedCargo, setSelectedCargo] = useState(null);
+  const [detailError, setDetailError] = useState("");
 
   const rows = useMemo(() => {
     return cargo.rows.filter((record) => {
       const status = cargoOperationalStatus(record);
-      const statusMatch = filters.status === "All statuses" || status === filters.status;
+      const statusMatch = filters.status === "All statuses"
+        || status === filters.status
+        || record.placement_status === filters.status;
+      const modeMatch = mode !== "blocked" || record.relocation_required;
       const typeMatch = !filters.cargoType || record.cargo_type?.toLowerCase().includes(filters.cargoType.toLowerCase());
       const dateMatch = !filters.date || String(record.created_at || record.received_datetime || "").startsWith(filters.date);
-      return statusMatch && typeMatch && dateMatch;
+      const warehouseMatch = !filters.warehouse || [
+        record.warehouse_name,
+        record.warehouse_code
+      ].filter(Boolean).some((value) => String(value).toLowerCase().includes(filters.warehouse.toLowerCase()));
+      const consigneeMatch = !filters.consignee || record.consignee_name?.toLowerCase().includes(filters.consignee.toLowerCase());
+      const barcodeMatch = !filters.barcode || record.barcode?.toLowerCase().includes(filters.barcode.toLowerCase());
+      return modeMatch && statusMatch && typeMatch && dateMatch && warehouseMatch && consigneeMatch && barcodeMatch;
     });
-  }, [cargo.rows, filters]);
+  }, [cargo.rows, filters, mode]);
+
+  useEffect(() => {
+    if (!selectedCargoId) {
+      setSelectedCargo(null);
+      setDetailError("");
+      return;
+    }
+    getCargoById(selectedCargoId)
+      .then((response) => setSelectedCargo(response.data))
+      .catch((error) => setDetailError(getErrorMessage(error)));
+  }, [selectedCargoId]);
 
   const config = {
     records: {
@@ -1806,13 +2465,67 @@ function CargoRecordsPage({ mode = "records" }) {
                 { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
                 { key: "barcode", label: "Barcode", className: "font-mono text-muted-foreground" },
                 { key: "cargo_type", label: "Cargo Type", render: (row) => row.cargo_type || "No data" },
-                { key: "warehouse", label: "Warehouse", render: () => "Warehouse context not loaded" },
+                { key: "warehouse", label: "Warehouse", render: (row) => row.warehouse_code ? `${row.warehouse_code} - ${row.warehouse_name}` : "Not assigned" },
                 { key: "status", label: "Status", render: (row) => <StatusBadge tone={statusTone(cargoOperationalStatus(row))}>{cargoOperationalStatus(row)}</StatusBadge> },
+                { key: "placement_status", label: "Placement Status", render: (row) => row.placement_status || "Unassigned" },
                 { key: "location", label: "Current Location", render: (row) => row.location || "Not assigned" },
-                { key: "updated_at", label: "Updated", render: (row) => formatDateTime(row.updated_at) }
+                { key: "updated_at", label: "Updated", render: (row) => formatDateTime(row.updated_at) },
+                ...(mode === "tracking" ? [{
+                  key: "details",
+                  label: "Details",
+                  render: (row) => (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedCargoId(String(row.id))}
+                      className="rounded border border-info/30 bg-info/10 px-2 py-1 text-[11px] font-semibold text-info"
+                    >
+                      View History
+                    </button>
+                  )
+                }] : [])
               ]}
             />
           </SectionCard>
+          {mode === "tracking" && detailError && <ErrorState message={detailError} />}
+          {mode === "tracking" && selectedCargo && (
+            <div className="grid gap-3 xl:grid-cols-2">
+              <SectionCard title={`Current Location: ${selectedCargo.cargo_id}`} icon={Warehouse}>
+                <div className="grid gap-2 text-xs sm:grid-cols-2">
+                  <ReadonlyValue label="Zone" value={selectedCargo.zone_code || "Unassigned"} />
+                  <ReadonlyValue label="Rack" value={selectedCargo.rack_code || "Unassigned"} />
+                  <ReadonlyValue label="Level" value={selectedCargo.level_code || "Unassigned"} />
+                  <ReadonlyValue label="Bin" value={selectedCargo.bin_barcode || "Unassigned"} />
+                  <ReadonlyValue label="Registration Status" value={selectedCargo.registration_status} />
+                  <ReadonlyValue label="Placement Status" value={selectedCargo.placement_status || "Unassigned"} />
+                </div>
+              </SectionCard>
+              <SectionCard title="Movement History" icon={Activity}>
+                <DataTable
+                  rows={selectedCargo.movement_history || []}
+                  emptyTitle="No movement history recorded"
+                  columns={[
+                    { key: "created_at", label: "Time", render: (row) => formatDateTime(row.created_at) },
+                    { key: "from_location", label: "From", render: (row) => row.from_location || "Receiving" },
+                    { key: "to_location", label: "To", render: (row) => row.to_location || "Not assigned" },
+                    { key: "moved_by", label: "Moved By" },
+                    { key: "action", label: "Action" }
+                  ]}
+                />
+              </SectionCard>
+              <SectionCard title="Approval Workflow History" icon={ClipboardCheck}>
+                <DataTable
+                  rows={selectedCargo.approval_history || []}
+                  emptyTitle="No approval workflow history recorded"
+                  columns={[
+                    { key: "performed_at", label: "Time", render: (row) => formatDateTime(row.performed_at) },
+                    { key: "action", label: "Action" },
+                    { key: "performed_by_name", label: "Performed By", render: (row) => row.performed_by_name || row.performed_by_username || "System" },
+                    { key: "remarks", label: "Remarks", render: (row) => row.remarks || "No remarks" }
+                  ]}
+                />
+              </SectionCard>
+            </div>
+          )}
         </div>
       </div>
     </>
@@ -1876,13 +2589,13 @@ function DispatchOversightPage({ mode }) {
     queue: {
       title: "Dispatch Queue",
       description: "Readonly cargo awaiting dispatch release.",
-      status: "Ready for Dispatch",
+      status: "",
       emptyTitle: "No dispatch queue records loaded"
     },
     released: {
       title: "Released Cargo",
       description: "Readonly cargo released from the warehouse.",
-      status: "Released",
+      status: "Dispatched",
       emptyTitle: "No released cargo loaded"
     },
     gate: {
@@ -1893,7 +2606,12 @@ function DispatchOversightPage({ mode }) {
     }
   }[mode];
 
-  const cargo = useApiCollection(() => config.status ? getCargo({ status: config.status }) : Promise.resolve({ data: [] }), `dispatch-${config.status || "gate"}`);
+  const cargo = useApiCollection(() => getCargo(config.status ? { status: config.status } : {}), `dispatch-${mode}`);
+  const rows = mode === "queue"
+    ? cargo.rows.filter((record) => record.dispatch_authorization_status === "Pending")
+    : mode === "gate"
+      ? cargo.rows.filter((record) => record.dispatch_authorization_status === "Approved")
+      : cargo.rows;
 
   return (
     <>
@@ -1903,14 +2621,14 @@ function DispatchOversightPage({ mode }) {
           <DataTable
             loading={cargo.loading}
             error={cargo.error}
-            rows={cargo.rows}
+            rows={rows}
             emptyTitle={config.emptyTitle}
             emptyBody="Dispatch supervision records will appear when dispatch data is available."
             columns={[
               { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
               { key: "barcode", label: "Barcode", className: "font-mono text-muted-foreground" },
               { key: "location", label: "Storage Location", render: (row) => row.location || "Not assigned" },
-              { key: "status", label: "Status", render: (row) => <StatusBadge tone={statusTone(row.status)}>{row.status || "No status"}</StatusBadge> },
+              { key: "status", label: "Placement", render: (row) => <StatusBadge tone={statusTone(row.placement_status)}>{row.placement_status || "No status"}</StatusBadge> },
               { key: "updated_at", label: "Updated", render: (row) => formatDateTime(row.updated_at) }
             ]}
           />
@@ -1920,19 +2638,28 @@ function DispatchOversightPage({ mode }) {
   );
 }
 
-function ValidationLogsPage({ logs: providedLogs } = {}) {
+function ValidationLogsPage({ logs: providedLogs, mode = "validation" } = {}) {
   const ownLogs = useApiCollection(() => getPlacementLogs(), "placement-logs");
   const logs = providedLogs || ownLogs;
+  const content = mode === "placement"
+    ? {
+      title: "Placement Logs",
+      description: "Readonly placement validation and scanner records for warehouse operations."
+    }
+    : {
+      title: "Validation Logs",
+      description: "Operational log table for invalid barcodes, rejected placements, hazardous mismatch, capacity exceeded, and blocked storage areas."
+    };
 
   return (
     <>
       <PageHeader
         eyebrow="Operational Review"
-        title="Validation Logs"
-        description="Operational log table for invalid barcodes, rejected placements, hazardous mismatch, capacity exceeded, and blocked storage areas."
+        title={content.title}
+        description={content.description}
       />
       <div className="flex-1 overflow-auto p-4">
-        <SectionCard title="Operational Validation Logs" icon={FileWarning}>
+        <SectionCard title={content.title} icon={mode === "placement" ? ScanLine : FileWarning}>
           <DataTable
             loading={logs.loading}
             error={logs.error}
@@ -1955,7 +2682,14 @@ function ValidationLogsPage({ logs: providedLogs } = {}) {
 }
 
 function AuditPage({ mode }) {
-  const logs = useApiCollection(() => getAuditLogs({ limit: 200 }), `audit-logs-${mode}`);
+  const [filters, setFilters] = useState(emptyAuditFilters);
+  const [appliedFilters, setAppliedFilters] = useState(emptyAuditFilters);
+  const filterKey = JSON.stringify(appliedFilters);
+  const logs = useApiCollection(
+    () => getAuditLogs({ limit: 200, ...appliedFilters }),
+    `audit-logs-${mode}-${filterKey}`
+  );
+  const roles = useApiCollection(() => getRoles(), "audit-role-filter");
   const sessions = useApiCollection(() => getUserSessions(), `audit-sessions-${mode}`);
   const config = {
     logs: {
@@ -1963,7 +2697,7 @@ function AuditPage({ mode }) {
       description: "Readonly audit trail for administrative and operational modules."
     },
     activity: {
-      title: "User Activity",
+      title: "Activity Logs",
       description: "Readonly user activity monitoring by module and action."
     },
     sessions: {
@@ -1971,14 +2705,21 @@ function AuditPage({ mode }) {
       description: "Readonly session monitoring for account access."
     },
     security: {
-      title: "Security Events",
+      title: "Security Logs",
       description: "Readonly security event monitoring for the WMS."
+    },
+    system: {
+      title: "System Logs",
+      description: "Readonly system-wide administrative and operational audit records."
     }
   }[mode];
 
   const auditColumns = [
     { key: "created_at", label: "Timestamp", render: (row) => formatDateTime(row.created_at), className: "font-mono text-muted-foreground" },
-    { key: "user", label: "User", render: (row) => row.full_name || row.username || "System" },
+    { key: "user", label: "Acting User", render: (row) => row.full_name || row.username || "System" },
+    { key: "role_name", label: "Role", render: (row) => row.role_name || "System" },
+    { key: "warehouse", label: "Warehouse", render: (row) => row.warehouse_name || row.warehouse_code || "Not assigned" },
+    { key: "target_user", label: "Target User", render: (row) => row.target_full_name || row.target_username || "Not applicable" },
     { key: "action", label: "Action", className: "font-mono font-semibold" },
     { key: "module", label: "Module" },
     { key: "description", label: "Description", render: (row) => row.description || "No description recorded" }
@@ -2012,6 +2753,62 @@ function AuditPage({ mode }) {
     <>
       <PageHeader eyebrow="Audit & Security" title={config.title} description={config.description} />
       <div className="flex-1 overflow-auto p-4">
+        {mode !== "sessions" && (
+          <SectionCard title="Log Filters" icon={Filter}>
+            <form
+              className="grid gap-3 md:grid-cols-2 xl:grid-cols-5"
+              onSubmit={(event) => {
+                event.preventDefault();
+                setAppliedFilters(filters);
+              }}
+            >
+              <FormField label="User">
+                <input className={inputClass} value={filters.user} onChange={(event) => setFilters((current) => ({ ...current, user: event.target.value }))} placeholder="Name, username, or ID" />
+              </FormField>
+              <FormField label="Role">
+                <SelectField value={filters.role} onChange={(value) => setFilters((current) => ({ ...current, role: value }))}>
+                  <option value="">All roles</option>
+                  {roles.rows.map((role) => <option key={role.id} value={role.role_name}>{role.role_name}</option>)}
+                </SelectField>
+              </FormField>
+              <FormField label="Action">
+                <input className={inputClass} value={filters.action} onChange={(event) => setFilters((current) => ({ ...current, action: event.target.value }))} placeholder="Action code" />
+              </FormField>
+              <FormField label="Module">
+                <input className={inputClass} value={filters.module} onChange={(event) => setFilters((current) => ({ ...current, module: event.target.value }))} placeholder="Module name" />
+              </FormField>
+              <FormField label="Status">
+                <input className={inputClass} value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))} placeholder="Status or result" />
+              </FormField>
+              <FormField label="Cargo ID">
+                <input className={inputClass} value={filters.cargo_id} onChange={(event) => setFilters((current) => ({ ...current, cargo_id: event.target.value }))} placeholder="Cargo identifier" />
+              </FormField>
+              <FormField label="Warehouse">
+                <input className={inputClass} value={filters.warehouse} onChange={(event) => setFilters((current) => ({ ...current, warehouse: event.target.value }))} placeholder="Name or code" />
+              </FormField>
+              <FormField label="From Date">
+                <input type="date" className={inputClass} value={filters.date_from} onChange={(event) => setFilters((current) => ({ ...current, date_from: event.target.value }))} />
+              </FormField>
+              <FormField label="To Date">
+                <input type="date" className={inputClass} value={filters.date_to} onChange={(event) => setFilters((current) => ({ ...current, date_to: event.target.value }))} />
+              </FormField>
+              <div className="flex items-end gap-2">
+                <ToolbarButton icon={Filter} type="submit">Apply Filters</ToolbarButton>
+                <ToolbarButton
+                  icon={RefreshCw}
+                  variant="secondary"
+                  onClick={() => {
+                    setFilters(emptyAuditFilters);
+                    setAppliedFilters(emptyAuditFilters);
+                  }}
+                >
+                  Reset
+                </ToolbarButton>
+              </div>
+            </form>
+          </SectionCard>
+        )}
+        <div className={mode !== "sessions" ? "mt-3" : ""}>
         <SectionCard title={config.title} icon={Shield}>
           <DataTable
             loading={table.loading}
@@ -2022,6 +2819,7 @@ function AuditPage({ mode }) {
             columns={table.columns}
           />
         </SectionCard>
+        </div>
       </div>
     </>
   );
@@ -2097,12 +2895,15 @@ function AdminPortal() {
         <Route path="warehouse/bin-rules" element={<BinRulesPage />} />
         <Route path="warehouse/capacity-configuration" element={<CapacityConfigurationPage />} />
         <Route path="cargo/records" element={<CargoRecordsPage mode="records" />} />
+        <Route path="cargo/approval-overrides" element={<CargoApprovalOverridesPage />} />
         <Route path="cargo/placement-monitoring" element={<PlacementMonitoringPage />} />
         <Route path="cargo/tracking" element={<CargoRecordsPage mode="tracking" />} />
         <Route path="cargo/blocked" element={<CargoRecordsPage mode="blocked" />} />
         <Route path="dispatch/queue" element={<DispatchOversightPage mode="queue" />} />
         <Route path="dispatch/released" element={<DispatchOversightPage mode="released" />} />
         <Route path="dispatch/gate-activity" element={<DispatchOversightPage mode="gate" />} />
+        <Route path="monitoring/system-logs" element={<AuditPage mode="system" />} />
+        <Route path="monitoring/placement-logs" element={<ValidationLogsPage mode="placement" />} />
         <Route path="monitoring/validation-logs" element={<ValidationLogsPage />} />
         <Route path="audit/logs" element={<AuditPage mode="logs" />} />
         <Route path="audit/user-activity" element={<AuditPage mode="activity" />} />

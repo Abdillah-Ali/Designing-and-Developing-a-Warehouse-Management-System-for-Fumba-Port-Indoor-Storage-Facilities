@@ -18,6 +18,10 @@ const userSelect = `
     s.start_time,
     s.end_time,
     u.status,
+    u.must_change_password,
+    u.is_system_user,
+    u.is_bootstrap_admin,
+    u.bootstrap_completed,
     u.last_login,
     u.created_at,
     u.updated_at
@@ -91,9 +95,13 @@ const createUser = async (payload, passwordHash, executor = db) => {
       role_id,
       warehouse_id,
       shift_id,
-      status
+      status,
+      must_change_password,
+      is_system_user,
+      is_bootstrap_admin,
+      bootstrap_completed
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, FALSE, FALSE, FALSE)
     RETURNING id`,
     [
       payload.full_name,
@@ -133,6 +141,7 @@ const updateUser = async (id, payload, passwordHash, executor = db) => {
   if (passwordHash) {
     values.push(passwordHash);
     updates.push(`password_hash = $${values.length}`);
+    updates.push("must_change_password = TRUE");
   }
 
   if (updates.length === 0) return null;
@@ -148,10 +157,35 @@ const updateUser = async (id, payload, passwordHash, executor = db) => {
   );
 };
 
-const deleteUser = async (id, executor = db) => {
+const deactivateUser = async (id, executor = db) => {
   return executor.query(
-    "DELETE FROM users WHERE id = $1 RETURNING id, full_name, username",
+    `UPDATE users
+     SET status = 'inactive',
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = $1
+     RETURNING id, full_name, username, status`,
     [id]
+  );
+};
+
+const invalidateUserSessions = async (userId, executor = db, exceptSessionId = null) => {
+  const values = [userId];
+  let exclusion = "";
+
+  if (exceptSessionId) {
+    values.push(exceptSessionId);
+    exclusion = `AND id <> $${values.length}`;
+  }
+
+  return executor.query(
+    `UPDATE user_sessions
+     SET logout_time = CURRENT_TIMESTAMP,
+         session_status = 'closed'
+     WHERE user_id = $1
+       AND session_status = 'active'
+       ${exclusion}
+     RETURNING id`,
+    values
   );
 };
 
@@ -216,6 +250,58 @@ const listAuditLogs = async (filters = {}) => {
     clauses.push(`al.action = $${values.length}`);
   }
 
+  if (filters.user) {
+    values.push(`%${filters.user}%`);
+    clauses.push(`(
+      u.full_name ILIKE $${values.length}
+      OR u.username ILIKE $${values.length}
+      OR u.id::text ILIKE $${values.length}
+    )`);
+  }
+
+  if (filters.role) {
+    values.push(filters.role);
+    clauses.push(`r.role_name = $${values.length}`);
+  }
+
+  if (filters.date_from) {
+    values.push(filters.date_from);
+    clauses.push(`al.created_at >= $${values.length}::date`);
+  }
+
+  if (filters.date_to) {
+    values.push(filters.date_to);
+    clauses.push(`al.created_at < ($${values.length}::date + INTERVAL '1 day')`);
+  }
+
+  if (filters.status) {
+    values.push(`%${filters.status}%`);
+    clauses.push(`(
+      COALESCE(al.metadata->>'status', '') ILIKE $${values.length}
+      OR al.action ILIKE $${values.length}
+      OR al.description ILIKE $${values.length}
+    )`);
+  }
+
+  if (filters.cargo_id) {
+    values.push(`%${filters.cargo_id}%`);
+    clauses.push(`(
+      COALESCE(al.metadata->>'cargo_id', '') ILIKE $${values.length}
+      OR COALESCE(al.metadata->>'cargo_identifier', '') ILIKE $${values.length}
+      OR al.description ILIKE $${values.length}
+    )`);
+  }
+
+  if (filters.warehouse) {
+    values.push(`%${filters.warehouse}%`);
+    clauses.push(`(
+      w.warehouse_name ILIKE $${values.length}
+      OR w.warehouse_code ILIKE $${values.length}
+      OR COALESCE(al.metadata->>'warehouse', '') ILIKE $${values.length}
+      OR COALESCE(al.metadata->>'warehouse_id', '') ILIKE $${values.length}
+    )`);
+  }
+
   if (filters.search) {
     values.push(`%${filters.search}%`);
     clauses.push(`(
@@ -224,6 +310,8 @@ const listAuditLogs = async (filters = {}) => {
       OR al.description ILIKE $${values.length}
       OR u.full_name ILIKE $${values.length}
       OR u.username ILIKE $${values.length}
+      OR target.full_name ILIKE $${values.length}
+      OR target.username ILIKE $${values.length}
     )`);
   }
 
@@ -234,14 +322,24 @@ const listAuditLogs = async (filters = {}) => {
     `SELECT
       al.id,
       al.user_id,
+      al.target_user_id,
       u.full_name,
       u.username,
+      r.role_name,
+      w.warehouse_name,
+      w.warehouse_code,
+      target.full_name AS target_full_name,
+      target.username AS target_username,
       al.action,
       al.module,
       al.description,
+      al.metadata,
       al.created_at
     FROM audit_logs al
     LEFT JOIN users u ON u.id = al.user_id
+    LEFT JOIN roles r ON r.id = u.role_id
+    LEFT JOIN warehouses w ON w.id = u.warehouse_id
+    LEFT JOIN users target ON target.id = al.target_user_id
     ${whereClause}
     ORDER BY al.created_at DESC, al.id DESC
     LIMIT ${limit}`,
@@ -318,14 +416,16 @@ const updateLastLogin = async (userId, executor = db) => {
 
 const writeAuditLog = async (payload, executor = db) => {
   return executor.query(
-    `INSERT INTO audit_logs (user_id, action, module, description)
-    VALUES ($1, $2, $3, $4)
+    `INSERT INTO audit_logs (user_id, target_user_id, action, module, description, metadata)
+    VALUES ($1, $2, $3, $4, $5, $6)
     RETURNING *`,
     [
       payload.user_id || null,
+      payload.target_user_id || null,
       payload.action,
       payload.module,
-      payload.description || null
+      payload.description || null,
+      JSON.stringify(payload.metadata || {})
     ]
   );
 };
@@ -334,8 +434,9 @@ module.exports = {
   closeUserSession,
   createUserSession,
   createUser,
-  deleteUser,
+  deactivateUser,
   getUserById,
+  invalidateUserSessions,
   listAuditLogs,
   listRoles,
   listShifts,

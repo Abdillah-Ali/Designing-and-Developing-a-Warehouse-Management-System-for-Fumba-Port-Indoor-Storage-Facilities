@@ -6,7 +6,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "init-db": "node database/initDb.js"
+    "init-db": "node database/initDb.js",
+    "migrate": "node database/updateSchema.js",
+    "test": "node --test tests/*.test.js"
   },
   "keywords": [
     "warehouse",

@@ -4,8 +4,8 @@ const { optionalAuthContext, requireAuthenticated } = require("../middleware/aut
 
 const router = express.Router();
 const loginAttempts = new Map();
-const WINDOW_MS = Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
-const MAX_ATTEMPTS = Number(process.env.LOGIN_RATE_LIMIT_MAX || 8);
+const WINDOW_MS = Number(process.env.LOGIN_RATE_LIMIT_WINDOW_MS || 2 * 60 * 1000);
+const MAX_ATTEMPTS = Number(process.env.LOGIN_RATE_LIMIT_MAX || 3);
 
 const loginRateLimit = (req, res, next) => {
   const key = req.ip || req.socket?.remoteAddress || "unknown";

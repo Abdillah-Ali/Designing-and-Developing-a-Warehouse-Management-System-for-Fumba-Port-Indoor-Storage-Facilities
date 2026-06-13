@@ -38,6 +38,8 @@ const request = async (path, options = {}) => {
 
     const error = new Error(payload.message || "Request could not be completed.");
     error.errors = payload.errors;
+    error.code = payload.code;
+    error.details = payload.details;
     error.status = response.status;
     throw error;
   }
@@ -85,6 +87,13 @@ export const logout = async () => {
   }
 };
 
+export const getBootstrapOptions = () => request("/bootstrap/options");
+
+export const createFirstSystemAdmin = (payload) => request("/bootstrap/create-admin", {
+  method: "POST",
+  body: payload
+});
+
 export const getCargo = (params = {}) => {
   const search = new URLSearchParams(params);
   const suffix = search.toString() ? `?${search.toString()}` : "";
@@ -92,6 +101,7 @@ export const getCargo = (params = {}) => {
 };
 
 export const getCargoById = (id) => request(`/cargo/${encodeURIComponent(id)}`);
+export const getMyCargoSubmissions = () => request("/cargo/my/submissions");
 
 export const createCargo = (payload) => request("/cargo", {
   method: "POST",
@@ -103,14 +113,50 @@ export const updateCargo = (id, payload) => request(`/cargo/${encodeURIComponent
   body: payload
 });
 
-export const deleteCargo = (id) => request(`/cargo/${encodeURIComponent(id)}`, {
-  method: "DELETE"
+export const updateCargoStatus = (id, payload) => request(`/cargo/${encodeURIComponent(id)}/status`, {
+  method: "PATCH",
+  body: payload
+});
+
+export const resubmitCargo = (id, remarks = "") => request(`/cargo/${encodeURIComponent(id)}/resubmit`, {
+  method: "POST",
+  body: { remarks }
+});
+
+export const getCargoDocuments = (id) => request(`/cargo/${encodeURIComponent(id)}/documents`);
+export const getCargoDocumentContent = (id, documentId) => request(
+  `/cargo/${encodeURIComponent(id)}/documents/${encodeURIComponent(documentId)}/content`
+);
+
+export const uploadCargoDocument = (id, payload) => request(`/cargo/${encodeURIComponent(id)}/documents`, {
+  method: "POST",
+  body: payload
+});
+
+export const printCargoBarcode = (id) => request(`/cargo/${encodeURIComponent(id)}/print-barcode`, {
+  method: "POST"
+});
+
+export const deleteCargo = (id, reason = "") => request(`/cargo/${encodeURIComponent(id)}`, {
+  method: "DELETE",
+  body: { reason }
 });
 
 export const getZones = () => request("/zones");
-export const getRacks = (zoneId) => request(`/racks/${encodeURIComponent(zoneId)}`);
-export const getLevels = (rackId) => request(`/levels/${encodeURIComponent(rackId)}`);
-export const getBins = (levelId) => request(`/bins/${encodeURIComponent(levelId)}`);
+export const getZoneById = (id) => request(`/zones/${encodeURIComponent(id)}`);
+export const getRacks = (zoneId) => request(`/racks/by-zone/${encodeURIComponent(zoneId)}`);
+export const getAllRacks = () => request("/racks");
+export const getRackById = (id) => request(`/racks/${encodeURIComponent(id)}`);
+export const getLevels = (rackId) => request(`/levels/by-rack/${encodeURIComponent(rackId)}`);
+export const getAllLevels = () => request("/levels");
+export const getLevelById = (id) => request(`/levels/${encodeURIComponent(id)}`);
+export const getBins = (levelId) => request(`/bins/by-level/${encodeURIComponent(levelId)}`);
+export const getAllBins = (params = {}) => {
+  const search = new URLSearchParams(params);
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  return request(`/bins${suffix}`);
+};
+export const getBinById = (id) => request(`/bins/${encodeURIComponent(id)}`);
 
 export const getUsers = (params = {}) => {
   const search = new URLSearchParams(params);
@@ -132,6 +178,20 @@ export const updateUser = (id, payload) => request(`/users/${encodeURIComponent(
 
 export const deleteUser = (id) => request(`/users/${encodeURIComponent(id)}`, {
   method: "DELETE"
+});
+
+export const updateUserStatus = (id, status) => request(`/users/${encodeURIComponent(id)}/status`, {
+  method: "PATCH",
+  body: { status }
+});
+
+export const resetUserPassword = (id, password) => request(`/users/${encodeURIComponent(id)}/reset-password`, {
+  method: "PATCH",
+  body: { password }
+});
+
+export const deactivateUser = (id) => request(`/users/${encodeURIComponent(id)}/deactivate`, {
+  method: "PATCH"
 });
 
 export const getRoles = () => request("/roles");
@@ -161,6 +221,63 @@ export const confirmPlacement = (payload) => request("/placement/confirm", {
 });
 
 export const getPlacementLogs = () => request("/placement/logs");
+export const getPlacementFailures = () => request("/placement/failures");
+export const requestPlacementOverride = (payload) => request("/placement/request-override", {
+  method: "POST",
+  body: payload
+});
+
+export const getSupervisorDashboard = () => request("/supervisor/dashboard");
+export const getSupervisorReviewConfiguration = () => request("/supervisor/review-configuration");
+export const getSupervisorApprovals = (params = {}) => {
+  const search = new URLSearchParams(params);
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  return request(`/supervisor/approvals${suffix}`);
+};
+export const getSupervisorApproval = (id) => request(`/supervisor/approvals/${encodeURIComponent(id)}`);
+export const approveSupervisorApproval = (id, decisionNotes = "") => request(`/supervisor/approvals/${encodeURIComponent(id)}/approve`, {
+  method: "POST",
+  body: typeof decisionNotes === "string"
+    ? { decision_notes: decisionNotes }
+    : decisionNotes
+});
+export const rejectSupervisorApproval = (id, decisionNotes = "") => request(`/supervisor/approvals/${encodeURIComponent(id)}/reject`, {
+  method: "POST",
+  body: typeof decisionNotes === "string"
+    ? { decision_notes: decisionNotes }
+    : decisionNotes
+});
+export const requestSupervisorCorrection = (id, payload) => request(`/supervisor/approvals/${encodeURIComponent(id)}/request-correction`, {
+  method: "POST",
+  body: typeof payload === "string"
+    ? { correction_notes: payload, correction_fields: [] }
+    : payload
+});
+export const getSupervisorStaffActivity = () => request("/supervisor/staff-activity");
+export const getSupervisorPlacementMonitoring = () => request("/supervisor/placement-monitoring");
+export const getSupervisorPlacementSummary = () => request("/supervisor/placement-summary");
+
+export const requestDispatchAuthorization = (payload) => request("/dispatch/request-authorization", {
+  method: "POST",
+  body: payload
+});
+export const getDispatchAuthorizationRequests = (params = {}) => {
+  const search = new URLSearchParams(params);
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  return request(`/dispatch/authorization-requests${suffix}`);
+};
+export const approveDispatchAuthorization = (id, decisionNotes = "") => request(`/dispatch/authorization-requests/${encodeURIComponent(id)}/approve`, {
+  method: "POST",
+  body: typeof decisionNotes === "string"
+    ? { decision_notes: decisionNotes }
+    : decisionNotes
+});
+export const rejectDispatchAuthorization = (id, decisionNotes = "") => request(`/dispatch/authorization-requests/${encodeURIComponent(id)}/reject`, {
+  method: "POST",
+  body: typeof decisionNotes === "string"
+    ? { decision_notes: decisionNotes }
+    : decisionNotes
+});
 
 // Profile endpoints
 export const getProfile = () => request("/auth/profile");
@@ -170,10 +287,18 @@ export const updateProfile = (payload) => request("/auth/profile", {
   body: payload
 });
 
-export const changePassword = (payload) => request("/auth/change-password", {
-  method: "POST",
-  body: payload
-});
+export const changePassword = async (payload) => {
+  const response = await request("/auth/change-password", {
+    method: "POST",
+    body: payload
+  });
+
+  if (response.data?.token) {
+    setStoredAuthToken(response.data.token);
+  }
+
+  return response;
+};
 
 // Refresh token endpoint
 export const refreshToken = (payload) => request("/auth/refresh", {
@@ -196,6 +321,11 @@ export const deleteZone = (id) => request(`/zones/${encodeURIComponent(id)}`, {
   method: "DELETE"
 });
 
+export const updateZoneStatus = (id, status) => request(`/zones/${encodeURIComponent(id)}/status`, {
+  method: "PATCH",
+  body: { status }
+});
+
 // Rack CRUD
 export const createRack = (payload) => request("/racks", {
   method: "POST",
@@ -209,6 +339,11 @@ export const updateRack = (id, payload) => request(`/racks/${encodeURIComponent(
 
 export const deleteRack = (id) => request(`/racks/${encodeURIComponent(id)}`, {
   method: "DELETE"
+});
+
+export const updateRackStatus = (id, status) => request(`/racks/${encodeURIComponent(id)}/status`, {
+  method: "PATCH",
+  body: { status }
 });
 
 // Level CRUD
@@ -226,6 +361,11 @@ export const deleteLevel = (id) => request(`/levels/${encodeURIComponent(id)}`, 
   method: "DELETE"
 });
 
+export const updateLevelStatus = (id, status) => request(`/levels/${encodeURIComponent(id)}/status`, {
+  method: "PATCH",
+  body: { status }
+});
+
 // Bin CRUD
 export const createBin = (payload) => request("/bins", {
   method: "POST",
@@ -240,6 +380,19 @@ export const updateBin = (id, payload) => request(`/bins/${encodeURIComponent(id
 export const deleteBin = (id) => request(`/bins/${encodeURIComponent(id)}`, {
   method: "DELETE"
 });
+
+export const updateBinStatus = (id, status, reservedForCargoType = "") => request(`/bins/${encodeURIComponent(id)}/status`, {
+  method: "PATCH",
+  body: {
+    status,
+    reserved_for_cargo_type: reservedForCargoType
+  }
+});
+
+export const generateDefaultWarehouseStructure = () => request(
+  "/warehouse-configuration/generate-default-structure",
+  { method: "POST" }
+);
 
 // Bin Rules
 export const getBinRules = () => request("/bin-rules");

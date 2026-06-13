@@ -3,7 +3,8 @@ const AUTH_TOKEN_KEY = "fumba-wms-auth-token";
 
 export const PORTAL_ROLES = Object.freeze({
   SYSTEM_ADMIN: "system-admin",
-  WAREHOUSE_STAFF: "warehouse-staff"
+  WAREHOUSE_STAFF: "warehouse-staff",
+  WAREHOUSE_SUPERVISOR: "warehouse-supervisor"
 });
 
 export const PORTAL_CONFIG = Object.freeze({
@@ -26,12 +27,15 @@ export const PORTAL_CONFIG = Object.freeze({
       "/admin/warehouse/bin-rules",
       "/admin/warehouse/capacity-configuration",
       "/admin/cargo/records",
+      "/admin/cargo/approval-overrides",
       "/admin/cargo/placement-monitoring",
       "/admin/cargo/tracking",
       "/admin/cargo/blocked",
       "/admin/dispatch/queue",
       "/admin/dispatch/released",
       "/admin/dispatch/gate-activity",
+      "/admin/monitoring/system-logs",
+      "/admin/monitoring/placement-logs",
       "/admin/monitoring/validation-logs",
       "/admin/audit/logs",
       "/admin/audit/user-activity",
@@ -59,6 +63,7 @@ export const PORTAL_CONFIG = Object.freeze({
       "/staff",
       "/staff/dashboard",
       "/staff/cargo/registration",
+      "/staff/cargo/registration-reviews",
       "/staff/cargo/placement-scanning",
       "/staff/cargo/tracking",
       "/staff/storage/zones",
@@ -69,7 +74,6 @@ export const PORTAL_CONFIG = Object.freeze({
       "/staff/dispatch/queue",
       "/staff/dispatch/gate-release",
       "/staff/dispatch/released",
-      "/staff/activity-logs",
       "/staff/profile"
     ]),
     modules: Object.freeze([
@@ -79,7 +83,35 @@ export const PORTAL_CONFIG = Object.freeze({
       "cargo-tracking",
       "storage-readonly",
       "dispatch-preparation",
-      "activity-logs",
+      "profile"
+    ])
+  },
+  [PORTAL_ROLES.WAREHOUSE_SUPERVISOR]: {
+    label: "Warehouse Supervisor",
+    roleName: "Supervisor",
+    basePath: "/supervisor",
+    defaultPath: "/supervisor",
+    allowedPaths: Object.freeze([
+      "/supervisor",
+      "/supervisor/dashboard",
+      "/supervisor/cargo/pending-approvals",
+      "/supervisor/cargo/records",
+      "/supervisor/cargo/placement-monitoring",
+      "/supervisor/cargo/exceptions",
+      "/supervisor/warehouse/occupancy",
+      "/supervisor/warehouse/zones",
+      "/supervisor/warehouse/racks",
+      "/supervisor/warehouse/levels",
+      "/supervisor/warehouse/bins",
+      "/supervisor/dispatch/requests",
+      "/supervisor/dispatch/approved",
+      "/supervisor/profile"
+    ]),
+    modules: Object.freeze([
+      "dashboard",
+      "cargo-supervision",
+      "warehouse-monitoring",
+      "dispatch-authorization",
       "profile"
     ])
   }
@@ -91,7 +123,10 @@ const roleAliases = Object.freeze({
   "system administrator": PORTAL_ROLES.SYSTEM_ADMIN,
   "administrator": PORTAL_ROLES.SYSTEM_ADMIN,
   "warehouse-staff": PORTAL_ROLES.WAREHOUSE_STAFF,
-  "warehouse staff": PORTAL_ROLES.WAREHOUSE_STAFF
+  "warehouse staff": PORTAL_ROLES.WAREHOUSE_STAFF,
+  "warehouse-supervisor": PORTAL_ROLES.WAREHOUSE_SUPERVISOR,
+  "warehouse supervisor": PORTAL_ROLES.WAREHOUSE_SUPERVISOR,
+  "supervisor": PORTAL_ROLES.WAREHOUSE_SUPERVISOR
 });
 
 function canUseSessionStorage() {
@@ -109,7 +144,7 @@ function normalizePath(pathname) {
   return withoutTrailingSlash || "/";
 }
 
-function decodeTokenPayload(token) {
+export function decodeTokenPayload(token) {
   if (!token) return null;
 
   try {
@@ -226,4 +261,33 @@ export function extractRoleFromToken(token) {
 
 export function getStoredAuthRole(storage = canUseSessionStorage() ? window.sessionStorage : null) {
   return extractRoleFromToken(getStoredAuthToken(storage));
+}
+
+export function getStoredAuthClaims(storage = canUseSessionStorage() ? window.sessionStorage : null) {
+  return decodeTokenPayload(getStoredAuthToken(storage));
+}
+
+export function getStoredAuthUserId(storage = canUseSessionStorage() ? window.sessionStorage : null) {
+  const claims = getStoredAuthClaims(storage);
+  const userId = Number(claims?.userId || claims?.user_id || claims?.sub);
+  return Number.isInteger(userId) && userId > 0 ? userId : null;
+}
+
+export function mustChangeStoredPassword(storage = canUseSessionStorage() ? window.sessionStorage : null) {
+  const claims = getStoredAuthClaims(storage);
+  return Boolean(claims?.mustChangePassword ?? claims?.must_change_password);
+}
+
+export function isStoredBootstrapAdmin(storage = canUseSessionStorage() ? window.sessionStorage : null) {
+  const claims = getStoredAuthClaims(storage);
+  return Boolean(claims?.isBootstrapAdmin ?? claims?.is_bootstrap_admin);
+}
+
+export function isStoredBootstrapCompleted(storage = canUseSessionStorage() ? window.sessionStorage : null) {
+  const claims = getStoredAuthClaims(storage);
+  return Boolean(claims?.bootstrapCompleted ?? claims?.bootstrap_completed);
+}
+
+export function isStoredBootstrapSetupPending(storage = canUseSessionStorage() ? window.sessionStorage : null) {
+  return isStoredBootstrapAdmin(storage) && !isStoredBootstrapCompleted(storage);
 }

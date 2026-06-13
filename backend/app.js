@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const db = require("./config/db");
 const authRoutes = require("./routes/authRoutes");
+const bootstrapRoutes = require("./routes/bootstrapRoutes");
 const cargoRoutes = require("./routes/cargoRoutes");
 const zoneRoutes = require("./routes/zoneRoutes");
 const rackRoutes = require("./routes/rackRoutes");
@@ -15,6 +16,9 @@ const shiftRoutes = require("./routes/shiftRoutes");
 const auditLogRoutes = require("./routes/auditLogRoutes");
 const userSessionRoutes = require("./routes/userSessionRoutes");
 const binRuleRoutes = require("./routes/binRuleRoutes");
+const warehouseConfigurationRoutes = require("./routes/warehouseConfigurationRoutes");
+const supervisorRoutes = require("./routes/supervisorRoutes");
+const dispatchRoutes = require("./routes/dispatchRoutes");
 const {
   errorHandler,
   notFoundHandler
@@ -50,7 +54,7 @@ app.use(cors({
   },
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
-app.use(express.json());
+app.use(express.json({ limit: "15mb" }));
 
 app.get("/api/health", async (req, res, next) => {
   try {
@@ -72,6 +76,7 @@ app.get("/api/health", async (req, res, next) => {
 
 // Auth routes (no portal access check needed)
 app.use("/api/auth", authRoutes);
+app.use("/api/bootstrap", bootstrapRoutes);
 
 app.use("/api", requirePortalAccess);
 
@@ -88,6 +93,9 @@ app.use("/api/shifts", shiftRoutes);
 app.use("/api/audit-logs", auditLogRoutes);
 app.use("/api/user-sessions", userSessionRoutes);
 app.use("/api/bin-rules", binRuleRoutes);
+app.use("/api/warehouse-configuration", warehouseConfigurationRoutes);
+app.use("/api/supervisor", supervisorRoutes);
+app.use("/api/dispatch", dispatchRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

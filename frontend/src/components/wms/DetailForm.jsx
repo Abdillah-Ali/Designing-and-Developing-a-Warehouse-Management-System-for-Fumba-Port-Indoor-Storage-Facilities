@@ -13,7 +13,6 @@ import {
   Save,
   ScanLine,
   Search,
-  Settings2,
   Truck,
   Upload,
   Warehouse,
@@ -27,26 +26,24 @@ import {
   getCargo,
   getCargoById,
   getLevels,
-  getPlacementLogs,
+  getProfile,
   getRacks,
   getZones,
+  printCargoBarcode,
+  requestPlacementOverride,
+  uploadCargoDocument,
   validatePlacement
 } from "@/services/api";
+import { BarcodeLabel, printBarcodeLabel } from "./BarcodeLabel";
 import { CollapsibleCard } from "./CollapsibleCard";
-
-const tabs = [
-  { label: "Cargo Registration", icon: ClipboardList },
-  { label: "Placement & Scanning", icon: ScanLine },
-  { label: "Cargo Tracking", icon: MapPin },
-  { label: "System & Validation Logs", icon: Settings2 }
-];
 
 const sourceOptions = [
   "Container",
   "Truck",
-  "Ship",
-  "Internal Transfer",
-  "Other Warehouse"
+  "Ship Transfer",
+  "Manual Delivery",
+  "Customs Hold Release",
+  "Other"
 ];
 
 const cargoTypes = [
@@ -63,35 +60,42 @@ const cargoTypes = [
 const hazardClasses = [
   "Flammable",
   "Corrosive",
-  "Toxic",
   "Explosive",
-  "Radioactive"
+  "Toxic",
+  "Oxidizing",
+  "Compressed Gas",
+  "Radioactive",
+  "Other Hazardous"
 ];
 
 const packagingTypes = [
   "Boxes",
+  "Cartons",
   "Pallets",
   "Crates",
+  "Bags",
   "Drums",
-  "Containers",
   "Loose Cargo",
-  "Bags"
+  "Containerized",
+  "Other"
 ];
 
 const cargoConditions = [
   "Good",
   "Damaged",
   "Wet",
-  "Broken Packaging",
   "Leaking",
-  "Partially Missing"
+  "Broken Packaging",
+  "Requires Inspection"
 ];
 
 const allowedFileTypes = new Set([
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "image/jpeg"
+  "image/jpeg",
+  "image/png"
 ]);
+const maxFileSize = 10 * 1024 * 1024;
 
 const initialCargoForm = {
   consignee_name: "",
@@ -302,10 +306,12 @@ function getErrorMessage(error) {
 
 function statusTone(status) {
   if (!status) return "muted";
-  if (status === "Registered") return "registered";
-  if (status === "Stored") return "success";
-  if (status === "Blocked") return "destructive";
-  if (status === "Released") return "released";
+  if (status === "Approved") return "registered";
+  if (["Placed", "Relocated"].includes(status)) return "success";
+  if (["Blocked", "Rejected"].includes(status)) return "destructive";
+  if (status === "Correction Required") return "warning";
+  if (status === "Dispatched") return "released";
+  if (status === "Unplaced") return "pending";
   if (status.includes("Pending")) return "pending";
   return "info";
 }
@@ -320,8 +326,7 @@ function binStatusTone(status) {
 
 function cargoOperationalStatus(record) {
   if (!record) return "Pending Registration";
-  if (record.status === "Registered" && !record.current_bin_id && !record.location) return "Pending Placement";
-  return record.status || "Pending";
+  return record.registration_status || "Pending Review";
 }
 
 function getRecordId(record, fallbackKey) {
@@ -400,7 +405,7 @@ function checkPassed(validation, keys, fallback = false) {
   return keyList.every((key) => validation.checks[key]?.passed !== false);
 }
 
-function DetailForm({ initialTab = 0 }) {
+function DetailForm({ initialTab = 0, initialCargoBarcode = "" }) {
   const [activeTab, setActiveTab] = useState(initialTab);
   const [formData, setFormData] = useState(initialCargoForm);
   const [cargoRecords, setCargoRecords] = useState([]);
@@ -409,6 +414,7 @@ function DetailForm({ initialTab = 0 }) {
   const [cargoError, setCargoError] = useState("");
   const [savingCargo, setSavingCargo] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [duplicateWarning, setDuplicateWarning] = useState(null);
   const [saveNotice, setSaveNotice] = useState(false);
   const [zones, setZones] = useState([]);
   const [selectedZone, setSelectedZone] = useState("");
@@ -425,9 +431,8 @@ function DetailForm({ initialTab = 0 }) {
     levels: false,
     bins: false
   });
-  const [placementLogs, setPlacementLogs] = useState([]);
-  const [logsError, setLogsError] = useState("");
   const [files, setFiles] = useState([]);
+  const [documentUploadError, setDocumentUploadError] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [cargoBarcode, setCargoBarcode] = useState("");
   const [binBarcode, setBinBarcode] = useState("");
@@ -443,15 +448,29 @@ function DetailForm({ initialTab = 0 }) {
   const [trackingFilters, setTrackingFilters] = useState(emptyTrackingFilters);
   const [trackingCargoDetail, setTrackingCargoDetail] = useState(null);
   const [trackingDetailError, setTrackingDetailError] = useState("");
+  const [selectedTrackingCargoId, setSelectedTrackingCargoId] = useState("");
+  const [lastScanTime, setLastScanTime] = useState("");
+  const [scanEvents, setScanEvents] = useState([]);
+  const [overrideSaving, setOverrideSaving] = useState(false);
+  const [overrideNotice, setOverrideNotice] = useState("");
   const fileInput = useRef(null);
   const cargoScanRef = useRef(null);
   const binScanRef = useRef(null);
+  const barcodeLabelRef = useRef(null);
 
   useEffect(() => {
     setActiveTab(initialTab);
   }, [initialTab]);
 
-  const currentStatus = savedCargo?.status || "Pending Registration";
+  useEffect(() => {
+    if (!initialCargoBarcode) return undefined;
+    setActiveTab(1);
+    setCargoBarcode(initialCargoBarcode);
+    setFocusedScan("cargo");
+    const timer = window.setTimeout(() => cargoScanRef.current?.focus(), 0);
+    return () => window.clearTimeout(timer);
+  }, [initialCargoBarcode]);
+
   const receivedAt = formatDateTime(formData.received_datetime);
 
   const refreshCargoRecords = async () => {
@@ -479,22 +498,48 @@ function DetailForm({ initialTab = 0 }) {
     }
   };
 
-  const refreshPlacementLogs = async () => {
-    setLogsError("");
-
-    try {
-      const response = await getPlacementLogs();
-      setPlacementLogs(response.data || []);
-    } catch (error) {
-      setLogsError(getErrorMessage(error));
-    }
-  };
-
   useEffect(() => {
     refreshCargoRecords();
     refreshZones();
-    refreshPlacementLogs();
+    getProfile()
+      .then((response) => {
+        const user = response.data?.user;
+        if (!user) return;
+        setFormData((current) => ({
+          ...current,
+          received_by: user.full_name || user.username || current.received_by
+        }));
+      })
+      .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    const value = cargoBarcode.trim();
+    if (!value) return undefined;
+    const timer = window.setTimeout(() => {
+      const scannedAt = new Date().toISOString();
+      setLastScanTime(scannedAt);
+      setScanEvents((current) => {
+        if (current.some((event) => event.type === "Cargo" && event.value === value)) return current;
+        return [...current, { type: "Cargo", value, scannedAt }].slice(-10);
+      });
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [cargoBarcode]);
+
+  useEffect(() => {
+    const value = binBarcode.trim();
+    if (!value) return undefined;
+    const timer = window.setTimeout(() => {
+      const scannedAt = new Date().toISOString();
+      setLastScanTime(scannedAt);
+      setScanEvents((current) => {
+        if (current.some((event) => event.type === "Bin" && event.value === value)) return current;
+        return [...current, { type: "Bin", value, scannedAt }].slice(-10);
+      });
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [binBarcode]);
 
   useEffect(() => {
     if (!selectedZone && zones.length > 0) {
@@ -649,7 +694,6 @@ function DetailForm({ initialTab = 0 }) {
 
         if (active) {
           setPlacementValidation(response.data);
-          refreshPlacementLogs();
         }
       } catch (error) {
         if (active) {
@@ -814,17 +858,30 @@ function DetailForm({ initialTab = 0 }) {
         record.consignee_name?.toLowerCase().includes(trackingFilters.consignee.toLowerCase());
       const typeMatch = trackingFilters.cargoType === "All" || record.cargo_type === trackingFilters.cargoType;
       const operationalStatus = cargoOperationalStatus(record);
-      const statusMatch = trackingFilters.status === "All" || record.status === trackingFilters.status || operationalStatus === trackingFilters.status;
+      const statusMatch = trackingFilters.status === "All"
+        || record.placement_status === trackingFilters.status
+        || operationalStatus === trackingFilters.status;
 
       return cargoIdMatch && barcodeMatch && consigneeMatch && typeMatch && statusMatch;
     });
   }, [cargoRecords, trackingFilters]);
 
-  const selectedTrackingCargo = filteredCargoRecords[0] || savedCargo || null;
-  const selectedTrackingCargoId = selectedTrackingCargo?.id || null;
+  useEffect(() => {
+    if (
+      selectedTrackingCargoId
+      && !filteredCargoRecords.some((record) => String(record.id) === String(selectedTrackingCargoId))
+    ) {
+      setSelectedTrackingCargoId("");
+    }
+  }, [filteredCargoRecords, selectedTrackingCargoId]);
+
+  const selectedTrackingCargo = filteredCargoRecords.find(
+    (record) => String(record.id) === String(selectedTrackingCargoId)
+  ) || null;
+  const trackingRecordId = selectedTrackingCargo?.id || null;
 
   useEffect(() => {
-    if (!selectedTrackingCargoId) {
+    if (!trackingRecordId) {
       setTrackingCargoDetail(null);
       setTrackingDetailError("");
       return undefined;
@@ -836,7 +893,7 @@ function DetailForm({ initialTab = 0 }) {
       setTrackingDetailError("");
 
       try {
-        const response = await getCargoById(selectedTrackingCargoId);
+        const response = await getCargoById(trackingRecordId);
         if (active) setTrackingCargoDetail(response.data);
       } catch (error) {
         if (active) setTrackingDetailError(getErrorMessage(error));
@@ -848,12 +905,10 @@ function DetailForm({ initialTab = 0 }) {
     return () => {
       active = false;
     };
-  }, [selectedTrackingCargoId]);
+  }, [trackingRecordId]);
 
   const trackingCargo = trackingCargoDetail || selectedTrackingCargo;
   const movementRows = trackingCargo?.movement_history || [];
-  const failedValidationLogs = placementLogs.filter((log) => !log.approved);
-
   const statusCounts = useMemo(() => {
     return cargoRecords.reduce((counts, record) => {
       const operationalStatus = cargoOperationalStatus(record);
@@ -880,11 +935,26 @@ function DetailForm({ initialTab = 0 }) {
     }
   ];
 
+  const scannerStatus = validationLoading
+    ? "Validation Running"
+    : placementValidation?.approved
+      ? "Validation Passed"
+      : placementValidation
+        ? "Validation Failed"
+        : binBarcode.trim()
+          ? "Bin Scanned"
+          : cargoBarcode.trim()
+            ? "Waiting for Bin Scan"
+            : focusedScan === "cargo"
+              ? "Waiting for Cargo Scan"
+              : "Ready";
+
   const handleCargoFieldChange = (field, value) => {
+    setDuplicateWarning(null);
     setFormData((current) => {
       const next = { ...current, [field]: value };
-      if (field === "cargo_type" && value !== "Hazardous Cargo") {
-        next.hazard_class = "";
+      if (field === "cargo_type") {
+        next.hazard_class = value === "Hazardous Cargo" ? hazardClasses[0] : "";
       }
       return next;
     });
@@ -934,25 +1004,46 @@ function DetailForm({ initialTab = 0 }) {
 
   const addFiles = (list) => {
     if (!list) return;
+    setDocumentUploadError("");
 
     const nextFiles = Array.from(list).filter((file) => {
       const lowerName = file.name.toLowerCase();
-      return (
+      const allowed = (
         allowedFileTypes.has(file.type) ||
         lowerName.endsWith(".pdf") ||
         lowerName.endsWith(".docx") ||
         lowerName.endsWith(".jpg") ||
-        lowerName.endsWith(".jpeg")
+        lowerName.endsWith(".jpeg") ||
+        lowerName.endsWith(".png")
       );
+      if (!allowed) {
+        setDocumentUploadError("Only PDF, DOCX, JPG, and PNG documents are allowed.");
+        return false;
+      }
+      if (file.size > maxFileSize) {
+        setDocumentUploadError(`${file.name} is larger than the 10MB limit.`);
+        return false;
+      }
+      return true;
     });
 
     setFiles((current) => [...current, ...nextFiles]);
   };
 
+  const fileToBase64 = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || "").split(",").pop());
+    reader.onerror = () => reject(new Error(`Could not read ${file.name}.`));
+    reader.readAsDataURL(file);
+  });
+
   const saveCargo = async () => {
+    if (savedCargo || savingCargo) return;
     setSavingCargo(true);
     setSaveError("");
+    setDuplicateWarning(null);
     setSaveNotice(false);
+    setDocumentUploadError("");
 
     try {
       const response = await createCargo({
@@ -962,14 +1053,60 @@ function DetailForm({ initialTab = 0 }) {
       const cargo = response.data;
 
       setSavedCargo(cargo);
-      setCargoBarcode(cargo.barcode);
+      for (const file of files) {
+        await uploadCargoDocument(cargo.id, {
+          file_name: file.name,
+          file_type: file.type || (
+            file.name.toLowerCase().endsWith(".png") ? "image/png"
+              : file.name.toLowerCase().endsWith(".docx")
+                ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                : file.name.toLowerCase().endsWith(".pdf")
+                  ? "application/pdf"
+                  : "image/jpeg"
+          ),
+          content_base64: await fileToBase64(file)
+        });
+      }
       setSaveNotice(true);
       await refreshCargoRecords();
-      await refreshPlacementLogs();
     } catch (error) {
-      setSaveError(getErrorMessage(error));
+      if (error?.code === "DUPLICATE_CARGO") {
+        setDuplicateWarning({
+          message: error.message,
+          matches: error.details?.matches || []
+        });
+      } else {
+        setSaveError(getErrorMessage(error));
+      }
     } finally {
       setSavingCargo(false);
+    }
+  };
+
+  const registerAnotherCargo = () => {
+    setSavedCargo(null);
+    setSaveNotice(false);
+    setSaveError("");
+    setDuplicateWarning(null);
+    setDocumentUploadError("");
+    setFiles([]);
+    setCargoBarcode("");
+    setFormData((current) => ({
+      ...initialCargoForm,
+      received_by: current.received_by,
+      received_datetime: new Date().toISOString()
+    }));
+  };
+
+  const handlePrintBarcode = async (cargo = savedCargo) => {
+    if (!cargo) return;
+    try {
+      await printCargoBarcode(cargo.id);
+      if (!printBarcodeLabel(barcodeLabelRef.current)) {
+        setSaveError("The browser blocked the print preview window.");
+      }
+    } catch (error) {
+      setSaveError(getErrorMessage(error));
     }
   };
 
@@ -1001,11 +1138,30 @@ function DetailForm({ initialTab = 0 }) {
       setPlacementNotice(true);
       setPlacementTime(formatDateTime(result.movement?.created_at || result.cargo?.updated_at));
       await refreshCargoRecords();
-      await refreshPlacementLogs();
     } catch (error) {
       setPlacementError(getErrorMessage(error));
     } finally {
       setPlacementSaving(false);
+    }
+  };
+
+  const handleRequestOverride = async () => {
+    if (!cargoBarcode.trim() || !binBarcode.trim() || validation.approved) return;
+    setOverrideSaving(true);
+    setPlacementError("");
+    setOverrideNotice("");
+    try {
+      const response = await requestPlacementOverride({
+        cargo_barcode: cargoBarcode.trim(),
+        bin_barcode: binBarcode.trim(),
+        reason: validation.detail
+      });
+      setOverrideNotice(`Override request ${response.data?.id} is pending supervisor approval.`);
+      await refreshCargoRecords();
+    } catch (error) {
+      setPlacementError(getErrorMessage(error));
+    } finally {
+      setOverrideSaving(false);
     }
   };
 
@@ -1021,53 +1177,63 @@ function DetailForm({ initialTab = 0 }) {
     setPlacementConfirmed(false);
     setPlacementNotice(false);
     setPlacementTime("");
+    setScanEvents([]);
+    setLastScanTime("");
+    setOverrideNotice("");
     requestAnimationFrame(() => cargoScanRef.current?.focus());
   };
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-border bg-card">
-      <div className="grid gap-2 border-b border-border bg-muted/40 px-3 pt-2 xl:grid-cols-[1fr_auto]">
-        <div className="grid min-w-0 grid-cols-1 gap-1 md:grid-cols-2 xl:grid-cols-4">
-          {tabs.map((tab, index) => {
-            const Icon = tab.icon;
-            const active = activeTab === index;
-
-            return (
-              <button
-                key={tab.label}
-                type="button"
-                onClick={() => setActiveTab(index)}
-                className={cn(
-                  "inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-t border border-b-0 px-3 py-2 text-xs font-semibold transition-colors",
-                  active
-                    ? "-mb-px border-border bg-card text-foreground"
-                    : "border-transparent text-muted-foreground hover:bg-card/70 hover:text-foreground"
-                )}
-              >
-                <Icon className="h-3.5 w-3.5" />
-                {tab.label}
-              </button>
-            );
-          })}
-        </div>
-        <div className="flex items-end justify-end pb-2">
-          <StatusBadge tone={statusTone(currentStatus)}>{currentStatus}</StatusBadge>
-        </div>
-      </div>
-
       <div className="flex-1 overflow-auto">
         {activeTab === 0 && (
           <div className="space-y-3 p-4">
             {saveNotice && (
               <div className="flex items-center gap-2 rounded-md border border-success/40 bg-success/10 px-3 py-2 text-xs font-semibold text-success">
                 <CheckCircle2 className="h-4 w-4" />
-                Cargo saved. Reference {savedCargo?.cargo_id} is ready.
+                Registration successful. Cargo is in the placement queue and pending independent supervisor review.
               </div>
             )}
             {saveError && (
               <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs font-semibold text-destructive">
                 <AlertTriangle className="h-4 w-4" />
                 {saveError}
+              </div>
+            )}
+            {duplicateWarning && (
+              <div
+                role="alert"
+                className="rounded-md border border-warning/50 bg-warning/10 px-3 py-3 text-xs text-foreground"
+              >
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+                  <div className="min-w-0 space-y-2">
+                    <div>
+                      <p className="font-semibold text-warning">Possible duplicate cargo</p>
+                      <p className="mt-0.5 text-muted-foreground">{duplicateWarning.message}</p>
+                    </div>
+                    {duplicateWarning.matches.map((match) => (
+                      <div
+                        key={match.cargo_id}
+                        className="rounded border border-warning/30 bg-background/70 px-2 py-1.5"
+                      >
+                        <span className="font-semibold">{match.cargo_id}</span>
+                        <span className="text-muted-foreground">
+                          {" "}matches on {(match.matched_field_labels || []).join(", ")}.
+                        </span>
+                      </div>
+                    ))}
+                    <p className="font-medium">
+                      No cargo record or supervisor review request was created.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+            {documentUploadError && (
+              <div className="flex items-center gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs font-semibold text-destructive">
+                <FileWarning className="h-4 w-4" />
+                {documentUploadError}
               </div>
             )}
 
@@ -1115,7 +1281,7 @@ function DetailForm({ initialTab = 0 }) {
                 </Field>
                 {formData.cargo_type === "Hazardous Cargo" && (
                   <Field label="Hazard Class">
-                    <Select value={formData.hazard_class || hazardClasses[0]} onChange={(value) => handleCargoFieldChange("hazard_class", value)}>
+                    <Select value={formData.hazard_class} onChange={(value) => handleCargoFieldChange("hazard_class", value)}>
                       {hazardClasses.map((option) => (
                         <option key={option}>{option}</option>
                       ))}
@@ -1191,12 +1357,12 @@ function DetailForm({ initialTab = 0 }) {
                 >
                   <Upload className="mx-auto h-6 w-6 text-info" />
                   <div className="mt-2 text-xs font-semibold">Drop files or click to upload</div>
-                  <div className="mt-0.5 text-[11px] text-muted-foreground">PDF, DOCX, JPG</div>
+                  <div className="mt-0.5 text-[11px] text-muted-foreground">PDF, DOCX, JPG, PNG. Maximum 10MB per file.</div>
                   <input
                     ref={fileInput}
                     type="file"
                     multiple
-                    accept=".pdf,.docx,.jpg,.jpeg"
+                    accept=".pdf,.docx,.jpg,.jpeg,.png"
                     className="hidden"
                     onChange={(event) => addFiles(event.target.files)}
                   />
@@ -1221,19 +1387,23 @@ function DetailForm({ initialTab = 0 }) {
               </div>
             </CollapsibleCard>
 
-            <div className="rounded-md border border-info/30 bg-info/5 p-3">
-              <div className="mb-2 text-xs font-semibold text-info">System-generated after save</div>
-              <ReadonlyGrid
-                columns="md:grid-cols-2 xl:grid-cols-5"
-                items={[
-                  { label: "Cargo ID", value: savedCargo?.cargo_id || "Pending save" },
-                  { label: "Cargo Barcode", value: savedCargo?.barcode || "Generated on save" },
-                  { label: "Reference Number", value: savedCargo?.reference_number || "Generated on save" },
-                  { label: "Cargo Status", value: savedCargo?.status || "Pending Registration" },
-                  { label: "Location", value: savedCargo ? savedCargo.location || "Not assigned" : "Not assigned" }
-                ]}
-              />
-            </div>
+            {savedCargo && (
+              <CollapsibleCard title={<SectionTitle icon={Printer}>Cargo Barcode Label</SectionTitle>} defaultOpen>
+                <div className="grid gap-3 lg:grid-cols-[minmax(0,680px)_auto]">
+                  <BarcodeLabel ref={barcodeLabelRef} cargo={savedCargo} />
+                  <div className="flex items-end">
+                    <button
+                      type="button"
+                      onClick={() => handlePrintBarcode(savedCargo)}
+                      className="inline-flex h-9 items-center gap-2 rounded bg-info px-4 text-xs font-semibold text-info-foreground"
+                    >
+                      <Printer className="h-4 w-4" />
+                      Print Barcode Label
+                    </button>
+                  </div>
+                </div>
+              </CollapsibleCard>
+            )}
           </div>
         )}
 
@@ -1251,20 +1421,27 @@ function DetailForm({ initialTab = 0 }) {
                 {placementError}
               </div>
             )}
+            {overrideNotice && (
+              <div className="flex items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs font-semibold text-warning">
+                <ClipboardList className="h-4 w-4" />
+                {overrideNotice}
+              </div>
+            )}
 
             <CollapsibleCard title={<SectionTitle icon={ScanLine}>Placement Scanning</SectionTitle>} defaultOpen>
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                 <div className="rounded-md border border-border bg-muted/20 p-3">
                   <div className="text-[11px] font-semibold text-muted-foreground">Last Scan Time</div>
-                  <div className="mt-2 text-xs font-semibold">No scan received</div>
+                  <div className="mt-2 text-xs font-semibold">{lastScanTime ? formatDateTime(lastScanTime) : "No scan received"}</div>
                 </div>
                 <div className="rounded-md border border-border bg-muted/20 p-3 md:col-span-2">
                   <div className="text-[11px] font-semibold text-muted-foreground">Current Placement Work</div>
                   <div className="mt-2 text-xs font-semibold">{currentPlacementSession}</div>
+                  <div className="mt-1 text-[11px] text-muted-foreground">Scanner Status: {scannerStatus}</div>
                 </div>
                 <div className="rounded-md border border-border bg-muted/20 p-3">
                   <div className="text-[11px] font-semibold text-muted-foreground">Queued Scans</div>
-                  <div className="mt-2 text-xs font-semibold">No scans queued</div>
+                  <div className="mt-2 text-xs font-semibold">{scanEvents.length} scan{scanEvents.length === 1 ? "" : "s"} recorded</div>
                 </div>
               </div>
             </CollapsibleCard>
@@ -1303,8 +1480,8 @@ function DetailForm({ initialTab = 0 }) {
                           <span className="block text-[11px] font-semibold text-foreground/80">Current Status</span>
                           <div className="flex flex-wrap gap-2 pt-1">
                             <StatusBadge tone={statusTone(cargoOperationalStatus(scannedCargo))}>{cargoOperationalStatus(scannedCargo)}</StatusBadge>
-                            <StatusBadge tone={scannedCargo.location ? "success" : "warning"}>
-                              {scannedCargo.location || "Unassigned"}
+                            <StatusBadge tone={statusTone(scannedCargo.placement_status)}>
+                              {scannedCargo.placement_status || "Unplaced"}
                             </StatusBadge>
                           </div>
                         </div>
@@ -1567,12 +1744,14 @@ function DetailForm({ initialTab = 0 }) {
                 <Field label="Status">
                   <Select value={trackingFilters.status} onChange={(value) => handleTrackingFilterChange("status", value)}>
                     <option>All</option>
-                    <option>Pending Registration</option>
-                    <option>Registered</option>
-                    <option>Pending Placement</option>
-                    <option>Stored</option>
-                    <option>Blocked</option>
-                    <option>Released</option>
+                    <option>Pending Review</option>
+                    <option>Approved</option>
+                    <option>Correction Required</option>
+                    <option>Rejected</option>
+                    <option>Unplaced</option>
+                    <option>Placed</option>
+                    <option>Relocated</option>
+                    <option>Dispatched</option>
                   </Select>
                 </Field>
               </div>
@@ -1594,7 +1773,14 @@ function DetailForm({ initialTab = 0 }) {
                   <tbody>
                     {filteredCargoRecords.length > 0 ? (
                       filteredCargoRecords.map((record) => (
-                        <tr key={record.id} className="border-t border-border">
+                        <tr
+                          key={record.id}
+                          className={cn(
+                            "cursor-pointer border-t border-border hover:bg-muted/40",
+                            String(selectedTrackingCargoId) === String(record.id) && "bg-info/10"
+                          )}
+                          onClick={() => setSelectedTrackingCargoId(String(record.id))}
+                        >
                           <td className="px-2 py-2 font-mono font-semibold">{record.cargo_id}</td>
                           <td className="px-2 py-2">{record.consignee_name}</td>
                           <td className="px-2 py-2 text-muted-foreground">{record.cargo_type}</td>
@@ -1616,6 +1802,9 @@ function DetailForm({ initialTab = 0 }) {
             </CollapsibleCard>
 
             <CollapsibleCard title={<SectionTitle icon={MapPin}>Current Location</SectionTitle>} defaultOpen>
+              {!trackingCargo && (
+                <div className="mb-3 text-xs text-muted-foreground">Select a cargo row to load its current location and movement history.</div>
+              )}
               <ReadonlyGrid
                 columns="md:grid-cols-2 xl:grid-cols-4"
                 items={[
@@ -1664,7 +1853,7 @@ function DetailForm({ initialTab = 0 }) {
 
             <CollapsibleCard title={<SectionTitle icon={PackageCheck}>Cargo Status</SectionTitle>} defaultOpen>
               <div className="flex flex-wrap gap-2">
-                {["Pending Registration", "Registered", "Pending Placement", "Stored", "Blocked", "Released"].map((status) => (
+                {["Pending Review", "Approved", "Correction Required", "Rejected"].map((status) => (
                   <StatusBadge key={status} tone={statusTone(status)}>
                     {status} ({statusCounts[status] || 0})
                   </StatusBadge>
@@ -1674,77 +1863,6 @@ function DetailForm({ initialTab = 0 }) {
           </div>
         )}
 
-        {activeTab === 3 && (
-          <div className="space-y-3 p-4">
-            <CollapsibleCard title={<SectionTitle icon={ListChecks}>Placement Logs</SectionTitle>} defaultOpen>
-              <div className="space-y-2">
-                {placementLogs.length > 0 ? (
-                  placementLogs.map((log) => (
-                    <div key={log.id} className="grid gap-2 rounded border border-border bg-muted/20 p-2 text-xs sm:grid-cols-[120px_92px_1fr]">
-                      <span className="font-mono text-muted-foreground">{formatDateTime(log.created_at)}</span>
-                      <StatusBadge tone={log.approved ? "success" : "destructive"}>
-                        {log.approved ? "Success" : "Rejected"}
-                      </StatusBadge>
-                      <span>{log.reason}: {log.detail}</span>
-                    </div>
-                  ))
-                ) : (
-                  <div className="rounded border border-border bg-muted/20 p-2 text-xs text-muted-foreground">
-                    {logsError || "No placement validation logs recorded yet."}
-                  </div>
-                )}
-              </div>
-            </CollapsibleCard>
-
-            <CollapsibleCard title={<SectionTitle icon={FileWarning}>Validation Errors</SectionTitle>} defaultOpen>
-              <div className="grid gap-2 md:grid-cols-2">
-                {failedValidationLogs.length > 0 ? (
-                  failedValidationLogs.map((log) => (
-                    <div key={log.id} className="flex items-center gap-2 rounded border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs">
-                      <AlertTriangle className="h-4 w-4 text-destructive" />
-                      {log.reason}
-                    </div>
-                  ))
-                ) : (
-                  <div className="rounded border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground md:col-span-2">
-                    No validation errors recorded.
-                  </div>
-                )}
-              </div>
-            </CollapsibleCard>
-
-            <CollapsibleCard title={<SectionTitle icon={ClipboardList}>Audit Information</SectionTitle>} defaultOpen>
-              <ReadonlyGrid
-                columns="md:grid-cols-2 xl:grid-cols-4"
-                items={[
-                  { label: "Created By", value: trackingCargo?.received_by || "System" },
-                  { label: "Created Date", value: formatDateTime(trackingCargo?.created_at) },
-                  { label: "Updated By", value: trackingCargo?.received_by || "System" },
-                  { label: "Updated Date", value: formatDateTime(trackingCargo?.updated_at) }
-                ]}
-              />
-            </CollapsibleCard>
-
-            <CollapsibleCard title={<SectionTitle icon={ScanLine}>Barcode Information</SectionTitle>} defaultOpen>
-              <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
-                <ReadonlyGrid
-                  columns="md:grid-cols-3"
-                  items={[
-                    { label: "Cargo Barcode", value: trackingCargo?.barcode || "No cargo selected" },
-                    { label: "Barcode Type", value: trackingCargo?.barcode ? "Code 128" : "Not generated" },
-                    { label: "Generated Timestamp", value: formatDateTime(trackingCargo?.created_at) }
-                  ]}
-                />
-                <div className="flex items-end">
-                  <button className="inline-flex h-9 items-center justify-center gap-1.5 rounded bg-info px-4 text-xs font-semibold text-info-foreground transition hover:opacity-90">
-                    <Printer className="h-3.5 w-3.5" />
-                    Reprint Barcode
-                  </button>
-                </div>
-              </div>
-            </CollapsibleCard>
-          </div>
-        )}
       </div>
 
       {(activeTab === 0 || activeTab === 1) && (
@@ -1753,12 +1871,22 @@ function DetailForm({ initialTab = 0 }) {
             <div className="flex justify-end">
               <button
                 onClick={saveCargo}
-                disabled={savingCargo}
+                disabled={savingCargo || Boolean(savedCargo)}
                 className="inline-flex items-center gap-1.5 rounded bg-success px-4 py-2 text-xs font-semibold text-success-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Save className="h-3.5 w-3.5" />
                 {savingCargo ? "Saving..." : "Save Cargo"}
               </button>
+              {savedCargo && (
+                <button
+                  type="button"
+                  onClick={registerAnotherCargo}
+                  className="ml-2 inline-flex items-center gap-1.5 rounded border border-border bg-secondary px-4 py-2 text-xs font-semibold text-secondary-foreground"
+                >
+                  <ClipboardList className="h-3.5 w-3.5" />
+                  Register Another Cargo
+                </button>
+              )}
             </div>
           ) : (
             <div className="flex flex-wrap justify-end gap-2">
@@ -1771,12 +1899,25 @@ function DetailForm({ initialTab = 0 }) {
                 {placementSaving ? "Confirming..." : "Confirm Placement"}
               </button>
               <button
-                onClick={() => setPlacementNotice(false)}
+                onClick={clearScanSession}
                 className="inline-flex items-center gap-1.5 rounded border border-border bg-secondary px-4 py-2 text-xs font-semibold text-secondary-foreground transition hover:bg-muted"
               >
                 <X className="h-3.5 w-3.5" />
                 Cancel
               </button>
+              {!validation.approved
+                && placementValidation?.cargo?.registration_status !== "Rejected"
+                && placementValidation?.bin && (
+                <button
+                  type="button"
+                  onClick={handleRequestOverride}
+                  disabled={overrideSaving}
+                  className="inline-flex items-center gap-1.5 rounded border border-warning/40 bg-warning/10 px-4 py-2 text-xs font-semibold text-warning disabled:opacity-50"
+                >
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  {overrideSaving ? "Requesting..." : "Request Supervisor Override"}
+                </button>
+              )}
               <button
                 onClick={clearScanSession}
                 className="inline-flex items-center gap-1.5 rounded bg-warning px-4 py-2 text-xs font-semibold text-warning-foreground transition hover:opacity-90"

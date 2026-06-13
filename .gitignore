@@ -17,8 +17,13 @@ coverage/
 *.log
 logs/
 
+# Runtime uploads and local database backups
+backend/uploads/
+docker_backup*.sql
+
 # Editor and operating system files
 .git-temp/
+.codex-publish/
 .idea/
 .vscode/
 .DS_Store

@@ -36,12 +36,14 @@ function statusTone(status) {
   if (status === "suspended") return "destructive";
   if (status === "Available" || status === "Occupied") return "success";
   if (status === "Reserved") return "pending";
-  if (status === "Registered") return "registered";
-  if (status === "Stored") return "success";
-  if (status === "Blocked") return "destructive";
-  if (status === "Released") return "released";
+  if (status === "Approved") return "registered";
+  if (status === "Placed" || status === "Relocated") return "success";
+  if (status === "Blocked" || status === "Rejected") return "destructive";
+  if (status === "Correction Required") return "warning";
+  if (status === "Dispatched") return "released";
+  if (status === "Unplaced") return "pending";
   if (status.includes("Pending")) return "pending";
-  if (status === "Ready for Dispatch") return "info";
+  if (status === "Dispatch Pending") return "info";
   return "muted";
 }
 
