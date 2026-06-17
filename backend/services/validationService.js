@@ -47,6 +47,17 @@ const cargoTypes = new Set([
   "Mixed Cargo"
 ]);
 
+const CARGO_ZONE_COMPATIBILITY = Object.freeze({
+  "General Goods": Object.freeze(["Z-A", "Z-H"]),
+  Electronics: Object.freeze(["Z-B", "Z-H"]),
+  Machinery: Object.freeze(["Z-C", "Z-H"]),
+  "Food Products": Object.freeze(["Z-D", "Z-H"]),
+  "Construction Materials": Object.freeze(["Z-E", "Z-H"]),
+  "Fragile Goods": Object.freeze(["Z-F", "Z-H"]),
+  "Hazardous Cargo": Object.freeze(["Z-G"]),
+  "Mixed Cargo": Object.freeze(["Z-H"])
+});
+
 const packagingTypes = new Set([
   "Boxes",
   "Cartons",
@@ -224,37 +235,88 @@ const isRuleActive = (rules, ruleKey) => {
   return rule ? rule.is_active : true; // default to active if rule doesn't exist
 };
 
+const isCargoAllowedInZone = (cargoType, zoneCode) => (
+  CARGO_ZONE_COMPATIBILITY[cargoType]?.includes(String(zoneCode || "").toUpperCase()) === true
+);
+
+const isCargoAllowedByBinCategory = (cargoType, allowedCargoType) => {
+  const allowedTypes = String(allowedCargoType || "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+
+  if (allowedTypes.length === 0 || allowedTypes.includes("all")) return true;
+  if (allowedTypes.includes(String(cargoType || "").toLowerCase())) return true;
+
+  return (
+    allowedTypes.includes("mixed cargo")
+    && cargoType !== "Hazardous Cargo"
+  );
+};
+
 const validatePlacement = async (payload = {}, executor = db) => {
+  const placementMode = String(payload.placement_mode || payload.placementMode || "scan")
+    .trim()
+    .toLowerCase();
+  const selectedCargoIdentifier = readScannedValue(payload, [
+    "cargo_id",
+    "cargoId",
+    "selected_cargo_id",
+    "selectedCargoId"
+  ]);
   const cargoBarcode = readScannedValue(payload, [
-    "cargo_barcode",
-    "cargoBarcode",
     "scanned_cargo_barcode",
-    "scannedCargoBarcode"
+    "scannedCargoBarcode",
+    "cargo_barcode",
+    "cargoBarcode"
   ]);
   const binBarcode = readScannedValue(payload, [
-    "bin_barcode",
-    "binBarcode",
     "scanned_bin_barcode",
-    "scannedBinBarcode"
+    "scannedBinBarcode",
+    "bin_barcode",
+    "binBarcode"
   ]);
+  const manualBinIdentifier = readScannedValue(payload, [
+    "bin_id",
+    "binId"
+  ]);
+  const cargoIdentifier = placementMode === "manual"
+    ? selectedCargoIdentifier || cargoBarcode
+    : cargoBarcode;
+  const binIdentifier = placementMode === "manual"
+    ? manualBinIdentifier || binBarcode
+    : binBarcode;
 
-  if (!cargoBarcode || !binBarcode) {
+  if (!["scan", "manual"].includes(placementMode)) {
+    return failValidation({
+      reason: "Invalid Placement Mode",
+      detail: "Placement mode must be scan or manual.",
+      checks: {
+        placementMode: { passed: false, message: "Placement mode must be scan or manual." }
+      }
+    });
+  }
+
+  if (!cargoIdentifier || !binIdentifier) {
     return failValidation({
       reason: "Missing Scan Data",
-      detail: "Both cargo barcode and bin barcode are required for placement validation.",
+      detail: placementMode === "manual"
+        ? "Cargo ID and bin selection are required for manual placement validation."
+        : "Both cargo barcode and bin barcode are required for placement validation.",
       checks: {
-        cargoScan: { passed: Boolean(cargoBarcode), message: "Cargo barcode received." },
-        binScan: { passed: Boolean(binBarcode), message: "Bin barcode received." }
+        placementMode: { passed: true, message: `${placementMode} placement mode selected.` },
+        cargoScan: { passed: Boolean(cargoIdentifier), message: "Cargo identifier received." },
+        binScan: { passed: Boolean(binIdentifier), message: "Bin identifier received." }
       }
     });
   }
 
   const cargoResult = await executor.query(
     `SELECT * FROM cargo
-     WHERE (UPPER(barcode) = $1 OR UPPER(cargo_id) = $1)
+     WHERE (id::text = $1 OR UPPER(barcode) = $1 OR UPPER(cargo_id) = $1)
        AND is_deleted = FALSE
      LIMIT 1`,
-    [cargoBarcode]
+    [cargoIdentifier]
   );
 
   if (cargoResult.rowCount === 0) {
@@ -262,8 +324,30 @@ const validatePlacement = async (payload = {}, executor = db) => {
       reason: "Cargo Not Found",
       detail: "No registered cargo matches the scanned cargo barcode.",
       checks: {
+        placementMode: { passed: true, message: `${placementMode} placement mode selected.` },
         cargoFound: { passed: false, message: "Cargo must be registered before placement." }
       }
+    });
+  }
+
+  const cargo = cargoResult.rows[0];
+  const selectedCargoMatches = !selectedCargoIdentifier || [
+    String(cargo.id),
+    String(cargo.cargo_id).toUpperCase(),
+    String(cargo.barcode).toUpperCase()
+  ].includes(selectedCargoIdentifier);
+
+  if (placementMode === "scan" && !selectedCargoMatches) {
+    return failValidation({
+      reason: "Cargo Scan Mismatch",
+      detail: "Scanned cargo does not match selected cargo.",
+      checks: {
+        placementMode: { passed: true, message: "Scan placement mode selected." },
+        cargoFound: { passed: true, message: "Scanned cargo record found." },
+        cargoScanMatch: { passed: false, message: "Scanned cargo does not match selected cargo." }
+      },
+      cargo,
+      bin: null
     });
   }
 
@@ -280,16 +364,17 @@ const validatePlacement = async (payload = {}, executor = db) => {
       z.code AS zone_code,
       z.name AS zone_name,
       z.zone_type,
-      z.allowed_cargo_type,
+      z.allowed_cargo_type AS zone_allowed_cargo_type,
+      COALESCE(b.allowed_cargo_type, z.allowed_cargo_type) AS allowed_cargo_type,
       z.is_hazard_zone,
       z.active AS zone_active
     FROM bins b
     JOIN levels l ON l.id = b.level_id
     JOIN racks r ON r.id = l.rack_id
     JOIN zones z ON z.id = r.zone_id
-    WHERE UPPER(b.barcode) = $1
+    WHERE b.id::text = $1 OR UPPER(b.barcode) = $1 OR UPPER(b.code) = $1
     LIMIT 1`,
-    [binBarcode]
+    [binIdentifier]
   );
 
   if (binResult.rowCount === 0) {
@@ -297,15 +382,15 @@ const validatePlacement = async (payload = {}, executor = db) => {
       reason: "Bin Not Found",
       detail: "No warehouse bin matches the scanned bin barcode.",
       checks: {
+        placementMode: { passed: true, message: `${placementMode} placement mode selected.` },
         cargoFound: { passed: true, message: "Cargo record found." },
         binFound: { passed: false, message: "Scanned bin barcode is not in the storage hierarchy." }
       },
-      cargo: cargoResult.rows[0],
+      cargo,
       bin: null
     });
   }
 
-  const cargo = cargoResult.rows[0];
   const bin = binResult.rows[0];
   const issues = [];
   const cargoWeight = Number(cargo.weight || 0);
@@ -353,7 +438,14 @@ const validatePlacement = async (payload = {}, executor = db) => {
   }
 
   const checks = {
+    placementMode: { passed: true, message: `${placementMode} placement mode selected.` },
     cargoFound: { passed: true, message: "Cargo record found." },
+    cargoScanMatch: {
+      passed: true,
+      message: placementMode === "scan"
+        ? "Scanned cargo matches selected cargo."
+        : "Selected cargo loaded for manual placement."
+    },
     cargoPlacementStatus: { passed: true, message: "Cargo is available for this placement check." },
     binFound: { passed: true, message: "Bin record found." },
     cargoCompatibility: { passed: true, message: "Cargo type matches the selected zone." },
@@ -361,6 +453,7 @@ const validatePlacement = async (payload = {}, executor = db) => {
     weightCapacity: { passed: true, message: "Weight capacity is available." },
     volumeCapacity: { passed: true, message: "Volume capacity is available." },
     blockedBin: { passed: true, message: "Bin is not blocked." },
+    maintenanceBin: { passed: true, message: "Bin is not under maintenance." },
     reservedBin: { passed: true, message: "Bin is not reserved." },
     restrictedZone: { passed: true, message: "Zone is not restricted." },
     activeStorage: { passed: true, message: "Bin and parent storage locations are active." },
@@ -371,14 +464,6 @@ const validatePlacement = async (payload = {}, executor = db) => {
     checks[checkName] = { passed: false, message: detail };
     issues.push({ reason, detail });
   };
-
-  if (cargo.current_bin_id && !alreadyPlacedInThisBin && !cargo.relocation_required) {
-    addIssue(
-      "cargoPlacementStatus",
-      "Cargo Already Placed",
-      "Cargo is already placed in another bin and has not been flagged for relocation."
-    );
-  }
 
   if (!canCargoBePlaced(cargo)) {
     addIssue(
@@ -396,69 +481,67 @@ const validatePlacement = async (payload = {}, executor = db) => {
     addIssue("activeStorage", "Inactive Storage", "Selected bin or one of its parent storage locations is inactive.");
   }
 
-  if (bin.status === "Blocked" && !approvedOverride) {
+  if (bin.status === "Blocked") {
     addIssue("blockedBin", "Blocked Bin", "Selected storage bin is blocked for operations.");
   }
 
-  if (bin.status === "Reserved" && !approvedOverride) {
+  if (bin.status === "Reserved") {
     addIssue("reservedBin", "Reserved Bin", "Reserved bins cannot be used for normal cargo placement.");
   }
 
-  if (bin.status === "Full" && !alreadyPlacedInThisBin && !approvedOverride) {
+  if (bin.status === "Maintenance") {
+    addIssue("maintenanceBin", "Bin Under Maintenance", "Selected storage bin is under maintenance.");
+  }
+
+  if (bin.status === "Full" && !alreadyPlacedInThisBin) {
     addIssue("availableBin", "Bin Full", "Selected storage bin has no remaining capacity.");
   }
 
-  if (!alreadyPlacedInThisBin && !approvedOverride && !["Available", "Occupied", "Blocked", "Reserved", "Full", "Inactive"].includes(bin.status)) {
+  if (!alreadyPlacedInThisBin && !["Available", "Occupied", "Blocked", "Reserved", "Maintenance", "Full", "Inactive"].includes(bin.status)) {
     addIssue("availableBin", "Bin Not Available", `Selected storage bin is ${bin.status} and cannot receive normal placement.`);
   }
 
-  // Hazardous rule (database-driven)
-  if (isRuleActive(rules, "hazardous") && !approvedOverride) {
-    if (bin.is_hazard_zone && cargo.cargo_type !== "Hazardous Cargo") {
-      addIssue("hazardRestriction", "Hazard Restriction", `${cargo.cargo_type} cannot be placed in Hazardous Cargo Zone.`);
-    }
-
-    if (cargo.cargo_type === "Hazardous Cargo" && !bin.is_hazard_zone) {
-      addIssue("hazardRestriction", "Hazard Restriction", "Hazardous cargo must be placed in a Hazardous Zone.");
-    }
+  if (bin.is_hazard_zone && cargo.cargo_type !== "Hazardous Cargo") {
+    addIssue("hazardRestriction", "Hazard Restriction", `${cargo.cargo_type} cannot be placed in Hazardous Cargo Zone.`);
   }
 
-  // Compatibility rule (database-driven, uses zone.allowed_cargo_type instead of hardcoded map)
-  if (isRuleActive(rules, "compatibility") && !approvedOverride) {
-    const allowedTypes = (bin.allowed_cargo_type || "")
-      .split(",")
-      .map((t) => t.trim().toLowerCase())
-      .filter(Boolean);
-
-    if (allowedTypes.length > 0) {
-      const cargoTypeLower = (cargo.cargo_type || "").toLowerCase();
-      const isAllowed = allowedTypes.some((t) => t === cargoTypeLower || t === "all" || t === "mixed cargo");
-      if (!isAllowed) {
-        addIssue("cargoCompatibility", "Incompatible Cargo", `${cargo.cargo_type} is not permitted in zone ${bin.zone_code} (allowed: ${bin.allowed_cargo_type}).`);
-      }
-    }
+  if (cargo.cargo_type === "Hazardous Cargo" && !bin.is_hazard_zone) {
+    addIssue("hazardRestriction", "Hazard Restriction", "Hazardous cargo must be placed in the Hazardous Cargo Zone.");
   }
 
-  // Weight rule (database-driven)
-  if (isRuleActive(rules, "weight") && !approvedOverride) {
-    if (cargoWeight > remainingWeight) {
-      addIssue("weightCapacity", "Weight Capacity Exceeded", "Selected bin does not have enough remaining weight capacity.");
-    }
+  if (!isCargoAllowedInZone(cargo.cargo_type, bin.zone_code)) {
+    const allowedZones = CARGO_ZONE_COMPATIBILITY[cargo.cargo_type] || [];
+    addIssue(
+      "cargoCompatibility",
+      "Incompatible Cargo",
+      `${cargo.cargo_type} cargo can only be stored in ${allowedZones.join(" or ")}.`
+    );
+  } else if (!isCargoAllowedByBinCategory(cargo.cargo_type, bin.allowed_cargo_type)) {
+    addIssue(
+      "cargoCompatibility",
+      "Incompatible Cargo",
+      `${cargo.cargo_type} is not permitted in bin ${bin.barcode} (allowed: ${bin.allowed_cargo_type}).`
+    );
   }
 
-  // Volume rule (database-driven)
-  if (isRuleActive(rules, "volume") && !approvedOverride) {
-    if (cargoVolume > remainingVolume) {
-      addIssue("volumeCapacity", "Volume Capacity Exceeded", "Selected bin does not have enough remaining volume capacity.");
-    }
+  if (cargoWeight > remainingWeight) {
+    addIssue("weightCapacity", "Weight Capacity Exceeded", "Selected bin does not have enough remaining weight capacity.");
   }
 
+  if (cargoVolume > remainingVolume) {
+    addIssue("volumeCapacity", "Volume Capacity Exceeded", "Selected bin does not have enough remaining volume capacity.");
+  }
+
+  let overrideApplied = false;
   if (
     isRuleActive(rules, "restricted")
     && String(bin.zone_type || "").toLowerCase() === "restricted"
-    && !approvedOverride
   ) {
-    addIssue("restrictedZone", "Restricted Zone", "Placement into this restricted zone requires supervisor approval.");
+    if (approvedOverride) {
+      overrideApplied = true;
+    } else {
+      addIssue("restrictedZone", "Restricted Zone", "Placement into this restricted zone requires supervisor approval.");
+    }
   }
 
   const approved = issues.length === 0;
@@ -467,9 +550,9 @@ const validatePlacement = async (payload = {}, executor = db) => {
     approved,
     reason: approved ? "Placement Approved" : issues[0].reason,
     detail: approved
-      ? approvedOverride
+      ? overrideApplied
         ? "Placement approved using an authorized supervisor override."
-        : "Cargo type, hazard rules, capacity, blocked-bin, reserved-bin, and restricted-zone checks passed."
+        : "Cargo identity, compatibility, hazard, capacity, activity, blocked, reserved, maintenance, and restricted-zone checks passed."
       : issues.map((issue) => issue.detail).join(" "),
     checks,
     cargo: {
@@ -503,20 +586,27 @@ const validatePlacement = async (payload = {}, executor = db) => {
       rack_code: bin.rack_code,
       level_id: bin.level_id,
       level_code: bin.level_code,
+      allowed_cargo_type: bin.allowed_cargo_type,
       max_weight: bin.max_weight,
       max_volume: bin.max_volume,
       current_weight: bin.current_weight,
       current_volume: bin.current_volume,
       remaining_weight: remainingWeight,
       remaining_volume: remainingVolume,
-      reserved_for_cargo_type: bin.reserved_for_cargo_type
+      reserved_for_cargo_type: bin.reserved_for_cargo_type,
+      display_location: `${bin.zone_code} / ${bin.rack_code} / ${bin.level_code} / ${bin.barcode}`
     },
-    approval: approvedOverride
+    approval: overrideApplied ? approvedOverride : null,
+    placement_mode: placementMode,
+    manual_reason: payload.manual_placement_reason || payload.manualPlacementReason || null
   };
 };
 
 module.exports = {
+  CARGO_ZONE_COMPATIBILITY,
   cargoFields,
+  isCargoAllowedByBinCategory,
+  isCargoAllowedInZone,
   validateCargoPayload,
   normalizeCargoPayload,
   validatePlacement

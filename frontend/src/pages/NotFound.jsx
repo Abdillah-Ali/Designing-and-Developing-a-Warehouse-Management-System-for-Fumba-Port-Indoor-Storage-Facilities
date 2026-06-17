@@ -9,7 +9,5 @@ const NotFound = () => {
           Return to Home
         </a></div></div>;
 };
-var stdin_default = NotFound;
-export {
-  stdin_default as default
-};
+
+export default NotFound;

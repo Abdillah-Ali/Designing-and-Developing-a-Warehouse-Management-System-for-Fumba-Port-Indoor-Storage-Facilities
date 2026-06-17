@@ -29,6 +29,7 @@ import {
   PackageSearch,
   Plus,
   Power,
+  Printer,
   RefreshCw,
   Rows3,
   Ruler,
@@ -56,6 +57,9 @@ import {
   SectionCard,
   StatusBadge
 } from "@/components/wms/OperationalUi";
+import { BinBarcodeLabel, printBinBarcodeLabel } from "@/components/wms/BarcodeLabel";
+import { EnterpriseModal } from "@/components/wms/EnterpriseModal";
+import { ManualPlacementSetting } from "@/components/wms/ManualPlacementSetting";
 import { ReviewActionModal } from "@/components/wms/ReviewActionModal";
 import { cn } from "@/lib/utils";
 import { getStoredAuthUserId } from "@/lib/portal-access";
@@ -91,6 +95,7 @@ import {
   getWarehouses,
   getZones,
   logout,
+  printBinBarcode,
   rejectSupervisorApproval,
   resetUserPassword,
   updateBin,
@@ -1760,6 +1765,7 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
           barcode: form.barcode,
           capacity_weight: form.max_weight,
           capacity_volume: form.max_volume,
+          allowed_cargo_type: form.allowed_cargo_type,
           reserved_for_cargo_type: form.reserved_for_cargo_type
         };
         if (action.kind === "create") await createBin(payload);
@@ -1780,6 +1786,8 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
       ? "Blocked bins remain visible but cannot receive cargo placement."
       : action.status === "Reserved"
         ? "Reserved bins cannot be used for normal cargo placement."
+        : action.status === "Maintenance"
+          ? "Bins under maintenance remain visible but reject all normal placement operations."
         : "The record will become active and available only when its parent storage locations are active.";
 
   return (
@@ -1883,8 +1891,11 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
                 <FormField label="Bin Code">
                   <input className={inputClass} value={form.bin_code || ""} onChange={(event) => setField("bin_code", event.target.value)} placeholder="BIN-A01-L2-03" required />
                 </FormField>
-                <FormField label="Barcode">
-                  <input className={inputClass} value={form.barcode || ""} onChange={(event) => setField("barcode", event.target.value)} placeholder="BIN-A01-L2-03" required />
+                <FormField label="Barcode (optional)">
+                  <input className={inputClass} value={form.barcode || ""} onChange={(event) => setField("barcode", event.target.value)} placeholder="Defaults to the bin code" />
+                </FormField>
+                <FormField label="Allowed Cargo Category">
+                  <input className={inputClass} value={form.allowed_cargo_type || ""} onChange={(event) => setField("allowed_cargo_type", event.target.value)} placeholder="Defaults to zone category" />
                 </FormField>
                 <FormField label="Reservation Note">
                   <input className={inputClass} value={form.reserved_for_cargo_type || ""} onChange={(event) => setField("reserved_for_cargo_type", event.target.value)} placeholder="Optional" />
@@ -1915,8 +1926,10 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
 function WarehouseConfigPage({ scope }) {
   const hierarchy = useWarehouseHierarchy();
   const [action, setAction] = useState(null);
+  const [labelBin, setLabelBin] = useState(null);
   const [binStatusFilter, setBinStatusFilter] = useState("");
   const [generating, setGenerating] = useState(false);
+  const binLabelRef = useRef(null);
   const config = {
     zones: {
       title: "Zones",
@@ -2011,6 +2024,7 @@ function WarehouseConfigPage({ scope }) {
     bins: [
       { key: "bin_code", label: "Bin Code", render: (row) => row.bin_code, className: "font-mono font-semibold" },
       { key: "barcode", label: "Barcode", className: "font-mono" },
+      { key: "allowed_cargo_type", label: "Allowed Cargo", render: (row) => row.allowed_cargo_type || "Zone rules" },
       { key: "zone", label: "Zone", render: (row) => row.zone_code },
       { key: "rack", label: "Rack", render: (row) => row.rack_code },
       { key: "level", label: "Level", render: (row) => row.level_code },
@@ -2028,8 +2042,10 @@ function WarehouseConfigPage({ scope }) {
             <button className={actionButtonClass} type="button" onClick={() => setAction({ kind: "edit", row })}>Edit</button>
             <button className={actionButtonClass} type="button" disabled={!row.active || row.status === "Blocked"} onClick={() => setAction({ kind: "status", row, status: "Blocked" })}>Block</button>
             <button className={actionButtonClass} type="button" disabled={!row.active || row.status === "Reserved"} onClick={() => setAction({ kind: "status", row, status: "Reserved" })}>Reserve</button>
+            <button className={actionButtonClass} type="button" disabled={!row.active || row.status === "Maintenance"} onClick={() => setAction({ kind: "status", row, status: "Maintenance" })}>Maintenance</button>
             <button className={actionButtonClass} type="button" disabled={row.active && row.status === "Available"} onClick={() => setAction({ kind: "status", row, status: "Available" })}>Activate</button>
             <button className={actionButtonClass} type="button" disabled={!row.active} onClick={() => setAction({ kind: "status", row, status: "Inactive" })}>Deactivate</button>
+            <button className={actionButtonClass} type="button" onClick={() => setLabelBin(row)}>View Label</button>
           </div>
         )
       }
@@ -2113,6 +2129,7 @@ function WarehouseConfigPage({ scope }) {
                       <option value="Occupied">Occupied</option>
                       <option value="Reserved">Reserved</option>
                       <option value="Blocked">Blocked</option>
+                      <option value="Maintenance">Maintenance</option>
                       <option value="Inactive">Inactive</option>
                     </SelectField>
                   </FormField>
@@ -2145,6 +2162,39 @@ function WarehouseConfigPage({ scope }) {
           hierarchy.refresh();
         }}
       />
+      <EnterpriseModal
+        open={Boolean(labelBin)}
+        title={labelBin ? `Bin Barcode: ${labelBin.barcode}` : "Bin Barcode"}
+        subtitle="View and print the physical warehouse bin label."
+        size="medium"
+        onClose={() => setLabelBin(null)}
+        footer={(
+          <>
+            <button type="button" onClick={() => setLabelBin(null)} className="rounded border border-border px-4 py-2 text-xs font-semibold">
+              Close
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  await printBinBarcode(labelBin.id || labelBin.bin_id);
+                  if (!printBinBarcodeLabel(binLabelRef.current)) {
+                    toast.error("The browser blocked the print preview window.");
+                  }
+                } catch (error) {
+                  toast.error("Bin label could not be printed.", { description: getErrorMessage(error) });
+                }
+              }}
+              className="inline-flex items-center gap-2 rounded bg-info px-4 py-2 text-xs font-semibold text-info-foreground"
+            >
+              <Printer className="h-4 w-4" />
+              Print Bin Label
+            </button>
+          </>
+        )}
+      >
+        {labelBin && <BinBarcodeLabel ref={binLabelRef} bin={labelBin} />}
+      </EnterpriseModal>
     </>
   );
 }
@@ -2543,6 +2593,9 @@ function PlacementMonitoringPage() {
         description="Monitor placement attempts, validation failures, occupied bins, rejected placements, and scanner activity."
       />
       <div className="flex-1 overflow-auto p-4">
+        <div className="mb-3">
+          <ManualPlacementSetting />
+        </div>
         <div className="grid gap-3 lg:grid-cols-4">
           <SectionCard title="Placement Attempts" icon={ClipboardCheck}>
             <DataTable
@@ -2552,7 +2605,9 @@ function PlacementMonitoringPage() {
               emptyTitle="No placement attempts loaded"
               columns={[
                 { key: "created_at", label: "Time", render: (row) => formatDateTime(row.created_at) },
-                { key: "result", label: "Status", render: (row) => <StatusBadge tone={row.approved ? "success" : "destructive"}>{row.approved ? "Validation Passed" : "Validation Failed"}</StatusBadge> },
+                { key: "attempt_stage", label: "Stage", render: (row) => row.attempt_stage || "validation" },
+                { key: "placement_mode", label: "Mode", render: (row) => row.placement_mode || "scan" },
+                { key: "result", label: "Status", render: (row) => <StatusBadge tone={row.approved ? "success" : "destructive"}>{row.approved ? "Passed" : "Failed"}</StatusBadge> },
                 { key: "cargo_barcode", label: "Cargo", render: (row) => row.cargo_barcode || "No cargo barcode" },
                 { key: "bin_barcode", label: "Bin", render: (row) => row.bin_barcode || "No bin barcode" },
                 { key: "detail", label: "Detail", render: (row) => row.detail || row.reason || "No detail recorded" }
@@ -2668,6 +2723,8 @@ function ValidationLogsPage({ logs: providedLogs, mode = "validation" } = {}) {
             emptyBody="Validation logs will appear when placement validation events are recorded."
             columns={[
               { key: "created_at", label: "Timestamp", render: (row) => formatDateTime(row.created_at), className: "font-mono text-muted-foreground" },
+              { key: "attempt_stage", label: "Stage", render: (row) => row.attempt_stage || "validation" },
+              { key: "placement_mode", label: "Mode", render: (row) => row.placement_mode || "scan" },
               { key: "event", label: "Event", render: (row) => row.reason || "Validation event" },
               { key: "result", label: "Result", render: (row) => <StatusBadge tone={row.approved ? "success" : "destructive"}>{row.approved ? "Passed" : "Rejected"}</StatusBadge> },
               { key: "cargo_barcode", label: "Cargo", render: (row) => row.cargo_barcode || "Not recorded" },

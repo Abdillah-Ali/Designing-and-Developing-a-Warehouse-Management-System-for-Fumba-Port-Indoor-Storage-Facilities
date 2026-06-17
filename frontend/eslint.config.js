@@ -29,7 +29,21 @@ export default [
       ...reactHooks.configs.recommended.rules,
       "no-unused-vars": "off",
       "no-empty": ["error", { allowEmptyCatch: true }],
-      "react-refresh/only-export-components": ["warn", { allowConstantExport: true }],
+      "react-refresh/only-export-components": ["warn", {
+        allowConstantExport: true,
+        allowExportNames: [
+          "badgeVariants",
+          "buttonVariants",
+          "encodeCode128B",
+          "navigationMenuTriggerStyle",
+          "printBarcodeLabel",
+          "printBinBarcodeLabel",
+          "toast",
+          "toggleVariants",
+          "useFormField",
+          "useSidebar",
+        ],
+      }],
     },
   },
 ];

@@ -183,8 +183,15 @@ const getCargo = async (req, res, next) => {
         OR c.barcode ILIKE $${values.length}
         OR c.consignee_name ILIKE $${values.length}
         OR c.company_name ILIKE $${values.length}
+        OR c.contact_person ILIKE $${values.length}
+        OR c.phone_number ILIKE $${values.length}
+        OR c.email ILIKE $${values.length}
+        OR c.cargo_type ILIKE $${values.length}
+        OR c.cargo_description ILIKE $${values.length}
+        OR c.packaging_type ILIKE $${values.length}
         OR c.container_number ILIKE $${values.length}
         OR c.vehicle_number ILIKE $${values.length}
+        OR c.delivery_note_number ILIKE $${values.length}
       )`);
     }
 
@@ -902,7 +909,7 @@ const updateCargo = async (req, res, next) => {
          SET current_weight = GREATEST(0, current_weight + $1),
              current_volume = GREATEST(0, current_volume + $2),
              status = CASE
-               WHEN status IN ('Blocked', 'Reserved', 'Inactive') THEN status
+               WHEN status IN ('Blocked', 'Reserved', 'Maintenance', 'Inactive') THEN status
                WHEN GREATEST(0, current_weight + $1) >= max_weight
                  OR GREATEST(0, current_volume + $2) >= max_volume
                  THEN 'Full'

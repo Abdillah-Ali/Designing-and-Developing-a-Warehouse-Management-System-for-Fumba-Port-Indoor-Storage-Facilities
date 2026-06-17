@@ -36,6 +36,7 @@ function statusTone(status) {
   if (status === "suspended") return "destructive";
   if (status === "Available" || status === "Occupied") return "success";
   if (status === "Reserved") return "pending";
+  if (status === "Maintenance") return "warning";
   if (status === "Approved") return "registered";
   if (status === "Placed" || status === "Relocated") return "success";
   if (status === "Blocked" || status === "Rejected") return "destructive";

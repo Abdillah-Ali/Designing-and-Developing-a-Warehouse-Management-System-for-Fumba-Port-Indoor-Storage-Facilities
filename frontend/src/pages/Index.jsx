@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Navigate, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
+import { Navigate, Route, Routes, useSearchParams } from "react-router-dom";
 import {
   Boxes,
+  Clock3,
   ClipboardCheck,
   ClipboardList,
   DoorOpen,
   PackageCheck,
   PackagePlus,
+  Search,
   Rows3,
   ScanLine,
   SquareStack,
@@ -18,6 +20,8 @@ import { AppLayout } from "@/components/wms/AppLayout";
 import { BarcodeLabel, printBarcodeLabel } from "@/components/wms/BarcodeLabel";
 import { CargoCorrectionModal } from "@/components/wms/CargoCorrectionModal";
 import { DetailForm } from "@/components/wms/DetailForm";
+import { EnterpriseModal } from "@/components/wms/EnterpriseModal";
+import { PlacementSessionModal } from "@/components/wms/PlacementSessionModal";
 import {
   DataTable,
   ErrorState,
@@ -306,13 +310,13 @@ const placementQueueFilters = [
   "Relocation Required"
 ];
 
-function PlacementQueuePage() {
-  const navigate = useNavigate();
+function PlacementQueuePanel() {
   const barcodeRef = useRef(null);
   const [records, setRecords] = useState([]);
   const [filter, setFilter] = useState("Unplaced");
   const [selected, setSelected] = useState(null);
   const [printCargo, setPrintCargo] = useState(null);
+  const [placementCargo, setPlacementCargo] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -367,144 +371,197 @@ function PlacementQueuePage() {
   }), [filter, records]);
 
   const startPlacement = (cargo) => {
-    navigate(`/staff/cargo/placement-scanning?cargo=${encodeURIComponent(cargo.barcode)}`);
+    setPlacementCargo(cargo);
   };
 
   return (
-    <>
-      <PageHeader
-        eyebrow="Cargo Operations"
-        title="Placement Queue"
-        description="Select registered cargo when warehouse staff are ready to begin the scan-based placement session."
-      />
-      <div className="flex-1 overflow-auto p-4">
-        <div className="space-y-3">
-          {error && <ErrorState message={error} />}
-          <SectionCard title="Queue Filters" icon={ClipboardList}>
-            <div className="flex flex-wrap gap-2">
-              {placementQueueFilters.map((item) => (
-                <button
-                  key={item}
-                  type="button"
-                  onClick={() => setFilter(item)}
-                  className={`rounded border px-3 py-2 text-xs font-semibold ${
-                    filter === item
-                      ? "border-info bg-info/10 text-info"
-                      : "border-border bg-background text-muted-foreground"
+    <div className="h-full overflow-auto p-3">
+      <div className="space-y-3">
+        {error && <ErrorState message={error} />}
+        <SectionCard title="Queue Filters" icon={ClipboardList}>
+          <div className="grid grid-cols-7 gap-1.5">
+            {placementQueueFilters.map((item) => (
+              <button
+                key={item}
+                type="button"
+                title={item}
+                onClick={() => setFilter(item)}
+                className={`min-w-0 overflow-hidden whitespace-nowrap rounded border px-1 py-2 text-[10px] font-semibold ${
+                  filter === item
+                    ? "border-info bg-info/10 text-info"
+                    : "border-border bg-background text-muted-foreground"
                   }`}
-                >
-                  {item}
-                </button>
-              ))}
-            </div>
-          </SectionCard>
+              >
+                {item === "Correction Required"
+                  ? "Correction"
+                  : item === "Relocation Required"
+                    ? "Relocation"
+                    : item}
+              </button>
+            ))}
+          </div>
+        </SectionCard>
 
-          <SectionCard title={`${filter} Cargo`} icon={PackagePlus}>
-            <DataTable
-              loading={loading}
-              rows={visibleRecords}
-              emptyTitle={`No ${filter.toLowerCase()} cargo in the placement queue`}
-              columns={[
-                { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
-                { key: "barcode", label: "Barcode", className: "font-mono" },
-                { key: "cargo_type", label: "Cargo Type" },
-                { key: "quantity", label: "Quantity", render: (row) => formatCount(row.quantity) },
-                { key: "weight", label: "Weight", render: (row) => formatMeasure(row.weight, "kg") },
-                { key: "created_at", label: "Registered", render: (row) => formatDateTime(row.created_at) },
-                {
-                  key: "registration_status",
-                  label: "Registration",
-                  render: (row) => <StatusBadge tone={statusTone(row.registration_status)}>{row.registration_status}</StatusBadge>
-                },
-                {
-                  key: "placement_status",
-                  label: "Placement",
-                  render: (row) => <StatusBadge tone={statusTone(row.placement_status)}>{row.placement_status}</StatusBadge>
-                },
-                {
-                  key: "location",
-                  label: "Current Location",
-                  render: (row) => row.location || "Not placed"
-                },
-                {
-                  key: "actions",
-                  label: "Actions",
-                  render: (row) => {
-                    const canStart = row.registration_status !== "Rejected"
-                      && row.placement_status !== "Dispatched"
-                      && (row.placement_status === "Unplaced" || row.relocation_required);
-                    return (
-                      <div className="flex flex-wrap gap-1.5">
+        <SectionCard title={`${filter} Cargo`} icon={PackagePlus}>
+          <DataTable
+            loading={loading}
+            rows={visibleRecords}
+            emptyTitle={`No ${filter.toLowerCase()} cargo in the placement queue`}
+            tableClassName="!min-w-0 table-fixed"
+            containerClassName="overflow-hidden"
+            columns={[
+              { key: "cargo_id", label: "Cargo ID", headerClassName: "w-[18%] whitespace-nowrap", className: "truncate whitespace-nowrap font-mono font-semibold" },
+              { key: "cargo_type", label: "Cargo Type", headerClassName: "w-[17%] whitespace-nowrap", className: "truncate whitespace-nowrap" },
+              {
+                key: "placement_status",
+                label: "Placement Status",
+                headerClassName: "w-[18%] whitespace-nowrap",
+                className: "whitespace-nowrap",
+                render: (row) => <StatusBadge tone={statusTone(row.placement_status)}>{row.placement_status}</StatusBadge>
+              },
+              {
+                key: "location",
+                label: "Current Location",
+                headerClassName: "w-[17%] whitespace-nowrap",
+                className: "truncate whitespace-nowrap",
+                render: (row) => row.location || "Not placed"
+              },
+              {
+                key: "actions",
+                label: "Actions",
+                headerClassName: "w-[30%] whitespace-nowrap",
+                className: "overflow-hidden whitespace-nowrap",
+                render: (row) => {
+                  const canStart = row.registration_status !== "Rejected"
+                    && row.placement_status !== "Dispatched";
+                  return (
+                    <div className="flex min-w-0 flex-nowrap items-center gap-1">
+                      <button
+                        type="button"
+                        disabled={!canStart}
+                        onClick={() => startPlacement(row)}
+                        className="min-w-0 whitespace-nowrap rounded bg-success px-1.5 py-1 text-[9px] font-semibold text-success-foreground disabled:opacity-40"
+                      >
+                        {["Placed", "Relocated"].includes(row.placement_status) ? "Relocate" : "Start Placement"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelected(row)}
+                        className="min-w-0 whitespace-nowrap rounded border border-info/30 bg-info/10 px-1.5 py-1 text-[9px] font-semibold text-info"
+                      >
+                        Details
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPrintCargo(row)}
+                        className="min-w-0 whitespace-nowrap rounded border border-border px-1.5 py-1 text-[9px] font-semibold"
+                      >
+                        Print
+                      </button>
+                      {row.registration_status === "Correction Required" && (
                         <button
-                          type="button"
-                          disabled={!canStart}
-                          onClick={() => startPlacement(row)}
-                          className="rounded bg-success px-2 py-1 text-[11px] font-semibold text-success-foreground disabled:opacity-40"
-                        >
-                          {row.relocation_required ? "Start Relocation" : "Start Placement"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setSelected(row)}
-                          className="rounded border border-info/30 bg-info/10 px-2 py-1 text-[11px] font-semibold text-info"
-                        >
-                          View Details
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setPrintCargo(row)}
-                          className="rounded border border-border px-2 py-1 text-[11px] font-semibold"
-                        >
-                          Print Barcode
-                        </button>
-                        {row.registration_status === "Correction Required" && (
-                          <button
                             type="button"
                             onClick={() => setSelected(row)}
-                            className="rounded bg-warning px-2 py-1 text-[11px] font-semibold text-warning-foreground"
+                            className="min-w-0 whitespace-nowrap rounded bg-warning px-1.5 py-1 text-[9px] font-semibold text-warning-foreground"
                           >
-                            View Correction
-                          </button>
-                        )}
-                      </div>
-                    );
-                  }
+                            Correction
+                        </button>
+                      )}
+                    </div>
+                  );
                 }
-              ]}
-            />
-          </SectionCard>
+              }
+            ]}
+          />
+        </SectionCard>
 
-          {selected && (
-            <SectionCard title={`Cargo Details: ${selected.cargo_id}`} icon={PackageCheck}>
-              <div className="grid gap-3 text-xs md:grid-cols-2 xl:grid-cols-4">
-                <div><span className="text-muted-foreground">Consignee:</span> <strong>{selected.consignee_name}</strong></div>
-                <div><span className="text-muted-foreground">Volume:</span> <strong>{formatMeasure(selected.volume, "m3")}</strong></div>
-                <div><span className="text-muted-foreground">Hazard Class:</span> <strong>{selected.hazard_class || "Not applicable"}</strong></div>
-                <div><span className="text-muted-foreground">Current Bin:</span> <strong>{selected.bin_barcode || "Not placed"}</strong></div>
-                <div className="md:col-span-2 xl:col-span-4">
-                  <span className="text-muted-foreground">Supervisor Message:</span>{" "}
-                  <strong>{selected.correction_notes || selected.rejection_reason || "No correction message"}</strong>
+      </div>
+      <EnterpriseModal
+        open={Boolean(selected)}
+        title={selected ? `Cargo Details: ${selected.cargo_id}` : "Cargo Details"}
+        subtitle="Registered cargo, approval, placement, and location information."
+        size="medium"
+        onClose={() => setSelected(null)}
+        footer={(
+          <button
+            type="button"
+            onClick={() => setSelected(null)}
+            className="rounded border border-border bg-background px-4 py-2 text-xs font-semibold hover:bg-muted"
+          >
+            Close
+          </button>
+        )}
+      >
+        {selected && (
+          <div className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {[
+                ["Cargo ID", selected.cargo_id],
+                ["Barcode", selected.barcode],
+                ["Cargo Type", selected.cargo_type],
+                ["Consignee", selected.consignee_name],
+                ["Contact Phone", selected.phone_number || "No phone"],
+                ["Quantity", formatCount(selected.quantity)],
+                ["Weight", formatMeasure(selected.weight, "kg")],
+                ["Volume", formatMeasure(selected.volume, "m3")],
+                ["Hazard Class", selected.hazard_class || "Not applicable"],
+                ["Current Location", selected.location || "Not placed"],
+                ["Current Bin", selected.bin_barcode || "Not placed"],
+                ["Registered", formatDateTime(selected.created_at)]
+              ].map(([label, value]) => (
+                <div key={label} className="rounded border border-border bg-card p-3">
+                  <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
+                  <div className="mt-1 break-words text-xs font-semibold">{value}</div>
                 </div>
-                {selected.relocation_required && (
-                  <div className="md:col-span-2 xl:col-span-4 text-warning">
-                    <strong>Relocation required:</strong> {selected.relocation_reason}
-                  </div>
-                )}
+              ))}
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded border border-border bg-card p-3">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Registration Status</div>
+                <div className="mt-2">
+                  <StatusBadge tone={statusTone(selected.registration_status)}>{selected.registration_status}</StatusBadge>
+                </div>
               </div>
-            </SectionCard>
-          )}
-        </div>
-        {printCargo && (
-          <div className="fixed -left-[10000px] top-0">
-            <BarcodeLabel ref={barcodeRef} cargo={printCargo} />
+              <div className="rounded border border-border bg-card p-3">
+                <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Placement Status</div>
+                <div className="mt-2">
+                  <StatusBadge tone={statusTone(selected.placement_status)}>{selected.placement_status}</StatusBadge>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded border border-border bg-card p-3">
+              <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Supervisor Message</div>
+              <div className="mt-1 text-xs font-semibold">
+                {selected.correction_notes || selected.rejection_reason || "No correction message"}
+              </div>
+            </div>
+
+            {selected.relocation_required && (
+              <div className="rounded border border-warning/40 bg-warning/10 p-3 text-xs text-warning">
+                <strong>Relocation required:</strong> {selected.relocation_reason}
+              </div>
+            )}
           </div>
         )}
-      </div>
-    </>
+      </EnterpriseModal>
+      <PlacementSessionModal
+        open={Boolean(placementCargo)}
+        cargo={placementCargo}
+        onClose={() => setPlacementCargo(null)}
+        onCompleted={load}
+      />
+      {printCargo && (
+        <div className="fixed -left-[10000px] top-0">
+          <BarcodeLabel ref={barcodeRef} cargo={printCargo} />
+        </div>
+      )}
+    </div>
   );
 }
 
-function RegistrationReviewsPage() {
+function RegistrationReviewsPanel() {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -531,12 +588,7 @@ function RegistrationReviewsPage() {
 
   return (
     <>
-      <PageHeader
-        eyebrow="Cargo Registration"
-        title="My Registration Reviews"
-        description="Review pending, rejected, and correction-required cargo registrations submitted by your account."
-      />
-      <div className="flex-1 overflow-auto p-4">
+      <div className="h-full overflow-auto p-3">
         <div className="space-y-3">
           {error && <ErrorState message={error} />}
           <SectionCard title="Registration Review Status" icon={ClipboardCheck}>
@@ -544,32 +596,40 @@ function RegistrationReviewsPage() {
               loading={loading}
               rows={records}
               emptyTitle="No registrations are awaiting review or correction"
+              tableClassName="!min-w-0 table-fixed"
+              containerClassName="overflow-hidden"
               columns={[
-                { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
-                { key: "consignee_name", label: "Consignee" },
-                { key: "cargo_type", label: "Cargo Type" },
+                { key: "cargo_id", label: "Cargo ID", headerClassName: "w-[14%]", className: "truncate font-mono font-semibold" },
+                { key: "consignee_name", label: "Consignee", headerClassName: "w-[17%]", className: "truncate" },
+                { key: "cargo_type", label: "Cargo Type", headerClassName: "w-[16%]", className: "truncate" },
                 {
                   key: "registration_status",
                   label: "Review Status",
+                  headerClassName: "w-[17%]",
+                  className: "whitespace-nowrap",
                   render: (row) => <StatusBadge tone={statusTone(row.registration_status)}>{row.registration_status}</StatusBadge>
                 },
                 {
                   key: "review_notes",
                   label: "Supervisor Notes",
+                  headerClassName: "w-[23%]",
+                  className: "truncate",
                   render: (row) => row.correction_notes || row.corrective_notes || row.rejection_reason || "Awaiting review"
                 },
                 {
                   key: "action",
                   label: "Action",
+                  headerClassName: "w-[13%]",
+                  className: "overflow-hidden whitespace-nowrap",
                   render: (row) => ["Correction Required", "Rejected"].includes(row.registration_status) ? (
                     <button
                       type="button"
                       onClick={() => setSelectedId(String(row.id))}
-                      className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground"
+                      className="max-w-full truncate whitespace-nowrap rounded bg-info px-1.5 py-1 text-[9px] font-semibold text-info-foreground"
                     >
-                      {row.registration_status === "Rejected" ? "Revise Registration" : "Correct Details"}
+                      {row.registration_status === "Rejected" ? "Revise" : "Correct"}
                     </button>
-                  ) : <span className="text-[11px] text-muted-foreground">Read only</span>
+                  ) : <span className="whitespace-nowrap text-[10px] text-muted-foreground">Read only</span>
                 }
               ]}
             />
@@ -582,6 +642,292 @@ function RegistrationReviewsPage() {
         onClose={() => setSelectedId("")}
         onCompleted={load}
       />
+    </>
+  );
+}
+
+const cargoSearchTypes = [
+  "General Goods",
+  "Electronics",
+  "Machinery",
+  "Food Products",
+  "Construction Materials",
+  "Fragile Goods",
+  "Hazardous Cargo",
+  "Mixed Cargo"
+];
+
+const registrationWorkspaceTabs = [
+  { id: "registration", label: "Cargo Registration", icon: ClipboardList },
+  { id: "reviews", label: "My Registration Reviews", icon: ClipboardCheck },
+  { id: "placement", label: "Placement Queue", icon: PackagePlus }
+];
+
+function CompactCargoList({ records, loading, error, emptyTitle }) {
+  if (loading) {
+    return <div className="rounded border border-border bg-muted/20 px-3 py-4 text-xs text-muted-foreground">Loading cargo...</div>;
+  }
+
+  if (error) return <ErrorState message={error} />;
+
+  if (!records.length) {
+    return (
+      <div className="rounded border border-dashed border-border bg-muted/20 px-3 py-4 text-center text-xs text-muted-foreground">
+        {emptyTitle}
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-hidden rounded border border-border bg-background">
+      <table className="w-full table-fixed text-left">
+        <thead className="bg-panel-header text-panel-header-foreground">
+          <tr className="text-[10px] font-semibold">
+            <th className="w-[34%] whitespace-nowrap px-2 py-2">Consignee Name</th>
+            <th className="w-[41%] whitespace-nowrap px-2 py-2">Status</th>
+            <th className="w-[25%] whitespace-nowrap px-2 py-2">Contact Phone</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-border">
+          {records.map((record) => (
+            <tr key={record.id || record.cargo_id} className="align-middle hover:bg-muted/30">
+              <td className="px-2 py-2.5">
+                <div
+                  className="truncate whitespace-nowrap text-[11px] font-semibold"
+                  title={record.consignee_name || "No consignee"}
+                >
+                  {record.consignee_name || "No consignee"}
+                </div>
+              </td>
+              <td className="px-2 py-2">
+                <div className="flex items-center gap-1 whitespace-nowrap">
+                  <StatusBadge
+                    tone={statusTone(record.registration_status)}
+                    className="shrink-0 px-1.5 text-[9px]"
+                  >
+                    {record.registration_status || "Pending Review"}
+                  </StatusBadge>
+                  <StatusBadge
+                    tone={statusTone(record.placement_status)}
+                    className="shrink-0 px-1.5 text-[9px]"
+                  >
+                    {record.placement_status || "Unplaced"}
+                  </StatusBadge>
+                </div>
+              </td>
+              <td className="whitespace-nowrap px-2 py-2.5 text-[10px] text-muted-foreground">
+                {record.phone_number || record.contact_phone || "No phone"}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CargoSearchSidebar({ refreshKey }) {
+  const [searchTerm, setSearchTerm] = useState("");
+  const [cargoType, setCargoType] = useState("All");
+  const [searchResults, setSearchResults] = useState([]);
+  const [recentRecords, setRecentRecords] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [recentLoading, setRecentLoading] = useState(true);
+  const [searchError, setSearchError] = useState("");
+  const [recentError, setRecentError] = useState("");
+  const [hasSearched, setHasSearched] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setRecentLoading(true);
+    setRecentError("");
+
+    getCargo({ limit: 8 })
+      .then((response) => {
+        if (active) setRecentRecords(response.data || []);
+      })
+      .catch((error) => {
+        if (active) setRecentError(getErrorMessage(error));
+      })
+      .finally(() => {
+        if (active) setRecentLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [refreshKey]);
+
+  const runSearch = async (event) => {
+    event?.preventDefault();
+    setSearchLoading(true);
+    setSearchError("");
+    setHasSearched(true);
+
+    try {
+      const response = await getCargo({
+        ...(searchTerm.trim() ? { search: searchTerm.trim() } : {}),
+        ...(cargoType !== "All" ? { cargo_type: cargoType } : {}),
+        limit: 30
+      });
+      setSearchResults(response.data || []);
+    } catch (error) {
+      setSearchError(getErrorMessage(error));
+      setSearchResults([]);
+    } finally {
+      setSearchLoading(false);
+    }
+  };
+
+  const clearSearch = () => {
+    setSearchTerm("");
+    setCargoType("All");
+    setSearchResults([]);
+    setSearchError("");
+    setHasSearched(false);
+  };
+
+  return (
+    <aside className="flex min-h-0 flex-col overflow-hidden rounded-md border border-border bg-card">
+      <div className="border-b border-border bg-panel-header px-3 py-2.5">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <Search className="h-4 w-4 text-info" />
+          Search Cargo
+        </div>
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          Find cargo by ID, barcode, consignee, company, cargo type, vehicle, container, or delivery note.
+        </p>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto">
+        <form onSubmit={runSearch} className="space-y-2.5 border-b border-border p-3">
+          <label className="block space-y-1.5">
+            <span className="text-[11px] font-semibold text-foreground/80">Search any cargo</span>
+            <input
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              className={inputClass}
+              placeholder="ID, barcode, consignee..."
+            />
+          </label>
+          <label className="block space-y-1.5">
+            <span className="text-[11px] font-semibold text-foreground/80">Cargo type</span>
+            <select value={cargoType} onChange={(event) => setCargoType(event.target.value)} className={inputClass}>
+              <option>All</option>
+              {cargoSearchTypes.map((type) => <option key={type}>{type}</option>)}
+            </select>
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <button type="submit" className="inline-flex items-center justify-center gap-1.5 rounded bg-success px-3 py-2 text-xs font-semibold text-success-foreground">
+              <Search className="h-3.5 w-3.5" />
+              Search
+            </button>
+            <button type="button" onClick={clearSearch} className="rounded border border-border bg-background px-3 py-2 text-xs font-semibold">
+              Clear
+            </button>
+          </div>
+        </form>
+
+        {hasSearched && (
+          <section className="space-y-2 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-xs font-semibold">Search Results</h2>
+              {!searchLoading && !searchError && (
+                <span className="text-[10px] text-muted-foreground">{searchResults.length} found</span>
+              )}
+            </div>
+            <CompactCargoList
+              records={searchResults}
+              loading={searchLoading}
+              error={searchError}
+              emptyTitle="No cargo matched your search."
+            />
+          </section>
+        )}
+
+        <section className="space-y-2 border-t border-border p-3">
+          <div>
+            <div className="flex items-center gap-2 text-xs font-semibold">
+              <Clock3 className="h-3.5 w-3.5 text-info" />
+              Recent Registered Cargo
+            </div>
+            <p className="mt-1 text-[10px] text-muted-foreground">The latest cargo added to the warehouse.</p>
+          </div>
+          <CompactCargoList
+            records={recentRecords}
+            loading={recentLoading}
+            error={recentError}
+            emptyTitle="No cargo has been registered yet."
+          />
+        </section>
+      </div>
+    </aside>
+  );
+}
+
+function CargoRegistrationWorkspace() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [refreshKey, setRefreshKey] = useState(0);
+  const requestedTab = searchParams.get("tab") || "registration";
+  const activeTab = registrationWorkspaceTabs.some((tab) => tab.id === requestedTab)
+    ? requestedTab
+    : "registration";
+
+  const selectTab = (tabId) => {
+    const next = new URLSearchParams(searchParams);
+    if (tabId === "registration") next.delete("tab");
+    else next.set("tab", tabId);
+    setSearchParams(next, { replace: true });
+  };
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Cargo Operations"
+        title="Cargo Registration"
+        description="Register cargo, follow your supervisor reviews, and manage cargo awaiting warehouse placement."
+      />
+      <div className="grid min-h-0 flex-1 gap-3 overflow-hidden p-3 lg:grid-cols-[420px_minmax(0,1fr)] xl:grid-cols-[480px_minmax(0,1fr)]">
+        <CargoSearchSidebar refreshKey={refreshKey} />
+
+        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-md border border-border bg-card">
+          <div className="flex shrink-0 overflow-x-auto border-b border-border bg-muted/20 px-2 pt-2">
+            {registrationWorkspaceTabs.map((tab) => {
+              const Icon = tab.icon;
+              const selected = tab.id === activeTab;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => selectTab(tab.id)}
+                  className={`relative inline-flex min-w-max items-center gap-2 rounded-t-md border border-b-0 px-4 py-2.5 text-xs font-semibold transition ${
+                    selected
+                      ? "border-border bg-card text-info"
+                      : "border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                  }`}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  {tab.label}
+                  {selected && <span className="absolute inset-x-0 -bottom-px h-0.5 bg-info" />}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-hidden">
+            {activeTab === "registration" && (
+              <div className="h-full p-3">
+                <DetailForm
+                  initialTab={0}
+                  onCargoSaved={() => setRefreshKey((current) => current + 1)}
+                />
+              </div>
+            )}
+            {activeTab === "reviews" && <RegistrationReviewsPanel />}
+            {activeTab === "placement" && <PlacementQueuePanel />}
+          </div>
+        </section>
+      </div>
     </>
   );
 }
@@ -1047,16 +1393,10 @@ const Index = () => {
         <Route path="dashboard" element={<DashboardPage />} />
         <Route
           path="cargo/registration"
-          element={
-            <CargoWorkflowPage
-              tab={0}
-              title="Cargo Registration"
-              description="Register newly received cargo and generate identifiers and barcodes."
-            />
-          }
+          element={<CargoRegistrationWorkspace />}
         />
-        <Route path="cargo/registration-reviews" element={<RegistrationReviewsPage />} />
-        <Route path="cargo/placement-queue" element={<PlacementQueuePage />} />
+        <Route path="cargo/registration-reviews" element={<Navigate to="/staff/cargo/registration?tab=reviews" replace />} />
+        <Route path="cargo/placement-queue" element={<Navigate to="/staff/cargo/registration?tab=placement" replace />} />
         <Route
           path="cargo/placement-scanning"
           element={

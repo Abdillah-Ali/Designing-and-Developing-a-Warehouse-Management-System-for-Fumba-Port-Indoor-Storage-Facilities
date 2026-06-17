@@ -82,17 +82,17 @@ function PageHeader({ eyebrow, title, description, action }) {
   );
 }
 
-function DataTable({ columns, rows, loading, error, emptyTitle, emptyBody }) {
+function DataTable({ columns, rows, loading, error, emptyTitle, emptyBody, tableClassName, containerClassName }) {
   if (loading) return <LoadingState />;
   if (error) return <ErrorState message={error} />;
 
   return (
-    <div className="overflow-auto rounded border border-border">
-      <table className="w-full min-w-[720px] text-xs">
+    <div className={cn("overflow-auto rounded border border-border", containerClassName)}>
+      <table className={cn("w-full min-w-[720px] text-xs", tableClassName)}>
         <thead className="bg-panel-header text-panel-header-foreground">
           <tr>
             {columns.map((column) => (
-              <th key={column.key} className="px-2 py-2 text-left font-semibold">
+              <th key={column.key} className={cn("px-2 py-2 text-left font-semibold", column.headerClassName)}>
                 {column.label}
               </th>
             ))}

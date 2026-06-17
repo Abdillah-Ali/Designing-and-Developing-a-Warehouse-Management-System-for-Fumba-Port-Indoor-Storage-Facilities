@@ -38,9 +38,55 @@ const runUpdates = async () => {
     console.log("✔ Columns checked/added: zones.active");
 
     await client.query(`
-      ALTER TABLE bins ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
+      ALTER TABLE bins
+        ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE,
+        ADD COLUMN IF NOT EXISTS allowed_cargo_type VARCHAR(100);
+
+      ALTER TABLE bins DROP CONSTRAINT IF EXISTS bins_status_check;
+      ALTER TABLE bins
+        ADD CONSTRAINT bins_status_check
+        CHECK (status IN ('Available', 'Reserved', 'Blocked', 'Maintenance', 'Occupied', 'Full', 'Inactive'));
+
+      UPDATE bins b
+      SET allowed_cargo_type = z.allowed_cargo_type
+      FROM levels l
+      JOIN racks r ON r.id = l.rack_id
+      JOIN zones z ON z.id = r.zone_id
+      WHERE b.level_id = l.id
+        AND b.allowed_cargo_type IS NULL;
     `);
-    console.log("✔ Columns checked/added: bins.active");
+    console.log("✔ Bin activity, cargo category, and maintenance status checked/added");
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS system_settings (
+        setting_key VARCHAR(120) PRIMARY KEY,
+        setting_value JSONB NOT NULL,
+        updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      INSERT INTO system_settings (setting_key, setting_value)
+      VALUES ('manual_placement_enabled', 'false'::jsonb)
+      ON CONFLICT (setting_key) DO NOTHING;
+
+      ALTER TABLE placement_validation_logs
+        ADD COLUMN IF NOT EXISTS placement_mode VARCHAR(20) NOT NULL DEFAULT 'scan',
+        ADD COLUMN IF NOT EXISTS attempt_stage VARCHAR(30) NOT NULL DEFAULT 'validation',
+        ADD COLUMN IF NOT EXISTS manual_reason VARCHAR(80),
+        ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS previous_location TEXT,
+        ADD COLUMN IF NOT EXISTS new_location TEXT;
+
+      CREATE TABLE IF NOT EXISTS bin_barcode_print_logs (
+        id SERIAL PRIMARY KEY,
+        bin_id INTEGER NOT NULL REFERENCES bins(id) ON DELETE CASCADE,
+        printed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        print_type VARCHAR(20) NOT NULL DEFAULT 'PRINT',
+        printed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK (print_type IN ('PRINT', 'REPRINT'))
+      );
+    `);
+    console.log("✔ Placement settings and trace tables checked/added");
 
     // 2. Create bin_rules table if missing
     await client.query(`
@@ -113,6 +159,12 @@ const runUpdates = async () => {
         [rule.key, rule.name, rule.description, rule.parameters]
       );
     }
+    await client.query(
+      `UPDATE bin_rules
+       SET is_active = TRUE,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE rule_key IN ('hazardous', 'weight', 'volume', 'compatibility')`
+    );
     console.log("✔ Seeded bin_rules defaults");
 
     await client.query(`

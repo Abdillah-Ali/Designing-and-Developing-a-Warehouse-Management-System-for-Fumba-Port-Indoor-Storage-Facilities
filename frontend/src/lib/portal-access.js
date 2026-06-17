@@ -64,6 +64,7 @@ export const PORTAL_CONFIG = Object.freeze({
       "/staff/dashboard",
       "/staff/cargo/registration",
       "/staff/cargo/registration-reviews",
+      "/staff/cargo/placement-queue",
       "/staff/cargo/placement-scanning",
       "/staff/cargo/tracking",
       "/staff/storage/zones",

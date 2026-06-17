@@ -42,11 +42,13 @@ const portalPermissions = Object.freeze({
     { methods: ["GET"], pattern: /^\/bins\/by-level\/[^/]+$/ },
     { methods: ["GET", "PUT", "DELETE"], pattern: /^\/bins\/[^/]+$/ },
     { methods: ["PATCH"], pattern: /^\/bins\/[^/]+\/status$/ },
+    { methods: ["POST"], pattern: /^\/bins\/[^/]+\/print-barcode$/ },
     { methods: ["POST"], pattern: /^\/warehouse-configuration\/generate-default-structure$/ },
     { methods: ["GET"], pattern: /^\/bin-rules$/ },
     { methods: ["PUT"], pattern: /^\/bin-rules\/[^/]+$/ },
     { methods: ["GET"], pattern: /^\/placement\/logs$/ },
     { methods: ["GET"], pattern: /^\/placement\/failures$/ },
+    { methods: ["GET", "PUT"], pattern: /^\/placement\/settings$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/dashboard$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/review-configuration$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/approvals(?:\/[^/]+)?$/ },
@@ -82,6 +84,8 @@ const portalPermissions = Object.freeze({
     { methods: ["GET"], pattern: /^\/levels\/[^/]+$/ },
     { methods: ["GET"], pattern: /^\/bins\/by-level\/[^/]+$/ },
     { methods: ["GET"], pattern: /^\/bins\/[^/]+$/ },
+    { methods: ["POST"], pattern: /^\/bins\/[^/]+\/print-barcode$/ },
+    { methods: ["GET"], pattern: /^\/placement\/settings$/ },
     { methods: ["POST"], pattern: /^\/placement\/validate$/ },
     { methods: ["POST"], pattern: /^\/placement\/confirm$/ },
     { methods: ["POST"], pattern: /^\/placement\/request-override$/ },
@@ -99,6 +103,8 @@ const portalPermissions = Object.freeze({
     { methods: ["GET"], pattern: /^\/levels\/by-rack\/[^/]+$/ },
     { methods: ["GET"], pattern: /^\/bins(?:\/[^/]+)?$/ },
     { methods: ["GET"], pattern: /^\/bins\/by-level\/[^/]+$/ },
+    { methods: ["POST"], pattern: /^\/bins\/[^/]+\/print-barcode$/ },
+    { methods: ["GET", "PUT"], pattern: /^\/placement\/settings$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/dashboard$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/review-configuration$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/approvals(?:\/[^/]+)?$/ },
@@ -323,7 +329,7 @@ const requireRole = (...roles) => {
     if (!allowedRoles.includes(req.auth.role)) {
       res.status(403).json({
         success: false,
-        message: "This action is restricted to the System Administrator."
+        message: "This action is restricted to an authorized portal role."
       });
       return;
     }

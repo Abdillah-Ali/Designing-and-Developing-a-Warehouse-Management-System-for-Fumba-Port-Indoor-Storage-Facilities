@@ -36,6 +36,7 @@ import {
 } from "@/services/api";
 import { BarcodeLabel, printBarcodeLabel } from "./BarcodeLabel";
 import { CollapsibleCard } from "./CollapsibleCard";
+import { EnterpriseModal } from "./EnterpriseModal";
 
 const sourceOptions = [
   "Container",
@@ -405,11 +406,11 @@ function checkPassed(validation, keys, fallback = false) {
   return keyList.every((key) => validation.checks[key]?.passed !== false);
 }
 
-function DetailForm({ initialTab = 0, initialCargoBarcode = "" }) {
+function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) {
   const [activeTab, setActiveTab] = useState(initialTab);
   const [formData, setFormData] = useState(initialCargoForm);
   const [cargoRecords, setCargoRecords] = useState([]);
-  const [savedCargo, setSavedCargo] = useState(null);
+  const [barcodeModalCargo, setBarcodeModalCargo] = useState(null);
   const [cargoLoading, setCargoLoading] = useState(false);
   const [cargoError, setCargoError] = useState("");
   const [savingCargo, setSavingCargo] = useState(false);
@@ -682,6 +683,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "" }) {
     }
 
     let active = true;
+    const abortController = new AbortController();
     const timer = window.setTimeout(async () => {
       setValidationLoading(true);
       setValidationError("");
@@ -690,12 +692,15 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "" }) {
         const response = await validatePlacement({
           cargo_barcode: cargoBarcode.trim(),
           bin_barcode: binBarcode.trim()
+        }, {
+          signal: abortController.signal
         });
 
         if (active) {
           setPlacementValidation(response.data);
         }
       } catch (error) {
+        if (error.name === "AbortError") return;
         if (active) {
           setPlacementValidation(null);
           setValidationError(getErrorMessage(error));
@@ -707,6 +712,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "" }) {
 
     return () => {
       active = false;
+      abortController.abort();
       window.clearTimeout(timer);
     };
   }, [cargoBarcode, binBarcode]);
@@ -951,6 +957,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "" }) {
 
   const handleCargoFieldChange = (field, value) => {
     setDuplicateWarning(null);
+    setSaveNotice(false);
     setFormData((current) => {
       const next = { ...current, [field]: value };
       if (field === "cargo_type") {
@@ -1038,7 +1045,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "" }) {
   });
 
   const saveCargo = async () => {
-    if (savedCargo || savingCargo) return;
+    if (savingCargo) return;
     setSavingCargo(true);
     setSaveError("");
     setDuplicateWarning(null);
@@ -1052,7 +1059,6 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "" }) {
       });
       const cargo = response.data;
 
-      setSavedCargo(cargo);
       for (const file of files) {
         await uploadCargoDocument(cargo.id, {
           file_name: file.name,
@@ -1067,8 +1073,18 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "" }) {
           content_base64: await fileToBase64(file)
         });
       }
+
+      setBarcodeModalCargo(cargo);
       setSaveNotice(true);
+      setFiles([]);
+      if (fileInput.current) fileInput.current.value = "";
+      setFormData((current) => ({
+        ...initialCargoForm,
+        received_by: current.received_by,
+        received_datetime: new Date().toISOString()
+      }));
       await refreshCargoRecords();
+      onCargoSaved?.(cargo);
     } catch (error) {
       if (error?.code === "DUPLICATE_CARGO") {
         setDuplicateWarning({
@@ -1083,22 +1099,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "" }) {
     }
   };
 
-  const registerAnotherCargo = () => {
-    setSavedCargo(null);
-    setSaveNotice(false);
-    setSaveError("");
-    setDuplicateWarning(null);
-    setDocumentUploadError("");
-    setFiles([]);
-    setCargoBarcode("");
-    setFormData((current) => ({
-      ...initialCargoForm,
-      received_by: current.received_by,
-      received_datetime: new Date().toISOString()
-    }));
-  };
-
-  const handlePrintBarcode = async (cargo = savedCargo) => {
+  const handlePrintBarcode = async (cargo) => {
     if (!cargo) return;
     try {
       await printCargoBarcode(cargo.id);
@@ -1126,7 +1127,6 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "" }) {
       const result = response.data || {};
 
       if (result.validation) setPlacementValidation(result.validation);
-      if (result.cargo) setSavedCargo(result.cargo);
       if (result.bin) {
         setPlacementValidation((current) => ({
           ...(current || result.validation || {}),
@@ -1387,23 +1387,6 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "" }) {
               </div>
             </CollapsibleCard>
 
-            {savedCargo && (
-              <CollapsibleCard title={<SectionTitle icon={Printer}>Cargo Barcode Label</SectionTitle>} defaultOpen>
-                <div className="grid gap-3 lg:grid-cols-[minmax(0,680px)_auto]">
-                  <BarcodeLabel ref={barcodeLabelRef} cargo={savedCargo} />
-                  <div className="flex items-end">
-                    <button
-                      type="button"
-                      onClick={() => handlePrintBarcode(savedCargo)}
-                      className="inline-flex h-9 items-center gap-2 rounded bg-info px-4 text-xs font-semibold text-info-foreground"
-                    >
-                      <Printer className="h-4 w-4" />
-                      Print Barcode Label
-                    </button>
-                  </div>
-                </div>
-              </CollapsibleCard>
-            )}
           </div>
         )}
 
@@ -1871,22 +1854,12 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "" }) {
             <div className="flex justify-end">
               <button
                 onClick={saveCargo}
-                disabled={savingCargo || Boolean(savedCargo)}
+                disabled={savingCargo}
                 className="inline-flex items-center gap-1.5 rounded bg-success px-4 py-2 text-xs font-semibold text-success-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Save className="h-3.5 w-3.5" />
                 {savingCargo ? "Saving..." : "Save Cargo"}
               </button>
-              {savedCargo && (
-                <button
-                  type="button"
-                  onClick={registerAnotherCargo}
-                  className="ml-2 inline-flex items-center gap-1.5 rounded border border-border bg-secondary px-4 py-2 text-xs font-semibold text-secondary-foreground"
-                >
-                  <ClipboardList className="h-3.5 w-3.5" />
-                  Register Another Cargo
-                </button>
-              )}
             </div>
           ) : (
             <div className="flex flex-wrap justify-end gap-2">
@@ -1929,6 +1902,39 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "" }) {
           )}
         </div>
       )}
+
+      <EnterpriseModal
+        open={Boolean(barcodeModalCargo)}
+        title="Cargo Barcode Label"
+        subtitle={barcodeModalCargo ? `${barcodeModalCargo.cargo_id} was registered successfully and is ready to print.` : ""}
+        size="medium"
+        onClose={() => setBarcodeModalCargo(null)}
+        footer={(
+          <>
+            <button
+              type="button"
+              onClick={() => setBarcodeModalCargo(null)}
+              className="rounded border border-border bg-background px-4 py-2 text-xs font-semibold hover:bg-muted"
+            >
+              Close
+            </button>
+            <button
+              type="button"
+              onClick={() => handlePrintBarcode(barcodeModalCargo)}
+              className="inline-flex items-center gap-2 rounded bg-info px-4 py-2 text-xs font-semibold text-info-foreground"
+            >
+              <Printer className="h-4 w-4" />
+              Print Barcode Label
+            </button>
+          </>
+        )}
+      >
+        {barcodeModalCargo && (
+          <div className="mx-auto max-w-[680px]">
+            <BarcodeLabel ref={barcodeLabelRef} cargo={barcodeModalCargo} />
+          </div>
+        )}
+      </EnterpriseModal>
     </div>
   );
 }

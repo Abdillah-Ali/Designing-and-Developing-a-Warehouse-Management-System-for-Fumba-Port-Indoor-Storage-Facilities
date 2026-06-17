@@ -124,10 +124,10 @@ const generateDefaultStructure = async (req, res, next) => {
             await client.query(
               `INSERT INTO bins (
                 level_id, code, barcode, max_weight, max_volume, current_weight,
-                current_volume, status, active, reserved_for_cargo_type
+                current_volume, status, active, allowed_cargo_type, reserved_for_cargo_type
               )
-              VALUES ($1, $2, $2, 500, 4, 0, 0, 'Available', TRUE, NULL)`,
-              [levelId, binCode]
+              VALUES ($1, $2, $2, 500, 4, 0, 0, 'Available', TRUE, $3, NULL)`,
+              [levelId, binCode, zoneDefinition.cargoType]
             );
             summary.bins_created += 1;
           }

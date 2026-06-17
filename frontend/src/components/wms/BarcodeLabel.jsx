@@ -32,11 +32,8 @@ function encodeCode128B(value) {
   return codes;
 }
 
-const BarcodeLabel = forwardRef(function BarcodeLabel({ cargo, compact = false }, ref) {
-  const barcode = cargo?.barcode || cargo?.cargo_id || "";
-  if (!barcode) return null;
-
-  const codes = encodeCode128B(barcode);
+function BarcodeGraphic({ value, compact = false }) {
+  const codes = encodeCode128B(value);
   const moduleWidth = compact ? 1.4 : 1.8;
   const height = compact ? 52 : 72;
   let cursor = 12;
@@ -63,23 +60,31 @@ const BarcodeLabel = forwardRef(function BarcodeLabel({ cargo, compact = false }
   });
 
   const width = cursor + 12;
+  return (
+    <svg
+      className="mt-3 h-auto max-w-full"
+      viewBox={`0 0 ${width} ${height + 30}`}
+      role="img"
+      aria-label={`Barcode ${value}`}
+    >
+      <rect x="0" y="0" width={width} height={height + 30} fill="white" />
+      {bars}
+      <text x={width / 2} y={height + 24} textAnchor="middle" fontFamily="monospace" fontSize="12" fontWeight="700">
+        {value}
+      </text>
+    </svg>
+  );
+}
+
+const BarcodeLabel = forwardRef(function BarcodeLabel({ cargo, compact = false }, ref) {
+  const barcode = cargo?.barcode || cargo?.cargo_id || "";
+  if (!barcode) return null;
 
   return (
     <section ref={ref} className="barcode-label rounded-md border border-slate-300 bg-white p-4 text-slate-950">
       <div className="text-center text-sm font-bold">Fumba Port Warehouse</div>
       <div className="mt-1 text-center text-[11px] uppercase tracking-wider">Cargo Storage Label</div>
-      <svg
-        className="mt-3 h-auto max-w-full"
-        viewBox={`0 0 ${width} ${height + 30}`}
-        role="img"
-        aria-label={`Barcode ${barcode}`}
-      >
-        <rect x="0" y="0" width={width} height={height + 30} fill="white" />
-        {bars}
-        <text x={width / 2} y={height + 24} textAnchor="middle" fontFamily="monospace" fontSize="12" fontWeight="700">
-          {barcode}
-        </text>
-      </svg>
+      <BarcodeGraphic value={barcode} compact={compact} />
       {!compact && (
         <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
           <span>Consignee</span><strong>{cargo.consignee_name || "Not recorded"}</strong>
@@ -92,7 +97,28 @@ const BarcodeLabel = forwardRef(function BarcodeLabel({ cargo, compact = false }
   );
 });
 
-function printBarcodeLabel(labelElement) {
+const BinBarcodeLabel = forwardRef(function BinBarcodeLabel({ bin }, ref) {
+  const barcode = bin?.bin_barcode || bin?.barcode || bin?.bin_code || bin?.code || "";
+  if (!barcode) return null;
+
+  return (
+    <section ref={ref} className="barcode-label rounded-md border border-slate-300 bg-white p-4 text-slate-950">
+      <div className="text-center font-mono text-lg font-bold">{barcode}</div>
+      <div className="mt-1 text-center text-sm font-semibold">
+        {bin.zone_name ? `${bin.zone_name} Zone` : "Warehouse Storage Bin"}
+      </div>
+      <div className="mt-2 text-center text-xs">
+        Rack {bin.rack_code || "Not recorded"} / Level {bin.level_code || "Not recorded"}
+      </div>
+      <BarcodeGraphic value={barcode} />
+      <div className="mt-2 text-center text-[11px] text-slate-600">
+        {bin.zone_code || ""} / {bin.rack_code || ""} / {bin.level_code || ""} / {barcode}
+      </div>
+    </section>
+  );
+});
+
+function printLabel(labelElement, title) {
   if (!labelElement) return false;
 
   const popup = window.open("", "_blank", "width=760,height=680");
@@ -101,7 +127,7 @@ function printBarcodeLabel(labelElement) {
   popup.document.write(`<!doctype html>
     <html>
       <head>
-        <title>Fumba Port Cargo Barcode</title>
+        <title>${title}</title>
         <style>
           body { font-family: Arial, sans-serif; padding: 24px; color: #0f172a; }
           .barcode-label { max-width: 680px; margin: 0 auto; border: 1px solid #cbd5e1; padding: 20px; }
@@ -117,8 +143,18 @@ function printBarcodeLabel(labelElement) {
   return true;
 }
 
+function printBarcodeLabel(labelElement) {
+  return printLabel(labelElement, "Fumba Port Cargo Barcode");
+}
+
+function printBinBarcodeLabel(labelElement) {
+  return printLabel(labelElement, "Fumba Port Bin Barcode");
+}
+
 export {
   BarcodeLabel,
+  BinBarcodeLabel,
   encodeCode128B,
-  printBarcodeLabel
+  printBarcodeLabel,
+  printBinBarcodeLabel
 };

@@ -1,6 +1,13 @@
 const db = require("../config/db");
 const { buildError } = require("../utils/apiError");
 
+const MANDATORY_PLACEMENT_RULES = new Set([
+  "compatibility",
+  "hazardous",
+  "volume",
+  "weight"
+]);
+
 const getRules = async (req, res, next) => {
   try {
     const result = await db.query("SELECT * FROM bin_rules ORDER BY rule_key");
@@ -23,6 +30,9 @@ const updateRule = async (req, res, next) => {
     if (is_active === undefined && parameters === undefined) {
       throw buildError("Active status or parameters are required for update.", 400);
     }
+    if (is_active !== undefined && typeof is_active !== "boolean") {
+      throw buildError("Rule active status must be true or false.", 400);
+    }
 
     await client.query("BEGIN");
 
@@ -33,7 +43,13 @@ const updateRule = async (req, res, next) => {
     }
 
     const rule = ruleCheck.rows[0];
-    const activeState = is_active !== undefined ? !!is_active : undefined;
+    if (MANDATORY_PLACEMENT_RULES.has(rule.rule_key) && is_active === false) {
+      throw buildError(
+        `${rule.rule_name} is a mandatory placement safety rule and cannot be disabled.`,
+        400
+      );
+    }
+    const activeState = is_active;
     const params = parameters !== undefined ? (typeof parameters === "object" ? JSON.stringify(parameters) : parameters) : undefined;
 
     const result = await client.query(

@@ -540,6 +540,7 @@ const getPlacementSummary = async (req, res, next) => {
       `SELECT
         COUNT(*) FILTER (
           WHERE pvl.approved = TRUE
+            AND pvl.attempt_stage = 'confirmation'
             AND DATE(pvl.created_at) = CURRENT_DATE
         )::int AS successful_placements_today,
         COUNT(*) FILTER (
@@ -547,7 +548,8 @@ const getPlacementSummary = async (req, res, next) => {
             AND DATE(pvl.created_at) = CURRENT_DATE
         )::int AS rejected_placements_today,
         COUNT(*) FILTER (
-          WHERE DATE(pvl.created_at) = CURRENT_DATE
+          WHERE pvl.attempt_stage = 'validation'
+            AND DATE(pvl.created_at) = CURRENT_DATE
         )::int AS validation_attempts_today,
         COUNT(DISTINCT c.id) FILTER (
           WHERE c.placement_status IN ('Placed', 'Relocated')

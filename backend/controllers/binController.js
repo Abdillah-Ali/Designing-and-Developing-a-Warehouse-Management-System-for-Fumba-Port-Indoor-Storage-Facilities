@@ -2,7 +2,7 @@ const db = require("../config/db");
 const { buildError } = require("../utils/apiError");
 
 const BIN_CODE_PATTERN = /^BIN-([A-Z]\d{2})-(L[1-9]\d*)-(\d{2})$/;
-const BIN_STATUSES = ["Available", "Occupied", "Full", "Reserved", "Blocked", "Inactive"];
+const BIN_STATUSES = ["Available", "Occupied", "Full", "Reserved", "Blocked", "Maintenance", "Inactive"];
 
 const textValue = (value) => {
   if (value === undefined || value === null) return null;
@@ -38,6 +38,7 @@ const binSelect = `
     b.current_volume,
     b.status,
     b.active,
+    COALESCE(b.allowed_cargo_type, z.allowed_cargo_type) AS allowed_cargo_type,
     b.reserved_for_cargo_type,
     b.created_at,
     b.updated_at,
@@ -141,7 +142,8 @@ const getActiveHierarchy = async (client, levelId) => {
        l.active AS level_active,
        r.code AS rack_code,
        r.active AS rack_active,
-       z.active AS zone_active
+       z.active AS zone_active,
+       z.allowed_cargo_type
      FROM levels l
      JOIN racks r ON r.id = l.rack_id
      JOIN zones z ON z.id = r.zone_id
@@ -182,14 +184,14 @@ const createBin = async (req, res, next) => {
   try {
     const levelId = req.body.level_id;
     const code = textValue(req.body.bin_code ?? req.body.code)?.toUpperCase();
-    const barcode = textValue(req.body.barcode)?.toUpperCase();
+    const barcode = textValue(req.body.barcode)?.toUpperCase() || code;
     const status = textValue(req.body.status) || "Available";
 
-    if (!levelId || !code || !barcode) {
-      throw buildError("Level ID, bin code, and barcode are required.", 400);
+    if (!levelId || !code) {
+      throw buildError("Level ID and bin code are required.", 400);
     }
     if (!BIN_STATUSES.includes(status) || status === "Inactive" || status === "Occupied") {
-      throw buildError("New bins may be Available, Reserved, or Blocked.", 400);
+      throw buildError("New bins may be Available, Reserved, Blocked, or Maintenance.", 400);
     }
 
     await client.query("BEGIN");
@@ -200,9 +202,9 @@ const createBin = async (req, res, next) => {
     const result = await client.query(
       `INSERT INTO bins (
         level_id, code, barcode, max_weight, max_volume, current_weight, current_volume,
-        status, active, reserved_for_cargo_type
+        status, active, allowed_cargo_type, reserved_for_cargo_type
       )
-      VALUES ($1, $2, $3, $4, $5, 0, 0, $6, TRUE, $7)
+      VALUES ($1, $2, $3, $4, $5, 0, 0, $6, TRUE, $7, $8)
       RETURNING *,
         id AS bin_id,
         code AS bin_code,
@@ -215,6 +217,7 @@ const createBin = async (req, res, next) => {
         capacityValue(req.body.capacity_weight ?? req.body.max_weight, 500),
         capacityValue(req.body.capacity_volume ?? req.body.max_volume, 4),
         status,
+        textValue(req.body.allowed_cargo_type) || hierarchy.allowed_cargo_type,
         textValue(req.body.reserved_for_cargo_type)
       ]
     );
@@ -239,9 +242,9 @@ const updateBin = async (req, res, next) => {
   try {
     const levelId = req.body.level_id;
     const code = textValue(req.body.bin_code ?? req.body.code)?.toUpperCase();
-    const barcode = textValue(req.body.barcode)?.toUpperCase();
-    if (!levelId || !code || !barcode) {
-      throw buildError("Level ID, bin code, and barcode are required.", 400);
+    const barcode = textValue(req.body.barcode)?.toUpperCase() || code;
+    if (!levelId || !code) {
+      throw buildError("Level ID and bin code are required.", 400);
     }
 
     await client.query("BEGIN");
@@ -256,8 +259,9 @@ const updateBin = async (req, res, next) => {
            barcode = $3,
            max_weight = $4,
            max_volume = $5,
-           reserved_for_cargo_type = $6
-       WHERE id = $7
+           allowed_cargo_type = $6,
+           reserved_for_cargo_type = $7
+       WHERE id = $8
        RETURNING *,
          id AS bin_id,
          code AS bin_code,
@@ -269,6 +273,7 @@ const updateBin = async (req, res, next) => {
         barcode,
         capacityValue(req.body.capacity_weight ?? req.body.max_weight, 500),
         capacityValue(req.body.capacity_volume ?? req.body.max_volume, 4),
+        textValue(req.body.allowed_cargo_type) || hierarchy.allowed_cargo_type,
         textValue(req.body.reserved_for_cargo_type),
         req.params.id
       ]
@@ -355,6 +360,7 @@ const updateBinStatus = async (req, res, next) => {
       Available: "ACTIVATE_BIN",
       Reserved: "RESERVE_BIN",
       Blocked: "BLOCK_BIN",
+      Maintenance: "SET_BIN_MAINTENANCE",
       Occupied: "UPDATE_BIN",
       Inactive: "DEACTIVATE_BIN"
     };
@@ -378,6 +384,51 @@ const deleteBin = (req, res, next) => {
   return updateBinStatus(req, res, next);
 };
 
+const printBinBarcode = async (req, res, next) => {
+  const client = await db.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const binResult = await client.query(
+      `${binSelect} WHERE b.id = $1`,
+      [req.params.id]
+    );
+    if (binResult.rowCount === 0) throw buildError("Bin not found.", 404);
+
+    const previousPrint = await client.query(
+      "SELECT 1 FROM bin_barcode_print_logs WHERE bin_id = $1 LIMIT 1",
+      [req.params.id]
+    );
+    const printType = previousPrint.rowCount > 0 ? "REPRINT" : "PRINT";
+    await client.query(
+      `INSERT INTO bin_barcode_print_logs (bin_id, printed_by, print_type)
+       VALUES ($1, $2, $3)`,
+      [req.params.id, req.auth?.userId || null, printType]
+    );
+    await client.query(
+      `INSERT INTO audit_logs (user_id, action, module, description, metadata)
+       VALUES ($1, 'PRINT_BIN_BARCODE', 'Warehouse Configuration', $2, $3)`,
+      [
+        req.auth?.userId || null,
+        `${printType === "REPRINT" ? "Reprinted" : "Printed"} barcode label for bin ${binResult.rows[0].barcode}.`,
+        JSON.stringify({ bin_id: Number(req.params.id), print_type: printType })
+      ]
+    );
+    await client.query("COMMIT");
+    res.json({
+      success: true,
+      data: {
+        ...binResult.rows[0],
+        print_type: printType
+      }
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    next(error);
+  } finally {
+    client.release();
+  }
+};
+
 module.exports = {
   getBins,
   getBinById,
@@ -385,5 +436,6 @@ module.exports = {
   createBin,
   updateBin,
   updateBinStatus,
+  printBinBarcode,
   deleteBin
 };

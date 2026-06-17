@@ -157,6 +157,9 @@ export const getAllBins = (params = {}) => {
   return request(`/bins${suffix}`);
 };
 export const getBinById = (id) => request(`/bins/${encodeURIComponent(id)}`);
+export const printBinBarcode = (id) => request(`/bins/${encodeURIComponent(id)}/print-barcode`, {
+  method: "POST"
+});
 
 export const getUsers = (params = {}) => {
   const search = new URLSearchParams(params);
@@ -210,7 +213,8 @@ export const getUserSessions = (params = {}) => {
   return request(`/user-sessions${suffix}`);
 };
 
-export const validatePlacement = (payload) => request("/placement/validate", {
+export const validatePlacement = (payload, options = {}) => request("/placement/validate", {
+  ...options,
   method: "POST",
   body: payload
 });
@@ -220,6 +224,11 @@ export const confirmPlacement = (payload) => request("/placement/confirm", {
   body: payload
 });
 
+export const getPlacementSettings = () => request("/placement/settings");
+export const updatePlacementSettings = (manualPlacementEnabled) => request("/placement/settings", {
+  method: "PUT",
+  body: { manual_placement_enabled: manualPlacementEnabled }
+});
 export const getPlacementLogs = () => request("/placement/logs");
 export const getPlacementFailures = () => request("/placement/failures");
 export const requestPlacementOverride = (payload) => request("/placement/request-override", {

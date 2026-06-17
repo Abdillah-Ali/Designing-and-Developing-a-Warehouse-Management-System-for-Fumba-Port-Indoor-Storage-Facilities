@@ -1,10 +1,19 @@
 const db = require("../config/db");
+const { writeAuditLog } = require("../models/adminModel");
 const { validatePlacement: runPlacementValidation } = require("../services/validationService");
 const {
   CARGO_NOT_OPERATIONAL_MESSAGE,
   PLACEMENT_STATUS,
   REGISTRATION_STATUS
 } = require("../services/cargoWorkflowService");
+const {
+  confirmPlacementOperation,
+  getPlacementSettings: readPlacementSettings,
+  recordPlacementAttempt,
+  recordPlacementError,
+  updatePlacementSettings: savePlacementSettings,
+  validatePlacementOperation
+} = require("../services/placementService");
 const { writeAuditLog } = require("../models/adminModel");
 
 const buildError = (message, statusCode = 400, errors) => {
@@ -14,6 +23,16 @@ const buildError = (message, statusCode = 400, errors) => {
   return error;
 };
 
+const logPlacementError = async (req, stage, error) => {
+  try {
+    await recordPlacementError(db, {
+      payload: req.body,
+      auth: req.auth,
+      stage,
+      error
+    });
+  } catch (loggingError) {
+    // Preserve the operational error even if its audit record cannot be written.
 const readPlacementValue = (payload, keys) => {
   for (const key of keys) {
     const value = payload?.[key];
@@ -24,6 +43,21 @@ const readPlacementValue = (payload, keys) => {
   return null;
 };
 
+const validatePlacement = async (req, res, next) => {
+  try {
+    const { normalized, validation } = await validatePlacementOperation(req.body, req.auth);
+    await recordPlacementAttempt(db, {
+      normalized,
+      validation,
+      auth: req.auth,
+      stage: "validation",
+      previousLocation: validation.cargo?.location || null,
+      newLocation: validation.bin?.display_location || null
+    });
+    res.json({ success: true, data: validation });
+  } catch (error) {
+    await logPlacementError(req, "validation", error);
+    next(error);
 const writePlacementLog = (executor, validation, payload) => {
   return executor.query(
     `INSERT INTO placement_validation_logs
@@ -52,8 +86,26 @@ const assertWarehouseCargoAccess = (req, validation) => {
   }
 };
 
+const confirmPlacement = async (req, res, next) => {
 const validatePlacement = async (req, res, next) => {
   try {
+    const result = await confirmPlacementOperation(req.body, req.auth);
+    if (result.rejected) {
+      await recordPlacementAttempt(db, {
+        normalized: result.normalized,
+        validation: result.validation,
+        auth: req.auth,
+        stage: "confirmation",
+        previousLocation: result.validation.cargo?.location || null,
+        newLocation: result.validation.bin?.display_location || null
+      });
+      res.status(400).json({
+        success: false,
+        message: result.validation.detail,
+        errors: [result.validation.reason]
+      });
+      return;
+    }
     const validation = await runPlacementValidation(req.body);
     assertWarehouseCargoAccess(req, validation);
 
@@ -72,23 +124,28 @@ const validatePlacement = async (req, res, next) => {
 
     res.json({
       success: true,
+      message: result.alreadyPlaced
+        ? "Cargo is already placed in this bin."
+        : result.relocated
+          ? "Cargo relocated successfully."
+          : "Cargo placed successfully.",
+      data: result
       data: validation
     });
   } catch (error) {
+    await logPlacementError(req, "confirmation", error);
     next(error);
   }
 };
 
-const confirmPlacement = async (req, res, next) => {
-  let validation;
-
+const getPlacementSettings = async (req, res, next) => {
   try {
-    validation = await runPlacementValidation(req.body);
-    assertWarehouseCargoAccess(req, validation);
+    res.json({ success: true, data: await readPlacementSettings() });
   } catch (error) {
-    return next(error);
-  }
-
+    next(error);
+const confirmPlacement = async (req, res, next) => {
+  // Run initial validation once before opening a heavy transaction
+  const validation = await runPlacementValidation(req.body);
   if (!validation.approved) {
     try {
       await writePlacementLog(db, validation, req.body);
@@ -108,11 +165,14 @@ const confirmPlacement = async (req, res, next) => {
 
     return next(buildError(validation.detail, 400, [validation.reason]));
   }
+};
 
+const updatePlacementSettings = async (req, res, next) => {
   const client = await db.pool.connect();
 
   try {
     await client.query("BEGIN");
+    const data = await savePlacementSettings(
 
     const cargoResult = await client.query(
       "SELECT * FROM cargo WHERE id = $1 AND is_deleted = FALSE FOR UPDATE",
@@ -148,9 +208,10 @@ const confirmPlacement = async (req, res, next) => {
       throw buildError("Cargo or bin record was not found during placement confirmation.", 404);
     }
 
-    validation = await runPlacementValidation(req.body, client);
-    if (!validation.approved) {
-      await writePlacementLog(client, validation, req.body);
+    // Re-verify validation inside transaction to ensure capacity didn't change
+    const finalValidation = await runPlacementValidation(req.body, client);
+    if (!finalValidation.approved) {
+      await writePlacementLog(client, finalValidation, req.body);
       await writeAuditLog(
         {
           user_id: req.auth?.userId || null,
@@ -164,7 +225,7 @@ const confirmPlacement = async (req, res, next) => {
         },
         client
       );
-      throw buildError(validation.detail, 400, [validation.reason]);
+      throw buildError(finalValidation.detail, 400, [finalValidation.reason]);
     }
 
     const cargo = cargoResult.rows[0];
@@ -273,6 +334,8 @@ const confirmPlacement = async (req, res, next) => {
     await writePlacementLog(client, validation, req.body);
     await writeAuditLog(
       {
+        enabled: req.body.manual_placement_enabled,
+        userId: req.auth?.userId || null
         user_id: req.auth?.userId || null,
         action: isRelocation ? "CONFIRM_CARGO_RELOCATION" : "CONFIRM_CARGO_PLACEMENT",
         module: "Cargo Management",
@@ -288,6 +351,7 @@ const confirmPlacement = async (req, res, next) => {
     );
 
     await client.query("COMMIT");
+    res.json({ success: true, data });
 
     const updatedCargo = updatedCargoResult.rows[0];
     const updatedBin = updatedBinResult.rows[0];
@@ -348,6 +412,12 @@ const requestPlacementOverride = async (req, res, next) => {
   const client = await db.pool.connect();
 
   try {
+    await client.query("BEGIN");
+    const { normalized, validation } = await validatePlacementOperation(
+      req.body,
+      req.auth,
+      client
+    );
     const validation = await runPlacementValidation(req.body);
     assertWarehouseCargoAccess(req, validation);
     if (validation.approved) {
@@ -355,6 +425,18 @@ const requestPlacementOverride = async (req, res, next) => {
     }
     if (!validation.cargo || !validation.bin) {
       throw buildError("A registered cargo and known bin are required before requesting an override.", 400);
+    }
+    const failedChecks = Object.entries(validation.checks || {})
+      .filter(([, check]) => check?.passed === false)
+      .map(([checkName]) => checkName);
+    if (
+      failedChecks.length !== 1
+      || failedChecks[0] !== "restrictedZone"
+    ) {
+      throw buildError(
+        "Supervisor overrides are limited to restricted-zone authorization. Safety, capacity, compatibility, and bin-status failures cannot be overridden.",
+        400
+      );
     }
     if (
       validation.cargo.registration_status === REGISTRATION_STATUS.REJECTED
@@ -391,6 +473,8 @@ const requestPlacementOverride = async (req, res, next) => {
         JSON.stringify({
           bin_id: validation.bin.id,
           bin_barcode: validation.bin.barcode,
+          placement_mode: normalized.placement_mode,
+          manual_reason: normalized.manual_placement_reason,
           validation_reason: validation.reason,
           validation_detail: validation.detail,
           checks: validation.checks
@@ -402,8 +486,14 @@ const requestPlacementOverride = async (req, res, next) => {
       {
         user_id: req.auth?.userId || null,
         action: "REQUEST_PLACEMENT_OVERRIDE",
+        module: "Cargo Placement",
         module: "Cargo Management",
         description: `Requested placement override for cargo ${validation.cargo.cargo_id} and bin ${validation.bin.barcode}.`,
+        metadata: {
+          approval_request_id: result.rows[0].id,
+          placement_mode: normalized.placement_mode,
+          manual_reason: normalized.manual_placement_reason
+        }
         metadata: { approval_request_id: result.rows[0].id }
       },
       client
@@ -440,6 +530,14 @@ const getPlacementLogs = async (req, res, next) => {
   try {
     const result = await db.query(
       `SELECT
+         pvl.*,
+         c.cargo_id AS cargo_identifier,
+         b.barcode AS bin_identifier
+       FROM placement_validation_logs pvl
+       LEFT JOIN cargo c ON c.id = pvl.cargo_id
+       LEFT JOIN bins b ON b.id = pvl.bin_id
+       ORDER BY pvl.created_at DESC, pvl.id DESC
+       LIMIT 100`
         pvl.*,
         c.cargo_id AS cargo_identifier,
         b.barcode AS bin_identifier
@@ -465,5 +563,10 @@ module.exports = {
   validatePlacement,
   getPlacementLogs,
   getPlacementFailures,
+  getPlacementLogs,
+  getPlacementSettings,
+  requestPlacementOverride,
+  updatePlacementSettings,
+  validatePlacement
   requestPlacementOverride
 };

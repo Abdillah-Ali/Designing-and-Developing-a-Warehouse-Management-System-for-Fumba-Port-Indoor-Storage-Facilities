@@ -93,6 +93,17 @@ ALTER TABLE audit_logs
   ADD COLUMN IF NOT EXISTS target_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
 
+CREATE TABLE IF NOT EXISTS system_settings (
+  setting_key VARCHAR(120) PRIMARY KEY,
+  setting_value JSONB NOT NULL,
+  updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO system_settings (setting_key, setting_value)
+VALUES ('manual_placement_enabled', 'false'::jsonb)
+ON CONFLICT (setting_key) DO NOTHING;
+
 INSERT INTO warehouses (warehouse_name, warehouse_code, status)
 VALUES
   ('Warehouse A', 'WHA', 'active'),
@@ -162,12 +173,13 @@ CREATE TABLE IF NOT EXISTS bins (
   max_volume NUMERIC(12, 2) NOT NULL DEFAULT 4,
   current_weight NUMERIC(12, 2) NOT NULL DEFAULT 0,
   current_volume NUMERIC(12, 2) NOT NULL DEFAULT 0,
+  allowed_cargo_type VARCHAR(100),
   reserved_for_cargo_type VARCHAR(100),
   active BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE (level_id, code),
-  CHECK (status IN ('Available', 'Reserved', 'Blocked', 'Occupied', 'Full', 'Inactive'))
+  CHECK (status IN ('Available', 'Reserved', 'Blocked', 'Maintenance', 'Occupied', 'Full', 'Inactive'))
 );
 
 -- Keep databases created from earlier schema versions compatible.
@@ -187,7 +199,8 @@ ALTER TABLE levels
   ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
 
 ALTER TABLE bins
-  ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
+  ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN IF NOT EXISTS allowed_cargo_type VARCHAR(100);
 
 ALTER TABLE bins DROP CONSTRAINT IF EXISTS bins_status_check;
 
@@ -195,6 +208,13 @@ UPDATE zones SET status = CASE WHEN active THEN 'Active' ELSE 'Inactive' END;
 UPDATE racks SET status = CASE WHEN active THEN 'Active' ELSE 'Inactive' END;
 UPDATE levels SET status = CASE WHEN active THEN 'Active' ELSE 'Inactive' END;
 UPDATE bins SET status = 'Inactive' WHERE active = FALSE;
+UPDATE bins b
+SET allowed_cargo_type = z.allowed_cargo_type
+FROM levels l
+JOIN racks r ON r.id = l.rack_id
+JOIN zones z ON z.id = r.zone_id
+WHERE b.level_id = l.id
+  AND b.allowed_cargo_type IS NULL;
 
 ALTER TABLE racks DROP CONSTRAINT IF EXISTS racks_code_key;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_racks_zone_code_unique ON racks(zone_id, code);
@@ -213,7 +233,7 @@ ALTER TABLE levels
   ADD CONSTRAINT levels_status_check CHECK (status IN ('Active', 'Inactive'));
 
 ALTER TABLE bins
-  ADD CONSTRAINT bins_status_check CHECK (status IN ('Available', 'Reserved', 'Blocked', 'Occupied', 'Full', 'Inactive'));
+  ADD CONSTRAINT bins_status_check CHECK (status IN ('Available', 'Reserved', 'Blocked', 'Maintenance', 'Occupied', 'Full', 'Inactive'));
 
 CREATE TABLE IF NOT EXISTS cargo (
   id SERIAL PRIMARY KEY,
@@ -395,12 +415,26 @@ CREATE TABLE IF NOT EXISTS placement_validation_logs (
   cargo_barcode VARCHAR(80),
   bin_id INTEGER REFERENCES bins(id) ON DELETE SET NULL,
   bin_barcode VARCHAR(80),
+  placement_mode VARCHAR(20) NOT NULL DEFAULT 'scan',
+  attempt_stage VARCHAR(30) NOT NULL DEFAULT 'validation',
+  manual_reason VARCHAR(80),
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  previous_location TEXT,
+  new_location TEXT,
   approved BOOLEAN NOT NULL DEFAULT FALSE,
   reason VARCHAR(120) NOT NULL,
   detail TEXT,
   checks JSONB,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE placement_validation_logs
+  ADD COLUMN IF NOT EXISTS placement_mode VARCHAR(20) NOT NULL DEFAULT 'scan',
+  ADD COLUMN IF NOT EXISTS attempt_stage VARCHAR(30) NOT NULL DEFAULT 'validation',
+  ADD COLUMN IF NOT EXISTS manual_reason VARCHAR(80),
+  ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS previous_location TEXT,
+  ADD COLUMN IF NOT EXISTS new_location TEXT;
 
 CREATE TABLE IF NOT EXISTS cargo_documents (
   id SERIAL PRIMARY KEY,
@@ -528,6 +562,15 @@ CREATE TABLE IF NOT EXISTS barcode_print_logs (
   CHECK (print_type IN ('PRINT', 'REPRINT'))
 );
 
+CREATE TABLE IF NOT EXISTS bin_barcode_print_logs (
+  id SERIAL PRIMARY KEY,
+  bin_id INTEGER NOT NULL REFERENCES bins(id) ON DELETE CASCADE,
+  printed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  print_type VARCHAR(20) NOT NULL DEFAULT 'PRINT',
+  printed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CHECK (print_type IN ('PRINT', 'REPRINT'))
+);
+
 CREATE TABLE IF NOT EXISTS dispatch_requests (
   id SERIAL PRIMARY KEY,
   cargo_id INTEGER NOT NULL REFERENCES cargo(id) ON DELETE CASCADE,
@@ -562,6 +605,11 @@ VALUES
 ON CONFLICT (rule_key) DO UPDATE
 SET rule_name = EXCLUDED.rule_name,
     description = EXCLUDED.description;
+
+UPDATE bin_rules
+SET is_active = TRUE,
+    updated_at = CURRENT_TIMESTAMP
+WHERE rule_key IN ('hazardous', 'weight', 'volume', 'compatibility');
 
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS TRIGGER AS $$

@@ -32,6 +32,7 @@ import {
 } from "@/components/wms/OperationalUi";
 import { CargoReviewModal } from "@/components/wms/CargoReviewModal";
 import { DecisionNotesModal } from "@/components/wms/DecisionNotesModal";
+import { ManualPlacementSetting } from "@/components/wms/ManualPlacementSetting";
 import { ReviewActionModal } from "@/components/wms/ReviewActionModal";
 import { cn } from "@/lib/utils";
 import {
@@ -506,6 +507,9 @@ function PlacementPage() {
       <PageHeader eyebrow="Cargo Supervision" title="Placement Monitoring" description="Count-only placement summary for the assigned warehouse. Raw validation records remain restricted to System Administrators." />
       <div className="flex-1 overflow-auto p-4">
         {state.error && <ErrorState message={state.error} />}
+        <div className="mb-3">
+          <ManualPlacementSetting />
+        </div>
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           <OperationalStatCard title="Validation Attempts Today" icon={ScanLine} loading={state.loading} value={summary.validation_attempts_today} emptyTitle="No placement attempts today" tone="info" />
           <OperationalStatCard title="Successful Today" icon={CheckCircle2} loading={state.loading} value={summary.successful_placements_today} emptyTitle="No successful placements today" tone="success" />

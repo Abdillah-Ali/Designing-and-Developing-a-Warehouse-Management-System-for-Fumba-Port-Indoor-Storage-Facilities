@@ -3,6 +3,7 @@ const {
   getBins,
   getBinById,
   getBinsByLevel,
+  printBinBarcode,
   createBin,
   updateBin,
   updateBinStatus,
@@ -16,6 +17,7 @@ router.get("/", getBins);
 router.post("/", requireRole("System Admin"), createBin);
 router.get("/by-level/:levelId", getBinsByLevel);
 router.patch("/:id/status", requireRole("System Admin"), updateBinStatus);
+router.post("/:id/print-barcode", printBinBarcode);
 router.get("/:id", getBinById);
 router.put("/:id", requireRole("System Admin"), updateBin);
 router.delete("/:id", requireRole("System Admin"), deleteBin);
