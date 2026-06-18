@@ -108,13 +108,7 @@ INSERT INTO system_settings (setting_key, setting_value)
 VALUES ('manual_placement_enabled', 'false'::jsonb)
 ON CONFLICT (setting_key) DO NOTHING;
 
-INSERT INTO warehouses (warehouse_name, warehouse_code, status)
-VALUES
-  ('Warehouse A', 'WHA', 'active'),
-  ('Warehouse B', 'WHB', 'active')
-ON CONFLICT (warehouse_code) DO UPDATE
-SET warehouse_name = EXCLUDED.warehouse_name,
-    status = EXCLUDED.status;
+
 
 CREATE TABLE IF NOT EXISTS zones (
   id SERIAL PRIMARY KEY,

@@ -2580,7 +2580,7 @@ function WarehouseConfigPage({ scope }) {
               error={hierarchy.error}
               emptyTitle={emptyTitle}
               emptyBody={scope === "zones"
-                ? "Use \"Generate Default Structure\" to create the official Fumba Port layout."
+                ? "Create warehouses, zones, racks, levels, and bins manually from this page."
                 : "Warehouse configuration records will appear when the parent storage area is selected."}
               columns={columnsByScope[scope]}
             />

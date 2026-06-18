@@ -109,7 +109,9 @@ const readBootstrapAdminConfig = () => {
     username: "BOOTSTRAP_ADMIN_USERNAME",
     email: "BOOTSTRAP_ADMIN_EMAIL",
     phone: "BOOTSTRAP_ADMIN_PHONE",
-    password: "BOOTSTRAP_ADMIN_PASSWORD",
+    password: "BOOTSTRAP_ADMIN_PASSWORD"
+  };
+  const optionalFields = {
     warehouse: "BOOTSTRAP_ADMIN_WAREHOUSE",
     shift: "BOOTSTRAP_ADMIN_SHIFT"
   };
@@ -121,6 +123,13 @@ const readBootstrapAdminConfig = () => {
     if (!value) {
       missing.push(envName);
     } else {
+      config[key] = value;
+    }
+  }
+
+  for (const [key, envName] of Object.entries(optionalFields)) {
+    const value = String(process.env[envName] || "").trim();
+    if (value) {
       config[key] = value;
     }
   }
@@ -173,27 +182,35 @@ const seedBootstrapAdmin = async (client) => {
     }
     const roleId = roleResult.rows[0].id;
 
-    const warehouseResult = await client.query(
-      `SELECT id
-       FROM warehouses
-       WHERE LOWER(warehouse_name) = LOWER($1)
-          OR LOWER(warehouse_code) = LOWER($1)
-       LIMIT 1`,
-      [config.warehouse]
-    );
-    if (warehouseResult.rowCount === 0) {
-      throw new Error(`Configured bootstrap warehouse was not found: ${config.warehouse}`);
+    let warehouseId = null;
+    if (config.warehouse) {
+      const warehouseResult = await client.query(
+        `SELECT id
+         FROM warehouses
+         WHERE LOWER(warehouse_name) = LOWER($1)
+            OR LOWER(warehouse_code) = LOWER($1)
+         LIMIT 1`,
+        [config.warehouse]
+      );
+      if (warehouseResult.rowCount > 0) {
+        warehouseId = warehouseResult.rows[0].id;
+      } else {
+        console.log(`Configured bootstrap warehouse was not found: ${config.warehouse}. Defaulting to NULL.`);
+      }
     }
-    const warehouseId = warehouseResult.rows[0].id;
 
-    const shiftResult = await client.query(
-      "SELECT id FROM shifts WHERE LOWER(shift_name) = LOWER($1)",
-      [config.shift]
-    );
-    if (shiftResult.rowCount === 0) {
-      throw new Error(`Configured bootstrap shift was not found: ${config.shift}`);
+    let shiftId = null;
+    if (config.shift) {
+      const shiftResult = await client.query(
+        "SELECT id FROM shifts WHERE LOWER(shift_name) = LOWER($1)",
+        [config.shift]
+      );
+      if (shiftResult.rowCount > 0) {
+        shiftId = shiftResult.rows[0].id;
+      } else {
+        console.log(`Configured bootstrap shift was not found: ${config.shift}. Defaulting to NULL.`);
+      }
     }
-    const shiftId = shiftResult.rows[0].id;
 
     const insertResult = await client.query(
       `INSERT INTO users (
