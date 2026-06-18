@@ -16,7 +16,6 @@ const shiftRoutes = require("./routes/shiftRoutes");
 const auditLogRoutes = require("./routes/auditLogRoutes");
 const userSessionRoutes = require("./routes/userSessionRoutes");
 const binRuleRoutes = require("./routes/binRuleRoutes");
-const warehouseConfigurationRoutes = require("./routes/warehouseConfigurationRoutes");
 const supervisorRoutes = require("./routes/supervisorRoutes");
 const dispatchRoutes = require("./routes/dispatchRoutes");
 const {
@@ -99,7 +98,6 @@ app.use("/api/shifts", shiftRoutes);
 app.use("/api/audit-logs", auditLogRoutes);
 app.use("/api/user-sessions", userSessionRoutes);
 app.use("/api/bin-rules", binRuleRoutes);
-app.use("/api/warehouse-configuration", warehouseConfigurationRoutes);
 app.use("/api/supervisor", supervisorRoutes);
 app.use("/api/dispatch", dispatchRoutes);
 

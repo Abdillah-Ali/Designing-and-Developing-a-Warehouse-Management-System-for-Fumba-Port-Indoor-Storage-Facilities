@@ -294,3 +294,8 @@ export function isStoredBootstrapCompleted(storage = canUseSessionStorage() ? wi
 export function isStoredBootstrapSetupPending(storage = canUseSessionStorage() ? window.sessionStorage : null) {
   return isStoredBootstrapAdmin(storage) && !isStoredBootstrapCompleted(storage);
 }
+
+export function getStoredAuthWarehouseId(storage = canUseSessionStorage() ? window.sessionStorage : null) {
+  const claims = getStoredAuthClaims(storage);
+  return Number(claims?.warehouseId || claims?.warehouse_id) || null;
+}

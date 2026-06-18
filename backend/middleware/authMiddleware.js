@@ -46,7 +46,6 @@ const portalPermissions = Object.freeze({
     { methods: ["GET", "PUT", "DELETE"], pattern: /^\/bins\/[^/]+$/ },
     { methods: ["PATCH"], pattern: /^\/bins\/[^/]+\/status$/ },
     { methods: ["POST"], pattern: /^\/bins\/[^/]+\/print-barcode$/ },
-    { methods: ["POST"], pattern: /^\/warehouse-configuration\/generate-default-structure$/ },
     { methods: ["GET"], pattern: /^\/bin-rules$/ },
     { methods: ["PUT"], pattern: /^\/bin-rules\/[^/]+$/ },
     { methods: ["GET"], pattern: /^\/placement\/logs$/ },
@@ -69,7 +68,9 @@ const portalPermissions = Object.freeze({
     { methods: ["PATCH"], pattern: /^\/users\/[^/]+\/reset-password$/ },
     { methods: ["PATCH"], pattern: /^\/users\/[^/]+\/deactivate$/ },
     { methods: ["GET"], pattern: /^\/roles$/ },
-    { methods: ["GET"], pattern: /^\/warehouses$/ },
+    { methods: ["GET", "POST"], pattern: /^\/warehouses$/ },
+    { methods: ["PUT", "PATCH"], pattern: /^\/warehouses\/[^/]+$/ },
+    { methods: ["PATCH"], pattern: /^\/warehouses\/[^/]+\/status$/ },
     { methods: ["GET"], pattern: /^\/shifts$/ },
     { methods: ["GET"], pattern: /^\/audit-logs$/ },
     { methods: ["GET"], pattern: /^\/user-sessions$/ }

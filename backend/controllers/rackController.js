@@ -37,6 +37,9 @@ const rackSelect = (activeOnly) => `
     r.updated_at,
     z.code AS zone_code,
     z.name AS zone_name,
+    z.warehouse_id,
+    w.warehouse_name,
+    w.warehouse_code,
     COUNT(DISTINCT l.id)::int AS level_total,
     COUNT(b.id)::int AS bin_total,
     (COUNT(b.id) FILTER (WHERE b.status = 'Available' AND b.active = TRUE))::int AS available_bins,
@@ -53,6 +56,7 @@ const rackSelect = (activeOnly) => `
       ELSE 0 END AS volume_occupancy_percent
   FROM racks r
   JOIN zones z ON z.id = r.zone_id
+  LEFT JOIN warehouses w ON w.id = z.warehouse_id
   LEFT JOIN levels l ON l.rack_id = r.id ${activeOnly ? "AND l.active = TRUE" : ""}
   LEFT JOIN bins b ON b.level_id = l.id ${activeOnly ? "AND b.active = TRUE" : ""}
 `;
@@ -67,15 +71,27 @@ const runRackList = async (req, res, next, zoneId = null) => {
       values.push(zoneId);
       conditions.push(`r.zone_id = $${values.length}`);
     }
+
+    if (!isAdmin(req)) {
+      const warehouseId = req.auth?.warehouseId || 0;
+      values.push(warehouseId);
+      conditions.push(`z.warehouse_id = $${values.length}`);
+    } else if (req.query.warehouse_id) {
+      values.push(req.query.warehouse_id);
+      conditions.push(`z.warehouse_id = $${values.length}`);
+    }
+
     if (activeOnly) {
       conditions.push("r.active = TRUE");
       conditions.push("z.active = TRUE");
     }
 
+    const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
     const result = await db.query(
       `${rackSelect(activeOnly)}
-       ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}
-       GROUP BY r.id, z.id
+       ${whereClause}
+       GROUP BY r.id, z.id, w.id
        ORDER BY z.code, r.code`,
       values
     );
@@ -92,11 +108,25 @@ const getRacksByZone = (req, res, next) => runRackList(req, res, next, req.param
 const getRackById = async (req, res, next) => {
   try {
     const activeOnly = !isAdmin(req);
+    const conditions = ["r.id = $1"];
+    const values = [req.params.id];
+
+    if (!isAdmin(req)) {
+      const warehouseId = req.auth?.warehouseId || 0;
+      values.push(warehouseId);
+      conditions.push(`z.warehouse_id = $${values.length}`);
+    }
+
+    if (activeOnly) {
+      conditions.push("r.active = TRUE");
+      conditions.push("z.active = TRUE");
+    }
+
     const result = await db.query(
       `${rackSelect(activeOnly)}
-       WHERE r.id = $1 ${activeOnly ? "AND r.active = TRUE AND z.active = TRUE" : ""}
-       GROUP BY r.id, z.id`,
-      [req.params.id]
+       WHERE ${conditions.join(" AND ")}
+       GROUP BY r.id, z.id, w.id`,
+      values
     );
     if (result.rowCount === 0) throw buildError("Rack not found.", 404);
     res.json({ success: true, data: result.rows[0] });

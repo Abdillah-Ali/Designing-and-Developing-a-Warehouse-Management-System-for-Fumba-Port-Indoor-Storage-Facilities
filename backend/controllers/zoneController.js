@@ -24,6 +24,9 @@ const zoneSelect = (activeOnly) => `
   SELECT
     z.id,
     z.id AS zone_id,
+    z.warehouse_id,
+    w.warehouse_name,
+    w.warehouse_code,
     z.code,
     z.code AS zone_code,
     z.name,
@@ -63,6 +66,7 @@ const zoneSelect = (activeOnly) => `
       ELSE 0
     END AS volume_occupancy_percent
   FROM zones z
+  LEFT JOIN warehouses w ON w.id = z.warehouse_id
   LEFT JOIN racks r ON r.zone_id = z.id ${activeOnly ? "AND r.active = TRUE" : ""}
   LEFT JOIN levels l ON l.rack_id = r.id ${activeOnly ? "AND l.active = TRUE" : ""}
   LEFT JOIN bins b ON b.level_id = l.id ${activeOnly ? "AND b.active = TRUE" : ""}
@@ -71,11 +75,30 @@ const zoneSelect = (activeOnly) => `
 const getZones = async (req, res, next) => {
   try {
     const activeOnly = !isAdmin(req);
+    const conditions = [];
+    const values = [];
+
+    if (!isAdmin(req)) {
+      const warehouseId = req.auth?.warehouseId || 0;
+      values.push(warehouseId);
+      conditions.push(`z.warehouse_id = $${values.length}`);
+    } else if (req.query.warehouse_id) {
+      values.push(req.query.warehouse_id);
+      conditions.push(`z.warehouse_id = $${values.length}`);
+    }
+
+    if (activeOnly) {
+      conditions.push("z.active = TRUE");
+    }
+
+    const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
     const result = await db.query(
       `${zoneSelect(activeOnly)}
-       ${activeOnly ? "WHERE z.active = TRUE" : ""}
-       GROUP BY z.id
-       ORDER BY z.code`
+       ${whereClause}
+       GROUP BY z.id, w.id
+       ORDER BY z.code`,
+      values
     );
 
     res.json({ success: true, count: result.rowCount, data: result.rows });
@@ -87,11 +110,24 @@ const getZones = async (req, res, next) => {
 const getZoneById = async (req, res, next) => {
   try {
     const activeOnly = !isAdmin(req);
+    const conditions = ["z.id = $1"];
+    const values = [req.params.id];
+
+    if (!isAdmin(req)) {
+      const warehouseId = req.auth?.warehouseId || 0;
+      values.push(warehouseId);
+      conditions.push(`z.warehouse_id = $${values.length}`);
+    }
+
+    if (activeOnly) {
+      conditions.push("z.active = TRUE");
+    }
+
     const result = await db.query(
       `${zoneSelect(activeOnly)}
-       WHERE z.id = $1 ${activeOnly ? "AND z.active = TRUE" : ""}
-       GROUP BY z.id`,
-      [req.params.id]
+       WHERE ${conditions.join(" AND ")}
+       GROUP BY z.id, w.id`,
+      values
     );
 
     if (result.rowCount === 0) throw buildError("Zone not found.", 404);
@@ -110,6 +146,7 @@ const createZone = async (req, res, next) => {
     const allowedCargoType = textValue(req.body.allowed_cargo_type);
     const zoneType = textValue(req.body.zone_type) || "Standard";
     const status = textValue(req.body.status) || "Active";
+    const warehouseId = req.body.warehouse_id;
 
     if (!code || !ZONE_CODE_PATTERN.test(code)) {
       throw buildError("Zone code must follow the format Z-A.", 400);
@@ -119,24 +156,31 @@ const createZone = async (req, res, next) => {
     if (!["Active", "Inactive"].includes(status)) {
       throw buildError("Zone status must be Active or Inactive.", 400);
     }
-
-    const maxWeight = numberValue(req.body.max_weight);
-    const maxVolume = numberValue(req.body.max_volume);
-    const isHazardZone = req.body.is_hazard_zone === true || zoneType.toLowerCase() === "hazardous";
+    if (!warehouseId) {
+      throw buildError("Warehouse ID is required.", 400);
+    }
 
     await client.query("BEGIN");
 
-    const duplicate = await client.query("SELECT id FROM zones WHERE UPPER(code) = $1", [code]);
+    const warehouseCheck = await client.query("SELECT id FROM warehouses WHERE id = $1", [warehouseId]);
+    if (warehouseCheck.rowCount === 0) {
+      throw buildError("Selected warehouse was not found.", 404);
+    }
+
+    const duplicate = await client.query(
+      "SELECT id FROM zones WHERE UPPER(code) = $1 AND warehouse_id = $2",
+      [code, warehouseId]
+    );
     if (duplicate.rowCount > 0) {
-      throw buildError(`Zone with code ${code} already exists.`, 409);
+      throw buildError(`Zone with code ${code} already exists in this warehouse.`, 409);
     }
 
     const result = await client.query(
       `INSERT INTO zones (
         code, name, description, zone_type, allowed_cargo_type, is_hazard_zone,
-        max_weight, max_volume, rack_count, level_count, bins_per_level, status, active
+        max_weight, max_volume, rack_count, level_count, bins_per_level, status, active, warehouse_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 0, 0, $9, $10)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 0, 0, $9, $10, $11)
       RETURNING *, id AS zone_id, code AS zone_code, name AS zone_name`,
       [
         code,
@@ -148,14 +192,15 @@ const createZone = async (req, res, next) => {
         maxWeight,
         maxVolume,
         status,
-        status === "Active"
+        status === "Active",
+        warehouseId
       ]
     );
 
     await client.query(
       `INSERT INTO audit_logs (user_id, action, module, description)
        VALUES ($1, 'CREATE_ZONE', 'Warehouse Configuration', $2)`,
-      [req.auth?.userId || null, `Created zone ${code} (${name}).`]
+      [req.auth?.userId || null, `Created zone ${code} (${name}) in warehouse.`]
     );
 
     await client.query("COMMIT");
@@ -189,12 +234,18 @@ const updateZone = async (req, res, next) => {
 
     await client.query("BEGIN");
 
+    const existingZoneResult = await client.query("SELECT warehouse_id FROM zones WHERE id = $1", [req.params.id]);
+    if (existingZoneResult.rowCount === 0) {
+      throw buildError("Zone not found.", 404);
+    }
+    const warehouseId = existingZoneResult.rows[0].warehouse_id;
+
     const duplicate = await client.query(
-      "SELECT id FROM zones WHERE UPPER(code) = $1 AND id <> $2",
-      [code, req.params.id]
+      "SELECT id FROM zones WHERE UPPER(code) = $1 AND warehouse_id = $2 AND id <> $3",
+      [code, warehouseId, req.params.id]
     );
     if (duplicate.rowCount > 0) {
-      throw buildError(`Zone with code ${code} already exists.`, 409);
+      throw buildError(`Zone with code ${code} already exists in this warehouse.`, 409);
     }
 
     const result = await client.query(

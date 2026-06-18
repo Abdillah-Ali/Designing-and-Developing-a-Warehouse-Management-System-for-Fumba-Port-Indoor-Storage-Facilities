@@ -164,9 +164,11 @@ const validatePlacementOperation = async (payload, auth = {}, executor = db) => 
   return { normalized, validation };
 };
 
-const formatLocation = (bin) => (
-  `${bin.zone_code} / ${bin.rack_code} / ${bin.level_code} / ${bin.barcode}`
-);
+const formatLocation = (bin) => {
+  const wh = bin.warehouse_name || bin.warehouse_code || "Unknown WH";
+  const binCode = bin.code || bin.bin_code || bin.barcode?.split("-")?.pop() || "B01";
+  return `${wh} → ${bin.zone_code} → ${bin.rack_code} → ${bin.level_code} → ${binCode}`;
+};
 
 const getNextPlacementStatus = ({
   alreadyPlacedInThisBin,

@@ -38,6 +38,9 @@ const levelSelect = (activeOnly) => `
     z.id AS zone_id,
     z.code AS zone_code,
     z.name AS zone_name,
+    z.warehouse_id,
+    w.warehouse_name,
+    w.warehouse_code,
     COUNT(b.id)::int AS bin_total,
     (COUNT(b.id) FILTER (WHERE b.status = 'Available' AND b.active = TRUE))::int AS available_bins,
     (COUNT(b.id) FILTER (WHERE b.status = 'Occupied' AND b.active = TRUE))::int AS occupied_bins,
@@ -54,6 +57,7 @@ const levelSelect = (activeOnly) => `
   FROM levels l
   JOIN racks r ON r.id = l.rack_id
   JOIN zones z ON z.id = r.zone_id
+  LEFT JOIN warehouses w ON w.id = z.warehouse_id
   LEFT JOIN bins b ON b.level_id = l.id ${activeOnly ? "AND b.active = TRUE" : ""}
 `;
 
@@ -71,16 +75,28 @@ const runLevelList = async (req, res, next, rackId = null) => {
       values.push(req.query.zone_id);
       conditions.push(`z.id = $${values.length}`);
     }
+
+    if (!isAdmin(req)) {
+      const warehouseId = req.auth?.warehouseId || 0;
+      values.push(warehouseId);
+      conditions.push(`z.warehouse_id = $${values.length}`);
+    } else if (req.query.warehouse_id) {
+      values.push(req.query.warehouse_id);
+      conditions.push(`z.warehouse_id = $${values.length}`);
+    }
+
     if (activeOnly) {
       conditions.push("l.active = TRUE");
       conditions.push("r.active = TRUE");
       conditions.push("z.active = TRUE");
     }
 
+    const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
     const result = await db.query(
       `${levelSelect(activeOnly)}
-       ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}
-       GROUP BY l.id, r.id, z.id
+       ${whereClause}
+       GROUP BY l.id, r.id, z.id, w.id
        ORDER BY z.code, r.code, l.level_number`,
       values
     );
@@ -96,11 +112,26 @@ const getLevelsByRack = (req, res, next) => runLevelList(req, res, next, req.par
 const getLevelById = async (req, res, next) => {
   try {
     const activeOnly = !isAdmin(req);
+    const conditions = ["l.id = $1"];
+    const values = [req.params.id];
+
+    if (!isAdmin(req)) {
+      const warehouseId = req.auth?.warehouseId || 0;
+      values.push(warehouseId);
+      conditions.push(`z.warehouse_id = $${values.length}`);
+    }
+
+    if (activeOnly) {
+      conditions.push("l.active = TRUE");
+      conditions.push("r.active = TRUE");
+      conditions.push("z.active = TRUE");
+    }
+
     const result = await db.query(
       `${levelSelect(activeOnly)}
-       WHERE l.id = $1 ${activeOnly ? "AND l.active = TRUE AND r.active = TRUE AND z.active = TRUE" : ""}
-       GROUP BY l.id, r.id, z.id`,
-      [req.params.id]
+       WHERE ${conditions.join(" AND ")}
+       GROUP BY l.id, r.id, z.id, w.id`,
+      values
     );
     if (result.rowCount === 0) throw buildError("Level not found.", 404);
     res.json({ success: true, data: result.rows[0] });

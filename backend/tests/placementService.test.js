@@ -89,7 +89,7 @@ test("placement locations use the complete warehouse hierarchy", () => {
       level_code: "L1",
       barcode: "BIN-D01-L1-02"
     }),
-    "Z-D / R-D01 / L1 / BIN-D01-L1-02"
+    "Unknown WH → Z-D → R-D01 → L1 → 02"
   );
 });
 

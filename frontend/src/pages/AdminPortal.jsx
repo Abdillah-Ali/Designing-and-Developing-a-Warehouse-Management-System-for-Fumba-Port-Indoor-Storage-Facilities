@@ -71,6 +71,7 @@ import {
   getErrorMessage,
   statusTone
 } from "@/lib/wms-operational";
+
 import {
   approveSupervisorApproval,
   createBin,
@@ -79,7 +80,6 @@ import {
   createZone,
   createUser,
   deactivateUser,
-  generateDefaultWarehouseStructure,
   getAuditLogs,
   getBins,
   getCargo,
@@ -110,7 +110,10 @@ import {
   updateZone,
   updateZoneStatus,
   updateUser,
-  updateUserStatus
+  updateUserStatus,
+  createWarehouse,
+  updateWarehouse,
+  updateWarehouseStatus
 } from "@/services/api";
 
 const inputClass =
@@ -156,6 +159,7 @@ const adminNavigation = [
     label: "Warehouse Configuration",
     icon: Warehouse,
     children: [
+      { label: "Warehouses", icon: Warehouse, to: "/admin/warehouse/warehouses" },
       { label: "Zones", icon: Boxes, to: "/admin/warehouse/zones" },
       { label: "Racks", icon: Rows3, to: "/admin/warehouse/racks" },
       { label: "Levels", icon: SquareStack, to: "/admin/warehouse/levels" },
@@ -1608,31 +1612,50 @@ function WarehouseAssignmentPage() {
 }
 
 function HierarchySelector({
+  warehouses,
   zones,
   racks,
   levels,
+  selectedWarehouse,
   selectedZone,
   selectedRack,
   selectedLevel,
+  setSelectedWarehouse,
   setSelectedZone,
   setSelectedRack,
   setSelectedLevel,
+  needZone = true,
   needRack,
   needLevel,
   loading
 }) {
   return (
-    <div className="grid gap-3 md:grid-cols-3">
-      <FormField label="Zone">
-        <select className={inputClass} value={selectedZone} onChange={(event) => setSelectedZone(event.target.value)}>
-          <option value="">{loading.zones ? "Loading zones..." : "Select zone"}</option>
-          {zones.map((zone) => (
-            <option key={getRecordId(zone, "zone_id")} value={getRecordId(zone, "zone_id")}>
-              {getZoneLabel(zone)}
+    <div className="grid gap-3 md:grid-cols-4">
+      <FormField label="Warehouse">
+        <select className={inputClass} value={selectedWarehouse} onChange={(event) => {
+          setSelectedWarehouse(event.target.value);
+        }}>
+          <option value="">{loading.warehouses ? "Loading warehouses..." : "Select warehouse"}</option>
+          {warehouses.map((wh) => (
+            <option key={wh.id} value={wh.id}>
+              {wh.warehouse_code} - {wh.warehouse_name}
             </option>
           ))}
         </select>
       </FormField>
+
+      {needZone && (
+        <FormField label="Zone">
+          <select className={inputClass} value={selectedZone} onChange={(event) => setSelectedZone(event.target.value)} disabled={!selectedWarehouse}>
+            <option value="">{loading.zones ? "Loading zones..." : "Select zone"}</option>
+            {zones.map((zone) => (
+              <option key={getRecordId(zone, "zone_id")} value={getRecordId(zone, "zone_id")}>
+                {getZoneLabel(zone)}
+              </option>
+            ))}
+          </select>
+        </FormField>
+      )}
 
       {needRack && (
         <FormField label="Rack">
@@ -1664,17 +1687,20 @@ function HierarchySelector({
 }
 
 function useWarehouseHierarchy() {
+  const [warehouses, setWarehouses] = useState([]);
   const [zones, setZones] = useState([]);
   const [racks, setRacks] = useState([]);
   const [levels, setLevels] = useState([]);
   const [bins, setBins] = useState([]);
+  const [selectedWarehouse, setSelectedWarehouse] = useState("");
   const [selectedZone, setSelectedZone] = useState("");
   const [selectedRack, setSelectedRack] = useState("");
   const [selectedLevel, setSelectedLevel] = useState("");
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const [loading, setLoading] = useState({
-    zones: true,
+    warehouses: true,
+    zones: false,
     racks: false,
     levels: false,
     bins: false
@@ -1682,12 +1708,48 @@ function useWarehouseHierarchy() {
 
   useEffect(() => {
     let active = true;
+    const loadWarehouses = async () => {
+      setLoading((current) => ({ ...current, warehouses: true }));
+      setError("");
+      try {
+        const response = await getWarehouses();
+        if (active) {
+          const list = response.data || [];
+          setWarehouses(list);
+          if (list.length > 0 && !selectedWarehouse) {
+            const firstActive = list.find(w => w.status === 'Active') || list[0];
+            setSelectedWarehouse(String(firstActive.id));
+          }
+        }
+      } catch (err) {
+        if (active) setError(getErrorMessage(err));
+      } finally {
+        if (active) setLoading((current) => ({ ...current, warehouses: false }));
+      }
+    };
+    loadWarehouses();
+    return () => {
+      active = false;
+    };
+  }, [refreshKey]);
 
+  useEffect(() => {
+    setZones([]);
+    setRacks([]);
+    setLevels([]);
+    setBins([]);
+    setSelectedZone("");
+    setSelectedRack("");
+    setSelectedLevel("");
+
+    if (!selectedWarehouse) return undefined;
+
+    let active = true;
     const loadZones = async () => {
       setLoading((current) => ({ ...current, zones: true }));
       setError("");
       try {
-        const response = await getZones();
+        const response = await getZones({ warehouse_id: selectedWarehouse });
         if (active) setZones(response.data || []);
       } catch (err) {
         if (active) setError(getErrorMessage(err));
@@ -1695,13 +1757,11 @@ function useWarehouseHierarchy() {
         if (active) setLoading((current) => ({ ...current, zones: false }));
       }
     };
-
     loadZones();
-
     return () => {
       active = false;
     };
-  }, [refreshKey]);
+  }, [selectedWarehouse, refreshKey]);
 
   useEffect(() => {
     setRacks([]);
@@ -1725,9 +1785,7 @@ function useWarehouseHierarchy() {
         if (active) setLoading((current) => ({ ...current, racks: false }));
       }
     };
-
     loadRacks();
-
     return () => {
       active = false;
     };
@@ -1753,9 +1811,7 @@ function useWarehouseHierarchy() {
         if (active) setLoading((current) => ({ ...current, levels: false }));
       }
     };
-
     loadLevels();
-
     return () => {
       active = false;
     };
@@ -1779,22 +1835,23 @@ function useWarehouseHierarchy() {
         if (active) setLoading((current) => ({ ...current, bins: false }));
       }
     };
-
     loadBins();
-
     return () => {
       active = false;
     };
   }, [selectedLevel, refreshKey]);
 
   return {
+    warehouses,
     zones,
     racks,
     levels,
     bins,
+    selectedWarehouse,
     selectedZone,
     selectedRack,
     selectedLevel,
+    setSelectedWarehouse,
     setSelectedZone,
     setSelectedRack,
     setSelectedLevel,
@@ -1815,6 +1872,7 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
     const row = action.row || {};
     setError("");
     setForm({
+      warehouse_id: String(row.warehouse_id || hierarchy.selectedWarehouse || ""),
       zone_id: String(row.zone_id || hierarchy.selectedZone || ""),
       rack_id: String(row.rack_id || hierarchy.selectedRack || ""),
       level_id: String(row.level_id || hierarchy.selectedLevel || ""),
@@ -1833,7 +1891,7 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
       max_volume: row.max_volume ?? "",
       reserved_for_cargo_type: row.reserved_for_cargo_type || ""
     });
-  }, [action, hierarchy.selectedLevel, hierarchy.selectedRack, hierarchy.selectedZone]);
+  }, [action, hierarchy.selectedLevel, hierarchy.selectedRack, hierarchy.selectedZone, hierarchy.selectedWarehouse]);
 
   if (!action) return null;
 
@@ -1865,6 +1923,7 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
         }
       } else if (scope === "zones") {
         const payload = {
+          warehouse_id: Number(form.warehouse_id),
           zone_code: form.zone_code,
           zone_name: form.zone_name,
           zone_type: form.zone_type,
@@ -1956,6 +2015,14 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
           <div className="grid gap-3 md:grid-cols-2">
             {scope === "zones" && (
               <>
+                <FormField label="Warehouse">
+                  <SelectField value={form.warehouse_id || ""} onChange={(value) => setField("warehouse_id", value)} required>
+                    <option value="">Select warehouse</option>
+                    {hierarchy.warehouses.map((wh) => (
+                      <option key={wh.id} value={wh.id}>{wh.warehouse_code} - {wh.warehouse_name}</option>
+                    ))}
+                  </SelectField>
+                </FormField>
                 <FormField label="Zone Code">
                   <input className={inputClass} value={form.zone_code || ""} onChange={(event) => setField("zone_code", event.target.value)} placeholder="Z-A" required />
                 </FormField>
@@ -2058,6 +2125,251 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
         </div>
       </form>
     </Drawer>
+  );
+}
+
+function WarehouseFormDrawer({ mode, warehouse, onClose, onSave }) {
+  const [form, setForm] = useState({
+    warehouse_name: "",
+    warehouse_code: "",
+    status: "Active"
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (warehouse) {
+      setForm({
+        warehouse_name: warehouse.warehouse_name || "",
+        warehouse_code: warehouse.warehouse_code || "",
+        status: warehouse.status || "Active"
+      });
+    }
+  }, [warehouse]);
+
+  const setField = (field, value) => {
+    setForm((curr) => ({ ...curr, [field]: value }));
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    setError("");
+
+    try {
+      await onSave(form, warehouse?.id);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Drawer open title={mode === "create" ? "Add Warehouse" : "Edit Warehouse"} onClose={onClose}>
+      <form className="space-y-3" onSubmit={handleSubmit}>
+        {error && <ErrorState message={error} />}
+
+        <FormField label="Warehouse Code">
+          <input
+            className={inputClass}
+            value={form.warehouse_code}
+            onChange={(e) => setField("warehouse_code", e.target.value)}
+            placeholder="e.g. WH-B"
+            required
+          />
+        </FormField>
+
+        <FormField label="Warehouse Name">
+          <input
+            className={inputClass}
+            value={form.warehouse_name}
+            onChange={(e) => setField("warehouse_name", e.target.value)}
+            placeholder="e.g. Warehouse B"
+            required
+          />
+        </FormField>
+
+        <FormField label="Status">
+          <SelectField value={form.status} onChange={(value) => setField("status", value)}>
+            <option value="Active">Active</option>
+            <option value="Inactive">Inactive</option>
+          </SelectField>
+        </FormField>
+
+        <div className="flex justify-end gap-2 border-t border-border pt-3">
+          <ToolbarButton variant="secondary" onClick={onClose} disabled={saving}>Cancel</ToolbarButton>
+          <ToolbarButton icon={saving ? Loader2 : CheckCircle2} type="submit" disabled={saving}>
+            {saving ? "Saving..." : "Save"}
+          </ToolbarButton>
+        </div>
+      </form>
+    </Drawer>
+  );
+}
+
+function WarehousesPage() {
+  const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState("All statuses");
+  const [drawerMode, setDrawerMode] = useState("");
+  const [selectedWarehouse, setSelectedWarehouse] = useState(null);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [actionError, setActionError] = useState("");
+  const [busyWarehouseId, setBusyWarehouseId] = useState("");
+  const warehouses = useApiCollection(() => getWarehouses(), `warehouses-${refreshKey}`);
+
+  const filteredWarehouses = useMemo(() => {
+    return (warehouses.rows || []).filter((wh) => {
+      const statusMatch = statusFilter === "All statuses" || wh.status === statusFilter;
+      const searchMatch = !searchTerm ||
+        wh.warehouse_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        wh.warehouse_code.toLowerCase().includes(searchTerm.toLowerCase());
+      return statusMatch && searchMatch;
+    });
+  }, [searchTerm, statusFilter, warehouses.rows]);
+
+  const refreshWarehouses = () => setRefreshKey((current) => current + 1);
+
+  const openCreateDrawer = () => {
+    setSelectedWarehouse(null);
+    setActionError("");
+    setDrawerMode("create");
+  };
+
+  const openEditDrawer = (wh) => {
+    setSelectedWarehouse(wh);
+    setActionError("");
+    setDrawerMode("edit");
+  };
+
+  const closeDrawer = () => {
+    setDrawerMode("");
+    setSelectedWarehouse(null);
+  };
+
+  const saveWarehouse = async (payload, warehouseId) => {
+    const response = warehouseId ? await updateWarehouse(warehouseId, payload) : await createWarehouse(payload);
+    closeDrawer();
+    refreshWarehouses();
+    toast.success(warehouseId ? "Warehouse updated." : "Warehouse created.");
+    return response;
+  };
+
+  const toggleStatus = async (wh) => {
+    const nextStatus = wh.status === "Active" ? "Inactive" : "Active";
+    setBusyWarehouseId(`status-${wh.id}`);
+    setActionError("");
+
+    try {
+      await updateWarehouseStatus(wh.id, nextStatus);
+      refreshWarehouses();
+      toast.success(nextStatus === "Active" ? "Warehouse activated." : "Warehouse deactivated.");
+    } catch (error) {
+      setActionError(getErrorMessage(error));
+      toast.error("Failed to update status", { description: getErrorMessage(error) });
+    } finally {
+      setBusyWarehouseId("");
+    }
+  };
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="System Configuration"
+        title="Warehouses"
+        description="Configure and manage system storage warehouses."
+        action={
+          <ToolbarButton icon={Plus} onClick={openCreateDrawer}>
+            Add Warehouse
+          </ToolbarButton>
+        }
+      />
+
+      <div className="flex-1 overflow-auto p-4">
+        <div className="space-y-3">
+          {actionError && <ErrorState message={actionError} />}
+
+          <SectionCard title="Search & Filter" icon={Filter}>
+            <div className="grid gap-3 md:grid-cols-2">
+              <FormField label="Search Term">
+                <input
+                  className={inputClass}
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Search by name or code..."
+                />
+              </FormField>
+
+              <FormField label="Status Filter">
+                <SelectField value={statusFilter} onChange={setStatusFilter}>
+                  <option value="All statuses">All statuses</option>
+                  <option value="Active">Active</option>
+                  <option value="Inactive">Inactive</option>
+                </SelectField>
+              </FormField>
+            </div>
+          </SectionCard>
+
+          <SectionCard title="Warehouses Directory" icon={Warehouse}>
+            {warehouses.loading && warehouses.rows.length === 0 ? (
+              <LoadingState />
+            ) : (
+              <DataTable
+                rows={filteredWarehouses}
+                emptyTitle="No warehouses found"
+                emptyBody="Try adjusting your filter settings or create a new warehouse."
+                columns={[
+                  { key: "warehouse_code", label: "Code", render: (row) => row.warehouse_code, className: "font-mono font-semibold" },
+                  { key: "warehouse_name", label: "Warehouse Name", render: (row) => row.warehouse_name },
+                  {
+                    key: "status",
+                    label: "Status",
+                    render: (row) => (
+                      <StatusBadge tone={row.status === "Active" ? "success" : "destructive"}>
+                        {row.status}
+                      </StatusBadge>
+                    )
+                  },
+                  {
+                    key: "actions",
+                    label: "Actions",
+                    render: (row) => {
+                      const isBusy = busyWarehouseId === `status-${row.id}`;
+                      return (
+                        <div className="flex gap-2">
+                          <button
+                            className="rounded border border-border bg-background px-2 py-1 text-[10px] font-semibold hover:bg-muted"
+                            onClick={() => openEditDrawer(row)}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            className="rounded border border-border bg-background px-2 py-1 text-[10px] font-semibold hover:bg-muted disabled:opacity-50"
+                            onClick={() => toggleStatus(row)}
+                            disabled={isBusy}
+                          >
+                            {isBusy ? "Updating..." : row.status === "Active" ? "Deactivate" : "Activate"}
+                          </button>
+                        </div>
+                      );
+                    }
+                  }
+                ]}
+              />
+            )}
+          </SectionCard>
+        </div>
+      </div>
+
+      {drawerMode && (
+        <WarehouseFormDrawer
+          mode={drawerMode}
+          warehouse={selectedWarehouse}
+          onClose={closeDrawer}
+          onSave={saveWarehouse}
+        />
+      )}
+    </>
   );
 }
 
@@ -2191,31 +2503,15 @@ function WarehouseConfigPage({ scope }) {
   };
 
   const emptyTitle = {
-    zones: "No warehouse structure configured yet.",
+    zones: hierarchy.selectedWarehouse ? "No zones configured for this warehouse." : "Select a warehouse to load zones",
     racks: hierarchy.selectedZone ? "No racks loaded" : "Select a zone to load racks",
-    levels: hierarchy.selectedRack ? "No levels loaded" : "Select a zone and rack to load levels",
-    bins: hierarchy.selectedLevel ? "No bins loaded" : "Select a zone, rack, and level to load bins"
+    levels: hierarchy.selectedRack ? "No levels loaded" : "Select a rack to load levels",
+    bins: hierarchy.selectedLevel ? "No bins loaded" : "Select a level to load bins"
   }[scope];
 
   const visibleRows = scope === "bins" && binStatusFilter
     ? config.rows.filter((row) => row.status === binStatusFilter)
     : config.rows;
-
-  const handleGenerate = async () => {
-    setGenerating(true);
-    try {
-      const response = await generateDefaultWarehouseStructure();
-      const summary = response.data || {};
-      toast.success(response.message, {
-        description: `${summary.zones_created || 0} zones, ${summary.racks_created || 0} racks, ${summary.levels_created || 0} levels, and ${summary.bins_created || 0} bins created.`
-      });
-      hierarchy.refresh();
-    } catch (err) {
-      toast.error("Default structure could not be generated.", { description: getErrorMessage(err) });
-    } finally {
-      setGenerating(false);
-    }
-  };
 
   return (
     <>
@@ -2228,53 +2524,55 @@ function WarehouseConfigPage({ scope }) {
             <ToolbarButton
               icon={Plus}
               onClick={() => setAction({ kind: "create" })}
-              disabled={(scope === "racks" && !hierarchy.selectedZone) || (scope === "levels" && !hierarchy.selectedRack) || (scope === "bins" && !hierarchy.selectedLevel)}
+              disabled={
+                (scope === "zones" && !hierarchy.selectedWarehouse) ||
+                (scope === "racks" && !hierarchy.selectedZone) ||
+                (scope === "levels" && !hierarchy.selectedRack) ||
+                (scope === "bins" && !hierarchy.selectedLevel)
+              }
             >
               {config.addAction}
             </ToolbarButton>
-            {scope === "zones" && (
-              <ToolbarButton icon={generating ? Loader2 : RefreshCw} variant="secondary" onClick={handleGenerate} disabled={generating}>
-                {generating ? "Generating..." : "Generate Default Structure"}
-              </ToolbarButton>
-            )}
           </div>
         }
       />
       <div className="flex-1 overflow-auto p-4">
         <div className="space-y-3">
-          {scope !== "zones" && (
-            <SectionCard title="Hierarchy Filter" icon={Warehouse}>
-              <HierarchySelector
-                zones={hierarchy.zones}
-                racks={hierarchy.racks}
-                levels={hierarchy.levels}
-                selectedZone={hierarchy.selectedZone}
-                selectedRack={hierarchy.selectedRack}
-                selectedLevel={hierarchy.selectedLevel}
-                setSelectedZone={hierarchy.setSelectedZone}
-                setSelectedRack={hierarchy.setSelectedRack}
-                setSelectedLevel={hierarchy.setSelectedLevel}
-                needRack={config.needRack}
-                needLevel={config.needLevel}
-                loading={hierarchy.loading}
-              />
-              {scope === "bins" && (
-                <div className="mt-3 max-w-xs">
-                  <FormField label="Bin Status">
-                    <SelectField value={binStatusFilter} onChange={setBinStatusFilter}>
-                      <option value="">All statuses</option>
-                      <option value="Available">Available</option>
-                      <option value="Occupied">Occupied</option>
-                      <option value="Reserved">Reserved</option>
-                      <option value="Blocked">Blocked</option>
-                      <option value="Maintenance">Maintenance</option>
-                      <option value="Inactive">Inactive</option>
-                    </SelectField>
-                  </FormField>
-                </div>
-              )}
-            </SectionCard>
-          )}
+          <SectionCard title="Hierarchy Filter" icon={Warehouse}>
+            <HierarchySelector
+              warehouses={hierarchy.warehouses}
+              zones={hierarchy.zones}
+              racks={hierarchy.racks}
+              levels={hierarchy.levels}
+              selectedWarehouse={hierarchy.selectedWarehouse}
+              selectedZone={hierarchy.selectedZone}
+              selectedRack={hierarchy.selectedRack}
+              selectedLevel={hierarchy.selectedLevel}
+              setSelectedWarehouse={hierarchy.setSelectedWarehouse}
+              setSelectedZone={hierarchy.setSelectedZone}
+              setSelectedRack={hierarchy.setSelectedRack}
+              setSelectedLevel={hierarchy.setSelectedLevel}
+              needZone={scope !== "zones"}
+              needRack={config.needRack}
+              needLevel={config.needLevel}
+              loading={hierarchy.loading}
+            />
+            {scope === "bins" && (
+              <div className="mt-3 max-w-xs">
+                <FormField label="Bin Status">
+                  <SelectField value={binStatusFilter} onChange={setBinStatusFilter}>
+                    <option value="">All statuses</option>
+                    <option value="Available">Available</option>
+                    <option value="Occupied">Occupied</option>
+                    <option value="Reserved">Reserved</option>
+                    <option value="Blocked">Blocked</option>
+                    <option value="Maintenance">Maintenance</option>
+                    <option value="Inactive">Inactive</option>
+                  </SelectField>
+                </FormField>
+              </div>
+            )}
+          </SectionCard>
           <SectionCard title={`${config.title} Structure`} icon={config.icon}>
             <DataTable
               rows={visibleRows}
@@ -2376,25 +2674,29 @@ function CapacityConfigurationPage() {
         <div className="space-y-3">
           <SectionCard title="Capacity Hierarchy Filter" icon={Warehouse}>
             <HierarchySelector
+              warehouses={hierarchy.warehouses}
               zones={hierarchy.zones}
               racks={hierarchy.racks}
               levels={hierarchy.levels}
+              selectedWarehouse={hierarchy.selectedWarehouse}
               selectedZone={hierarchy.selectedZone}
               selectedRack={hierarchy.selectedRack}
               selectedLevel={hierarchy.selectedLevel}
+              setSelectedWarehouse={hierarchy.setSelectedWarehouse}
               setSelectedZone={hierarchy.setSelectedZone}
               setSelectedRack={hierarchy.setSelectedRack}
               setSelectedLevel={hierarchy.setSelectedLevel}
+              needZone
               needRack
               needLevel
               loading={hierarchy.loading}
             />
           </SectionCard>
           <div className="grid gap-3 xl:grid-cols-2">
-            <CapacityTable title="Zone Capacity" icon={Boxes} rows={hierarchy.zones} loading={hierarchy.loading.zones} error={hierarchy.error} label="Zone" labelRenderer={getZoneLabel} />
-            <CapacityTable title="Rack Capacity" icon={Rows3} rows={hierarchy.racks} loading={hierarchy.loading.racks} error={hierarchy.error} label="Rack" labelRenderer={getRackCode} emptyTitle={hierarchy.selectedZone ? "No racks loaded" : "Select a zone to load rack capacity"} />
-            <CapacityTable title="Level Capacity" icon={SquareStack} rows={hierarchy.levels} loading={hierarchy.loading.levels} error={hierarchy.error} label="Level" labelRenderer={getLevelCode} emptyTitle={hierarchy.selectedRack ? "No levels loaded" : "Select a rack to load level capacity"} />
-            <CapacityTable title="Bin Capacity" icon={Box} rows={hierarchy.bins} loading={hierarchy.loading.bins} error={hierarchy.error} label="Bin" labelRenderer={getBinCode} emptyTitle={hierarchy.selectedLevel ? "No bins loaded" : "Select a level to load bin capacity"} />
+            <CapacityTable title="Zone Capacity" icon={Boxes} rows={hierarchy.zones} loading={hierarchy.loading.zones} error={hierarchy.error} label="Zone" labelRenderer={getZoneLabel} emptyTitle={hierarchy.selectedWarehouse ? "No zones loaded" : "Select a warehouse to load zone capacity"} />
+            <CapacityTable title="Rack Capacity" icon={Rows3} rows={hierarchy.racks} loading={hierarchy.loading.racks} error={hierarchy.error} label="Rack" labelRenderer={getRackCode} emptyTitle={hierarchy.selectedZone ? "No racks loaded" : "Select a warehouse and zone to load rack capacity"} />
+            <CapacityTable title="Level Capacity" icon={SquareStack} rows={hierarchy.levels} loading={hierarchy.loading.levels} error={hierarchy.error} label="Level" labelRenderer={getLevelCode} emptyTitle={hierarchy.selectedRack ? "No levels loaded" : "Select a warehouse, zone, and rack to load level capacity"} />
+            <CapacityTable title="Bin Capacity" icon={Box} rows={hierarchy.bins} loading={hierarchy.loading.bins} error={hierarchy.error} label="Bin" labelRenderer={getBinCode} emptyTitle={hierarchy.selectedLevel ? "No bins loaded" : "Select a warehouse, zone, rack, and level to load bin capacity"} />
           </div>
         </div>
       </div>
@@ -3083,6 +3385,7 @@ function AdminPortal() {
         <Route path="system/roles-permissions" element={<RolesPermissionsPage />} />
         <Route path="system/shift-assignment" element={<ShiftAssignmentPage />} />
         <Route path="system/warehouse-assignment" element={<WarehouseAssignmentPage />} />
+        <Route path="warehouse/warehouses" element={<WarehousesPage />} />
         <Route path="warehouse/zones" element={<WarehouseConfigPage scope="zones" />} />
         <Route path="warehouse/racks" element={<WarehouseConfigPage scope="racks" />} />
         <Route path="warehouse/levels" element={<WarehouseConfigPage scope="levels" />} />

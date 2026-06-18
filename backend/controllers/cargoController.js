@@ -44,6 +44,18 @@ const buildError = (message, statusCode = 400, errors) => {
 const cargoSelect = `
   SELECT
     c.*,
+    COALESCE(
+      CASE WHEN b.id IS NOT NULL THEN
+        (w.warehouse_name || ' → ' || z.code || ' → ' || r.code || ' → ' || l.code || ' → ' || b.code)
+      ELSE c.location END,
+      c.location
+    ) AS location,
+    CASE WHEN b.id IS NOT NULL THEN
+      (w.warehouse_name || ' → ' || z.code || ' → ' || r.code || ' → ' || l.code || ' → ' || b.code)
+    ELSE c.location END AS location_display,
+    CASE WHEN b.id IS NOT NULL THEN
+      (w.warehouse_name || ' → ' || z.code || ' → ' || r.code || ' → ' || l.code || ' → ' || b.code)
+    ELSE c.location END AS location_path,
     b.id AS bin_id,
     b.code AS bin_code,
     b.barcode AS bin_barcode,

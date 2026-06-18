@@ -189,7 +189,11 @@ export const deleteCargo = (id, reason = "") => request(`/cargo/${encodeURICompo
   body: { reason }
 });
 
-export const getZones = () => request("/zones");
+export const getZones = (params = {}) => {
+  const search = new URLSearchParams(params);
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  return request(`/zones${suffix}`);
+};
 export const getZoneById = (id) => request(`/zones/${encodeURIComponent(id)}`);
 export const getRacks = (zoneId) => request(`/racks/by-zone/${encodeURIComponent(zoneId)}`);
 export const getAllRacks = () => request("/racks");
@@ -451,10 +455,20 @@ export const updateBinStatus = (id, status, reservedForCargoType = "") => reques
   }
 });
 
-export const generateDefaultWarehouseStructure = () => request(
-  "/warehouse-configuration/generate-default-structure",
-  { method: "POST" }
-);
+export const createWarehouse = (payload) => request("/warehouses", {
+  method: "POST",
+  body: payload
+});
+
+export const updateWarehouse = (id, payload) => request(`/warehouses/${encodeURIComponent(id)}`, {
+  method: "PUT",
+  body: payload
+});
+
+export const updateWarehouseStatus = (id, status) => request(`/warehouses/${encodeURIComponent(id)}/status`, {
+  method: "PATCH",
+  body: { status }
+});
 
 // Bin Rules
 export const getBinRules = () => request("/bin-rules");

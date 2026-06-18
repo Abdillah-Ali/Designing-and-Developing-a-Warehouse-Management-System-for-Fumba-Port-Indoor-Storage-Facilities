@@ -367,11 +367,15 @@ const validatePlacement = async (payload = {}, executor = db) => {
       z.allowed_cargo_type AS zone_allowed_cargo_type,
       COALESCE(b.allowed_cargo_type, z.allowed_cargo_type) AS allowed_cargo_type,
       z.is_hazard_zone,
-      z.active AS zone_active
+      z.active AS zone_active,
+      z.warehouse_id,
+      w.warehouse_name,
+      w.warehouse_code
     FROM bins b
     JOIN levels l ON l.id = b.level_id
     JOIN racks r ON r.id = l.rack_id
     JOIN zones z ON z.id = r.zone_id
+    LEFT JOIN warehouses w ON w.id = z.warehouse_id
     WHERE b.id::text = $1 OR UPPER(b.barcode) = $1 OR UPPER(b.code) = $1
     LIMIT 1`,
     [binIdentifier]
@@ -457,13 +461,22 @@ const validatePlacement = async (payload = {}, executor = db) => {
     reservedBin: { passed: true, message: "Bin is not reserved." },
     restrictedZone: { passed: true, message: "Zone is not restricted." },
     activeStorage: { passed: true, message: "Bin and parent storage locations are active." },
-    availableBin: { passed: true, message: "Bin is available for placement." }
+    availableBin: { passed: true, message: "Bin is available for placement." },
+    warehouseMatch: { passed: true, message: "Cargo and bin are in the same warehouse." }
   };
 
   const addIssue = (checkName, reason, detail) => {
     checks[checkName] = { passed: false, message: detail };
     issues.push({ reason, detail });
   };
+
+  if (Number(bin.warehouse_id) !== Number(cargo.warehouse_id)) {
+    addIssue(
+      "warehouseMatch",
+      "Warehouse Mismatch",
+      "Warehouse mismatch: this bin does not belong to the cargo's registered warehouse."
+    );
+  }
 
   if (!canCargoBePlaced(cargo)) {
     addIssue(
@@ -594,7 +607,11 @@ const validatePlacement = async (payload = {}, executor = db) => {
       remaining_weight: remainingWeight,
       remaining_volume: remainingVolume,
       reserved_for_cargo_type: bin.reserved_for_cargo_type,
-      display_location: `${bin.zone_code} / ${bin.rack_code} / ${bin.level_code} / ${bin.barcode}`
+      warehouse_name: bin.warehouse_name,
+      warehouse_code: bin.warehouse_code,
+      location_display: `${bin.warehouse_name || bin.warehouse_code || "Unknown WH"} → ${bin.zone_code} → ${bin.rack_code} → ${bin.level_code} → ${bin.code}`,
+      location_path: `${bin.warehouse_name || bin.warehouse_code || "Unknown WH"} → ${bin.zone_code} → ${bin.rack_code} → ${bin.level_code} → ${bin.code}`,
+      display_location: `${bin.warehouse_name || bin.warehouse_code || "Unknown WH"} → ${bin.zone_code} → ${bin.rack_code} → ${bin.level_code} → ${bin.code}`
     },
     approval: overrideApplied ? approvedOverride : null,
     placement_mode: placementMode,

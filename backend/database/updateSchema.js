@@ -48,8 +48,25 @@ const runUpdates = async () => {
     // 1. Add active columns if missing
     await client.query(`
       ALTER TABLE zones ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
+      ALTER TABLE zones ADD COLUMN IF NOT EXISTS warehouse_id INTEGER REFERENCES warehouses(id) ON DELETE CASCADE;
     `);
-    console.log("✔ Columns checked/added: zones.active");
+
+    // Seed existing zones with a warehouse (Warehouse A)
+    await client.query(`
+      UPDATE zones 
+      SET warehouse_id = (SELECT id FROM warehouses WHERE warehouse_code = 'WHA' LIMIT 1) 
+      WHERE warehouse_id IS NULL;
+    `);
+
+    // Make warehouse_id NOT NULL and configure unique constraint
+    await client.query(`
+      ALTER TABLE zones ALTER COLUMN warehouse_id SET NOT NULL;
+      ALTER TABLE zones DROP CONSTRAINT IF EXISTS zones_code_key;
+      ALTER TABLE zones DROP CONSTRAINT IF EXISTS zones_warehouse_code_unique;
+      ALTER TABLE zones ADD CONSTRAINT zones_warehouse_code_unique UNIQUE (warehouse_id, code);
+      CREATE INDEX IF NOT EXISTS idx_zones_warehouse_id ON zones(warehouse_id);
+    `);
+    console.log("✔ Columns checked/added: zones.active, zones.warehouse_id (warehouse-scoped constraints applied)");
 
     await client.query(`
       ALTER TABLE bins

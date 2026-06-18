@@ -49,6 +49,12 @@ const binSelect = `
     z.id AS zone_id,
     z.code AS zone_code,
     z.name AS zone_name,
+    z.warehouse_id,
+    w.warehouse_name,
+    w.warehouse_code,
+    (w.warehouse_name || ' → ' || z.code || ' → ' || r.code || ' → ' || l.code || ' → ' || b.code) AS location_display,
+    (w.warehouse_name || ' → ' || z.code || ' → ' || r.code || ' → ' || l.code || ' → ' || b.code) AS location_path,
+    (w.warehouse_name || ' → ' || z.code || ' → ' || r.code || ' → ' || l.code || ' → ' || b.code) AS display_location,
     CASE WHEN b.max_weight > 0
       THEN ROUND((b.current_weight / b.max_weight) * 100, 2)
       ELSE 0 END AS weight_occupancy_percent,
@@ -59,6 +65,7 @@ const binSelect = `
   JOIN levels l ON l.id = b.level_id
   JOIN racks r ON r.id = l.rack_id
   JOIN zones z ON z.id = r.zone_id
+  LEFT JOIN warehouses w ON w.id = z.warehouse_id
 `;
 
 const runBinList = async (req, res, next, levelId = null) => {
@@ -78,6 +85,15 @@ const runBinList = async (req, res, next, levelId = null) => {
     addFilter("z.id", req.query.zone_id);
     addFilter("b.status", req.query.status);
 
+    if (!isAdmin(req)) {
+      const warehouseId = req.auth?.warehouseId || 0;
+      values.push(warehouseId);
+      conditions.push(`z.warehouse_id = $${values.length}`);
+    } else if (req.query.warehouse_id) {
+      values.push(req.query.warehouse_id);
+      conditions.push(`z.warehouse_id = $${values.length}`);
+    }
+
     if (activeOnly) {
       conditions.push("b.active = TRUE");
       conditions.push("b.status <> 'Inactive'");
@@ -86,9 +102,11 @@ const runBinList = async (req, res, next, levelId = null) => {
       conditions.push("z.active = TRUE");
     }
 
+    const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
     const result = await db.query(
       `${binSelect}
-       ${conditions.length ? `WHERE ${conditions.join(" AND ")}` : ""}
+       ${whereClause}
        ORDER BY z.code, r.code, l.level_number, b.code`,
       values
     );
@@ -104,14 +122,27 @@ const getBinsByLevel = (req, res, next) => runBinList(req, res, next, req.params
 const getBinById = async (req, res, next) => {
   try {
     const activeOnly = !isAdmin(req);
+    const conditions = ["b.id = $1"];
+    const values = [req.params.id];
+
+    if (!isAdmin(req)) {
+      const warehouseId = req.auth?.warehouseId || 0;
+      values.push(warehouseId);
+      conditions.push(`z.warehouse_id = $${values.length}`);
+    }
+
+    if (activeOnly) {
+      conditions.push("b.active = TRUE");
+      conditions.push("b.status <> 'Inactive'");
+      conditions.push("l.active = TRUE");
+      conditions.push("r.active = TRUE");
+      conditions.push("z.active = TRUE");
+    }
+
     const result = await db.query(
       `${binSelect}
-       WHERE b.id = $1 ${
-         activeOnly
-           ? "AND b.active = TRUE AND b.status <> 'Inactive' AND l.active = TRUE AND r.active = TRUE AND z.active = TRUE"
-           : ""
-       }`,
-      [req.params.id]
+       WHERE ${conditions.join(" AND ")}`,
+      values
     );
     if (result.rowCount === 0) throw buildError("Bin not found.", 404);
     res.json({ success: true, data: result.rows[0] });
@@ -120,18 +151,9 @@ const getBinById = async (req, res, next) => {
   }
 };
 
-const validateBinCode = (code, hierarchy) => {
-  const match = BIN_CODE_PATTERN.exec(code || "");
-  if (!match) {
-    throw buildError("Bin code must follow the format BIN-A01-L2-03.", 400);
-  }
-
-  const expectedRackPart = hierarchy.rack_code.replace(/^R-/, "");
-  if (match[1] !== expectedRackPart || match[2] !== hierarchy.level_code) {
-    throw buildError(
-      `Bin code must match rack ${hierarchy.rack_code} and level ${hierarchy.level_code}.`,
-      400
-    );
+const validateBinCode = (code) => {
+  if (!code || !/^[A-Z0-9-]+$/.test(code)) {
+    throw buildError("Bin code must contain only alphanumeric characters and dashes.", 400);
   }
 };
 
@@ -142,11 +164,15 @@ const getActiveHierarchy = async (client, levelId) => {
        l.active AS level_active,
        r.code AS rack_code,
        r.active AS rack_active,
+       z.code AS zone_code,
        z.active AS zone_active,
-       z.allowed_cargo_type
+       z.allowed_cargo_type,
+       w.warehouse_code,
+       w.warehouse_name
      FROM levels l
      JOIN racks r ON r.id = l.rack_id
      JOIN zones z ON z.id = r.zone_id
+     JOIN warehouses w ON w.id = z.warehouse_id
      WHERE l.id = $1`,
     [levelId]
   );
@@ -161,21 +187,26 @@ const getActiveHierarchy = async (client, levelId) => {
   return result.rows[0];
 };
 
-const ensureBinUniqueness = async (client, code, barcode, excludeId = null) => {
-  const values = [code, barcode];
+const ensureBinUniqueness = async (client, levelId, code, barcode, excludeId = null) => {
+  const values = [levelId, code, barcode];
   let exclude = "";
   if (excludeId !== null) {
     values.push(excludeId);
-    exclude = "AND id <> $3";
+    exclude = "AND id <> $4";
   }
   const duplicate = await client.query(
     `SELECT code, barcode FROM bins
-     WHERE (UPPER(code) = $1 OR UPPER(barcode) = $2) ${exclude}
+     WHERE ((level_id = $1 AND UPPER(code) = $2) OR UPPER(barcode) = $3) ${exclude}
      LIMIT 1`,
     values
   );
   if (duplicate.rowCount > 0) {
-    throw buildError("Bin code and barcode must be unique.", 409);
+    const dup = duplicate.rows[0];
+    if (dup.barcode.toUpperCase() === barcode.toUpperCase()) {
+      throw buildError("Bin barcode must be globally unique.", 409);
+    } else {
+      throw buildError("Bin code must be unique within this level.", 409);
+    }
   }
 };
 
@@ -184,7 +215,6 @@ const createBin = async (req, res, next) => {
   try {
     const levelId = req.body.level_id;
     const code = textValue(req.body.bin_code ?? req.body.code)?.toUpperCase();
-    const barcode = textValue(req.body.barcode)?.toUpperCase() || code;
     const status = textValue(req.body.status) || "Available";
 
     if (!levelId || !code) {
@@ -196,8 +226,10 @@ const createBin = async (req, res, next) => {
 
     await client.query("BEGIN");
     const hierarchy = await getActiveHierarchy(client, levelId);
-    validateBinCode(code, hierarchy);
-    await ensureBinUniqueness(client, code, barcode);
+    validateBinCode(code);
+
+    const barcode = `BIN-${hierarchy.warehouse_code}-${hierarchy.zone_code}-${hierarchy.rack_code}-${hierarchy.level_code}-${code}`.toUpperCase();
+    await ensureBinUniqueness(client, levelId, code, barcode);
 
     const result = await client.query(
       `INSERT INTO bins (
@@ -242,15 +274,16 @@ const updateBin = async (req, res, next) => {
   try {
     const levelId = req.body.level_id;
     const code = textValue(req.body.bin_code ?? req.body.code)?.toUpperCase();
-    const barcode = textValue(req.body.barcode)?.toUpperCase() || code;
     if (!levelId || !code) {
       throw buildError("Level ID and bin code are required.", 400);
     }
 
     await client.query("BEGIN");
     const hierarchy = await getActiveHierarchy(client, levelId);
-    validateBinCode(code, hierarchy);
-    await ensureBinUniqueness(client, code, barcode, req.params.id);
+    validateBinCode(code);
+
+    const barcode = `BIN-${hierarchy.warehouse_code}-${hierarchy.zone_code}-${hierarchy.rack_code}-${hierarchy.level_code}-${code}`.toUpperCase();
+    await ensureBinUniqueness(client, levelId, code, barcode, req.params.id);
 
     const result = await client.query(
       `UPDATE bins
