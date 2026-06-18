@@ -3,6 +3,7 @@ const {
   approveApproval,
   getApproval,
   getApprovals,
+  getMyReviewHistory,
   getPlacementMonitoring,
   getPlacementSummary,
   getReviewConfiguration,
@@ -16,6 +17,7 @@ const { requireRole } = require("../middleware/authMiddleware");
 const router = express.Router();
 
 router.get("/dashboard", getSupervisorDashboard);
+router.get("/my/review-history", getMyReviewHistory);
 router.get("/review-configuration", getReviewConfiguration);
 router.get("/approvals", getApprovals);
 router.get("/approvals/:id", getApproval);

@@ -57,13 +57,27 @@ const CARGO_NOT_OPERATIONAL_MESSAGE =
 
 const isOperationallyVisibleToStaff = () => true;
 
+const getStaffTaskOwnerId = (cargo) => (
+  cargo?.assigned_staff_id
+  || cargo?.created_by
+  || cargo?.received_by_user_id
+);
+
+const getStaffHistoricalOwnerId = (cargo) => (
+  cargo?.created_by
+  || cargo?.received_by_user_id
+);
+
 const canStaffViewSubmission = (cargo, userId) => (
-  Number(cargo?.received_by_user_id) === Number(userId)
-  && REVIEW_QUEUE_STATUSES.includes(cargo?.registration_status)
+  (
+    Number(getStaffHistoricalOwnerId(cargo)) === Number(userId)
+    || Number(getStaffTaskOwnerId(cargo)) === Number(userId)
+  )
+  && !cargo?.is_deleted
 );
 
 const canStaffEditCargo = (cargo, userId) => (
-  Number(cargo?.received_by_user_id) === Number(userId)
+  Number(getStaffTaskOwnerId(cargo)) === Number(userId)
   && (
     cargo?.registration_status === REGISTRATION_STATUS.CORRECTION_REQUIRED
     || cargo?.registration_status === REGISTRATION_STATUS.REJECTED
@@ -121,6 +135,7 @@ const buildCorrectionChanges = (cargo, originalValues, fields) => Object.fromEnt
 );
 
 const statusUpdateFields = new Set([
+  "assigned_staff_id",
   "approved_by",
   "approved_at",
   "rejected_by",
@@ -166,6 +181,43 @@ const updateCargoRegistrationStatus = async (
          updated_at = CURRENT_TIMESTAMP
      WHERE id = $${values.length}
      RETURNING *`,
+    values
+  );
+};
+
+const ensurePendingRegistrationApprovals = async (executor, warehouseId = null) => {
+  const values = [REGISTRATION_STATUS.PENDING_REVIEW];
+  const warehouseFilter = warehouseId
+    ? `AND c.warehouse_id = $${values.push(warehouseId)}`
+    : "";
+
+  return executor.query(
+    `INSERT INTO approval_requests
+       (request_type, cargo_id, requested_by, warehouse_id_at_request, reason, status, request_data)
+     SELECT
+       'CARGO_REGISTRATION',
+       c.id,
+       COALESCE(c.created_by, c.received_by_user_id),
+       c.warehouse_id,
+       'Cargo registration requires independent Warehouse Supervisor review and may proceed to placement while review is pending.',
+       'Pending',
+       jsonb_build_object(
+         'cargo_condition', c.cargo_condition,
+         'cargo_type', c.cargo_type,
+         'hazard_class', c.hazard_class,
+         'auto_repaired', TRUE
+       )
+     FROM cargo c
+     WHERE c.registration_status = $1
+       AND c.is_deleted = FALSE
+       ${warehouseFilter}
+       AND NOT EXISTS (
+         SELECT 1
+         FROM approval_requests ar
+         WHERE ar.cargo_id = c.id
+           AND ar.request_type = 'CARGO_REGISTRATION'
+       )
+     RETURNING id, cargo_id`,
     values
   );
 };
@@ -258,7 +310,7 @@ const completeCargoResubmission = async (
          ),
          decided_at = NULL,
          decided_by = NULL,
-         assigned_supervisor_id = NULL,
+         assigned_to = COALESCE(assigned_to, assigned_supervisor_id),
          created_at = CURRENT_TIMESTAMP
      WHERE id = (
        SELECT id FROM approval_requests
@@ -270,8 +322,8 @@ const completeCargoResubmission = async (
 
   await executor.query(
     `INSERT INTO cargo_approval_history
-     (cargo_id, action, remarks, metadata, performed_by)
-     VALUES ($1, 'CORRECTION_RESUBMITTED', $2, $3, $4)`,
+     (cargo_id, action, remarks, metadata, performed_by, warehouse_id_at_action)
+     VALUES ($1, 'CORRECTION_RESUBMITTED', $2, $3, $4, $5)`,
     [
       cargo.id,
       String(remarks || "").trim() || "Corrected cargo registration resubmitted for approval.",
@@ -280,7 +332,8 @@ const completeCargoResubmission = async (
         correction_fields: context.correctionFields,
         changes: context.changes
       }),
-      userId || null
+      userId || null,
+      cargo.warehouse_id || cargo.warehouse_id_at_registration || null
     ]
   );
 
@@ -303,6 +356,9 @@ module.exports = {
   buildCorrectionChanges,
   captureCorrectionValues,
   completeCargoResubmission,
+  ensurePendingRegistrationApprovals,
+  getStaffHistoricalOwnerId,
+  getStaffTaskOwnerId,
   getCorrectionContext,
   getRejectionReason,
   isOperationallyVisibleToStaff,

@@ -37,11 +37,13 @@ import {
   getErrorMessage,
   statusTone
 } from "@/lib/wms-operational";
+import { getStoredAuthUserId } from "@/lib/portal-access";
 import {
   getBins,
   getCargo,
   getLevels,
   getMyCargoSubmissions,
+  getMyPlacementHistory,
   getRacks,
   getZones,
   printCargoBarcode,
@@ -585,6 +587,7 @@ function RegistrationReviewsPanel() {
   }, []);
 
   const selected = records.find((record) => String(record.id) === selectedId) || null;
+  const currentUserId = getStoredAuthUserId();
 
   return (
     <>
@@ -595,7 +598,7 @@ function RegistrationReviewsPanel() {
             <DataTable
               loading={loading}
               rows={records}
-              emptyTitle="No registrations are awaiting review or correction"
+              emptyTitle="No personal registration history"
               tableClassName="!min-w-0 table-fixed"
               containerClassName="overflow-hidden"
               columns={[
@@ -621,7 +624,15 @@ function RegistrationReviewsPanel() {
                   label: "Action",
                   headerClassName: "w-[13%]",
                   className: "overflow-hidden whitespace-nowrap",
-                  render: (row) => ["Correction Required", "Rejected"].includes(row.registration_status) ? (
+                  render: (row) => {
+                    const assignedToCurrentUser = Number(
+                      row.assigned_staff_id || row.created_by || row.received_by_user_id
+                    ) === Number(currentUserId);
+                    const canEdit = row.staff_can_edit !== false
+                      && assignedToCurrentUser
+                      && ["Correction Required", "Rejected"].includes(row.registration_status);
+
+                    return canEdit ? (
                     <button
                       type="button"
                       onClick={() => setSelectedId(String(row.id))}
@@ -629,7 +640,8 @@ function RegistrationReviewsPanel() {
                     >
                       {row.registration_status === "Rejected" ? "Revise" : "Correct"}
                     </button>
-                  ) : <span className="whitespace-nowrap text-[10px] text-muted-foreground">Read only</span>
+                    ) : <span className="whitespace-nowrap text-[10px] text-muted-foreground">Read only</span>;
+                  }
                 }
               ]}
             />
@@ -643,6 +655,56 @@ function RegistrationReviewsPanel() {
         onCompleted={load}
       />
     </>
+  );
+}
+
+function PlacementHistoryPanel() {
+  const [records, setRecords] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setError("");
+
+    getMyPlacementHistory()
+      .then((response) => {
+        if (active) setRecords(response.data || []);
+      })
+      .catch((loadError) => {
+        if (active) setError(getErrorMessage(loadError));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  return (
+    <div className="h-full overflow-auto p-3">
+      <SectionCard title="My Placement History" icon={PackageCheck}>
+        <DataTable
+          loading={loading}
+          error={error}
+          rows={records}
+          emptyTitle="No placement activity recorded"
+          tableClassName="!min-w-0 table-fixed"
+          containerClassName="overflow-hidden"
+          columns={[
+            { key: "created_at", label: "Time", headerClassName: "w-[18%]", render: (row) => formatDateTime(row.created_at) },
+            { key: "cargo_identifier", label: "Cargo ID", headerClassName: "w-[16%]", className: "truncate font-mono font-semibold" },
+            { key: "movement_type", label: "Action", headerClassName: "w-[16%]", render: (row) => row.movement_type || row.action || "Movement" },
+            { key: "warehouse", label: "Warehouse", headerClassName: "w-[16%]", render: (row) => row.warehouse_code || row.warehouse_name || "Previous warehouse" },
+            { key: "from_location", label: "From", headerClassName: "w-[17%]", className: "truncate", render: (row) => row.from_location || "Start" },
+            { key: "to_location", label: "To", headerClassName: "w-[17%]", className: "truncate", render: (row) => row.to_location || "Not recorded" }
+          ]}
+        />
+      </SectionCard>
+    </div>
   );
 }
 
@@ -660,7 +722,8 @@ const cargoSearchTypes = [
 const registrationWorkspaceTabs = [
   { id: "registration", label: "Cargo Registration", icon: ClipboardList },
   { id: "reviews", label: "My Registration Reviews", icon: ClipboardCheck },
-  { id: "placement", label: "Placement Queue", icon: PackagePlus }
+  { id: "placement", label: "Placement Queue", icon: PackagePlus },
+  { id: "placement-history", label: "My Placement History", icon: PackageCheck }
 ];
 
 function CompactCargoList({ records, loading, error, emptyTitle }) {
@@ -925,6 +988,7 @@ function CargoRegistrationWorkspace() {
             )}
             {activeTab === "reviews" && <RegistrationReviewsPanel />}
             {activeTab === "placement" && <PlacementQueuePanel />}
+            {activeTab === "placement-history" && <PlacementHistoryPanel />}
           </div>
         </section>
       </div>
@@ -1397,6 +1461,7 @@ const Index = () => {
         />
         <Route path="cargo/registration-reviews" element={<Navigate to="/staff/cargo/registration?tab=reviews" replace />} />
         <Route path="cargo/placement-queue" element={<Navigate to="/staff/cargo/registration?tab=placement" replace />} />
+        <Route path="cargo/placement-history" element={<Navigate to="/staff/cargo/registration?tab=placement-history" replace />} />
         <Route
           path="cargo/placement-scanning"
           element={

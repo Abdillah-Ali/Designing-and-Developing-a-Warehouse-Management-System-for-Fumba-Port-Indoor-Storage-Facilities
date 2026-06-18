@@ -261,7 +261,7 @@ const listAuditLogs = async (filters = {}) => {
 
   if (filters.role) {
     values.push(filters.role);
-    clauses.push(`r.role_name = $${values.length}`);
+    clauses.push(`COALESCE(action_role.role_name, r.role_name) = $${values.length}`);
   }
 
   if (filters.date_from) {
@@ -295,8 +295,8 @@ const listAuditLogs = async (filters = {}) => {
   if (filters.warehouse) {
     values.push(`%${filters.warehouse}%`);
     clauses.push(`(
-      w.warehouse_name ILIKE $${values.length}
-      OR w.warehouse_code ILIKE $${values.length}
+      COALESCE(action_warehouse.warehouse_name, w.warehouse_name) ILIKE $${values.length}
+      OR COALESCE(action_warehouse.warehouse_code, w.warehouse_code) ILIKE $${values.length}
       OR COALESCE(al.metadata->>'warehouse', '') ILIKE $${values.length}
       OR COALESCE(al.metadata->>'warehouse_id', '') ILIKE $${values.length}
     )`);
@@ -323,11 +323,13 @@ const listAuditLogs = async (filters = {}) => {
       al.id,
       al.user_id,
       al.target_user_id,
+      al.role_id_at_action,
+      al.warehouse_id_at_action,
       u.full_name,
       u.username,
-      r.role_name,
-      w.warehouse_name,
-      w.warehouse_code,
+      COALESCE(action_role.role_name, r.role_name) AS role_name,
+      COALESCE(action_warehouse.warehouse_name, w.warehouse_name) AS warehouse_name,
+      COALESCE(action_warehouse.warehouse_code, w.warehouse_code) AS warehouse_code,
       target.full_name AS target_full_name,
       target.username AS target_username,
       al.action,
@@ -339,6 +341,8 @@ const listAuditLogs = async (filters = {}) => {
     LEFT JOIN users u ON u.id = al.user_id
     LEFT JOIN roles r ON r.id = u.role_id
     LEFT JOIN warehouses w ON w.id = u.warehouse_id
+    LEFT JOIN roles action_role ON action_role.id = al.role_id_at_action
+    LEFT JOIN warehouses action_warehouse ON action_warehouse.id = al.warehouse_id_at_action
     LEFT JOIN users target ON target.id = al.target_user_id
     ${whereClause}
     ORDER BY al.created_at DESC, al.id DESC
@@ -416,12 +420,24 @@ const updateLastLogin = async (userId, executor = db) => {
 
 const writeAuditLog = async (payload, executor = db) => {
   return executor.query(
-    `INSERT INTO audit_logs (user_id, target_user_id, action, module, description, metadata)
-    VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO audit_logs
+      (user_id, target_user_id, role_id_at_action, warehouse_id_at_action, action, module, description, metadata)
+    VALUES (
+      $1,
+      $2,
+      COALESCE($3::integer, (SELECT role_id FROM users WHERE id = $1)),
+      COALESCE($4::integer, (SELECT warehouse_id FROM users WHERE id = $1)),
+      $5,
+      $6,
+      $7,
+      $8
+    )
     RETURNING *`,
     [
       payload.user_id || null,
       payload.target_user_id || null,
+      payload.role_id_at_action || null,
+      payload.warehouse_id_at_action || null,
       payload.action,
       payload.module,
       payload.description || null,

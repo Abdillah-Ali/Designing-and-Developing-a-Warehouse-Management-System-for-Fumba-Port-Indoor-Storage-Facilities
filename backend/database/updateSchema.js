@@ -31,6 +31,20 @@ const runUpdates = async () => {
     `);
     console.log("✔ Bootstrap administrator columns checked/added");
 
+    await client.query(`
+      ALTER TABLE audit_logs
+        ADD COLUMN IF NOT EXISTS target_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS role_id_at_action INTEGER REFERENCES roles(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS warehouse_id_at_action INTEGER REFERENCES warehouses(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_role_snapshot
+        ON audit_logs(role_id_at_action);
+      CREATE INDEX IF NOT EXISTS idx_audit_logs_warehouse_snapshot
+        ON audit_logs(warehouse_id_at_action);
+    `);
+    console.log("✔ Audit snapshot columns checked/added");
+
     // 1. Add active columns if missing
     await client.query(`
       ALTER TABLE zones ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
@@ -74,8 +88,17 @@ const runUpdates = async () => {
         ADD COLUMN IF NOT EXISTS attempt_stage VARCHAR(30) NOT NULL DEFAULT 'validation',
         ADD COLUMN IF NOT EXISTS manual_reason VARCHAR(80),
         ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS performed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS warehouse_id_at_action INTEGER REFERENCES warehouses(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS result VARCHAR(20),
         ADD COLUMN IF NOT EXISTS previous_location TEXT,
         ADD COLUMN IF NOT EXISTS new_location TEXT;
+
+      UPDATE placement_validation_logs
+      SET performed_by = COALESCE(performed_by, user_id),
+          result = COALESCE(result, CASE WHEN approved THEN 'Passed' ELSE 'Failed' END)
+      WHERE performed_by IS NULL
+         OR result IS NULL;
 
       CREATE TABLE IF NOT EXISTS bin_barcode_print_logs (
         id SERIAL PRIMARY KEY,
@@ -172,6 +195,9 @@ const runUpdates = async () => {
         ADD COLUMN IF NOT EXISTS workflow_status VARCHAR(40) NOT NULL DEFAULT 'Pending Review',
         ADD COLUMN IF NOT EXISTS registration_status VARCHAR(40) NOT NULL DEFAULT 'Pending Review',
         ADD COLUMN IF NOT EXISTS placement_status VARCHAR(40) NOT NULL DEFAULT 'Unplaced',
+        ADD COLUMN IF NOT EXISTS warehouse_id_at_registration INTEGER REFERENCES warehouses(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS assigned_staff_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
         ADD COLUMN IF NOT EXISTS relocation_required BOOLEAN NOT NULL DEFAULT FALSE,
         ADD COLUMN IF NOT EXISTS relocation_reason TEXT,
         ADD COLUMN IF NOT EXISTS relocation_flagged_at TIMESTAMP,
@@ -258,10 +284,22 @@ const runUpdates = async () => {
         ADD CONSTRAINT cargo_placement_status_check
         CHECK (placement_status IN ('Unplaced', 'Placed', 'Relocated', 'Dispatched'));
 
+      UPDATE cargo
+      SET created_by = COALESCE(created_by, received_by_user_id),
+          assigned_staff_id = COALESCE(assigned_staff_id, created_by, received_by_user_id),
+          warehouse_id_at_registration = COALESCE(warehouse_id_at_registration, warehouse_id)
+      WHERE created_by IS NULL
+         OR assigned_staff_id IS NULL
+         OR warehouse_id_at_registration IS NULL;
+
       CREATE INDEX IF NOT EXISTS idx_cargo_registration_status
         ON cargo(registration_status, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_cargo_placement_status
         ON cargo(placement_status);
+      CREATE INDEX IF NOT EXISTS idx_cargo_created_by
+        ON cargo(created_by, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_cargo_assigned_staff
+        ON cargo(assigned_staff_id, registration_status, placement_status);
       CREATE INDEX IF NOT EXISTS idx_cargo_archive_state
         ON cargo(is_deleted, archived_at DESC);
       CREATE INDEX IF NOT EXISTS idx_cargo_active_delivery_note_identity
@@ -299,6 +337,82 @@ const runUpdates = async () => {
       FOR EACH ROW EXECUTE FUNCTION sync_cargo_status_aliases();
     `);
     console.log("✔ Independent cargo registration and placement statuses migrated");
+
+    await client.query(`
+      ALTER TABLE cargo_movements
+        ADD COLUMN IF NOT EXISTS from_bin_id INTEGER REFERENCES bins(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS to_bin_id INTEGER REFERENCES bins(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS moved_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS warehouse_id_at_action INTEGER REFERENCES warehouses(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS movement_type VARCHAR(80);
+
+      UPDATE cargo_movements
+      SET movement_type = COALESCE(movement_type, action)
+      WHERE movement_type IS NULL;
+    `);
+    console.log("✔ Cargo movement ownership snapshots checked/added");
+
+    await client.query(`
+      ALTER TABLE approval_requests
+        ADD COLUMN IF NOT EXISTS assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS warehouse_id_at_request INTEGER REFERENCES warehouses(id) ON DELETE SET NULL;
+
+      UPDATE approval_requests ar
+      SET assigned_to = COALESCE(ar.assigned_to, ar.assigned_supervisor_id),
+          warehouse_id_at_request = COALESCE(ar.warehouse_id_at_request, c.warehouse_id)
+      FROM cargo c
+      WHERE c.id = ar.cargo_id
+        AND (ar.assigned_to IS NULL OR ar.warehouse_id_at_request IS NULL);
+
+      CREATE INDEX IF NOT EXISTS idx_approval_requests_assigned_to
+        ON approval_requests(assigned_to, status);
+      CREATE INDEX IF NOT EXISTS idx_approval_requests_warehouse_request
+        ON approval_requests(warehouse_id_at_request, status);
+    `);
+    console.log("✔ Approval assignment snapshots checked/added");
+
+    await client.query(`
+      ALTER TABLE cargo_approval_history
+        ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+        ADD COLUMN IF NOT EXISTS warehouse_id_at_action INTEGER REFERENCES warehouses(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+      UPDATE cargo_approval_history cah
+      SET warehouse_id_at_action = COALESCE(cah.warehouse_id_at_action, c.warehouse_id),
+          created_at = COALESCE(cah.created_at, cah.performed_at)
+      FROM cargo c
+      WHERE c.id = cah.cargo_id
+        AND (cah.warehouse_id_at_action IS NULL OR cah.created_at IS NULL);
+    `);
+    console.log("✔ Cargo approval history snapshots checked/added");
+
+    await client.query(`
+      INSERT INTO approval_requests
+        (request_type, cargo_id, requested_by, warehouse_id_at_request, reason, status, request_data)
+      SELECT
+        'CARGO_REGISTRATION',
+        c.id,
+        c.received_by_user_id,
+        c.warehouse_id,
+        'Cargo registration requires independent Warehouse Supervisor review and may proceed to placement while review is pending.',
+        'Pending',
+        jsonb_build_object(
+          'cargo_condition', c.cargo_condition,
+          'cargo_type', c.cargo_type,
+          'hazard_class', c.hazard_class,
+          'migrated', TRUE
+        )
+      FROM cargo c
+      WHERE c.registration_status = 'Pending Review'
+        AND c.is_deleted = FALSE
+        AND NOT EXISTS (
+          SELECT 1
+          FROM approval_requests ar
+          WHERE ar.cargo_id = c.id
+            AND ar.request_type = 'CARGO_REGISTRATION'
+        );
+    `);
+    console.log("✔ Pending cargo approval requests reconciled");
 
     await client.query("COMMIT");
     console.log("All database updates applied successfully!");

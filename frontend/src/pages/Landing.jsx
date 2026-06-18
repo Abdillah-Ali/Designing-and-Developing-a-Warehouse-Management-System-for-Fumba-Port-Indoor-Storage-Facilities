@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, ClipboardCheck, Loader2, LockKeyhole, ShieldCheck, Warehouse } from "lucide-react";
+import { ArrowRight, Eye, EyeOff, Loader2, LockKeyhole, UserRound } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import portImage from "@/assets/fumba-port.jpg";
 import {
@@ -7,6 +7,7 @@ import {
   extractRoleFromToken,
   getPortalDefaultPath,
   getStoredAuthRole,
+  isPathAllowedForRole,
   isStoredBootstrapAdmin,
   isStoredBootstrapCompleted,
   isStoredBootstrapSetupPending,
@@ -14,26 +15,11 @@ import {
 } from "@/lib/portal-access";
 import { login as signIn } from "@/services/api";
 
-const portals = [
-  {
-    title: "System Administrator Portal",
-    description: "Configure users, roles, warehouse storage structure, system monitoring, and audit oversight.",
-    icon: ShieldCheck,
-    accent: "border-blue-500 text-blue-700 bg-blue-50"
-  },
-  {
-    title: "Warehouse Staff Portal",
-    description: "Receive cargo, register items, scan storage locations, track cargo, and prepare dispatch.",
-    icon: Warehouse,
-    accent: "border-sky-500 text-sky-700 bg-sky-50"
-  },
-  {
-    title: "Warehouse Supervisor Portal",
-    description: "Review cargo exceptions, approve placement and dispatch requests, and monitor warehouse operations.",
-    icon: ClipboardCheck,
-    accent: "border-cyan-500 text-cyan-700 bg-cyan-50"
-  }
-];
+const getAccountRoute = (role, requestedPath) => (
+  requestedPath && isPathAllowedForRole(role, requestedPath)
+    ? requestedPath
+    : getPortalDefaultPath(role)
+);
 
 const Landing = () => {
   const navigate = useNavigate();
@@ -42,6 +28,8 @@ const Landing = () => {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const requestedPath = location.state?.from;
 
   useEffect(() => {
     const role = getStoredAuthRole();
@@ -56,11 +44,11 @@ const Landing = () => {
           ? "/bootstrap-admin-setup"
           : mustChangeStoredPassword()
             ? "/change-password"
-            : getPortalDefaultPath(role),
+            : getAccountRoute(role, requestedPath),
         { replace: true }
       );
     }
-  }, [navigate]);
+  }, [navigate, requestedPath]);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -100,7 +88,7 @@ const Landing = () => {
           ? "/bootstrap-admin-setup"
           : mustChangePassword
             ? "/change-password"
-            : getPortalDefaultPath(role),
+            : getAccountRoute(role, requestedPath),
         { replace: true }
       );
     } catch (err) {
@@ -131,86 +119,82 @@ const Landing = () => {
             </p>
           </div>
 
-          <div className="mt-9 grid w-full max-w-[430px] gap-3">
+          <div className="mt-9 w-full max-w-[460px]">
             <form
               onSubmit={handleSubmit}
-              className="rounded-md border border-white/20 bg-white/95 p-4 text-slate-950 shadow-lg shadow-black/15 backdrop-blur"
+              className="overflow-hidden rounded-lg border border-white/25 bg-white/95 text-slate-950 shadow-2xl shadow-black/25 backdrop-blur-xl"
             >
-              <div className="flex items-center gap-3">
-                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-blue-500 bg-blue-50 text-blue-700">
-                  <LockKeyhole className="h-5 w-5" />
-                </div>
-                <div>
-                  <h2 className="text-sm font-semibold leading-snug">Sign in</h2>
-                  <p className="mt-1 text-xs leading-5 text-slate-600">Access follows the role assigned to your account.</p>
-                </div>
-              </div>
-
-              <div className="mt-4 grid gap-3">
-                <label className="grid gap-1.5 text-xs font-semibold text-slate-700">
-                  Username
-                  <input
-                    value={username}
-                    onChange={(event) => setUsername(event.target.value)}
-                    autoComplete="username"
-                    className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium text-slate-950 outline-none transition focus:border-blue-600 focus:ring-2 focus:ring-blue-100"
-                  />
-                </label>
-                <label className="grid gap-1.5 text-xs font-semibold text-slate-700">
-                  Password
-                  <input
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                    type="password"
-                    autoComplete="current-password"
-                    className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium text-slate-950 outline-none transition focus:border-blue-600 focus:ring-2 focus:ring-blue-100"
-                  />
-                </label>
-              </div>
-
-              {location.state?.successMessage && (
-                <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700">
-                  {location.state.successMessage}
-                </div>
-              )}
-
-              {error && (
-                <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
-                  {error}
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 rounded-md bg-blue-700 px-4 text-xs font-semibold text-white transition hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
-                Sign in
-              </button>
-            </form>
-
-            <div className="grid gap-2">
-              {portals.map((portal) => {
-                const Icon = portal.icon;
-                return (
-                  <div
-                    key={portal.title}
-                    className="rounded-md border border-white/20 bg-white/90 px-4 py-3 text-slate-950 shadow-md shadow-black/10 backdrop-blur"
-                  >
-                    <div className="flex min-w-0 items-center gap-3">
-                      <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-md border ${portal.accent}`}>
-                        <Icon className="h-5 w-5" />
-                      </div>
-                      <div className="min-w-0">
-                        <h2 className="text-sm font-semibold leading-snug">{portal.title}</h2>
-                        <p className="mt-1 text-xs leading-5 text-slate-600">{portal.description}</p>
-                      </div>
-                    </div>
+              <div className="border-b border-slate-200 bg-slate-50/90 px-5 py-5">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border border-blue-200 bg-white text-blue-700 shadow-sm">
+                    <LockKeyhole className="h-5 w-5" />
                   </div>
-                );
-              })}
-            </div>
+                  <div>
+                    <h2 className="text-lg font-semibold leading-snug text-slate-950">Sign in</h2>
+                    <p className="mt-1 text-sm leading-5 text-slate-600">Use your assigned WMS account.</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-4 px-5 py-5">
+                <label className="grid gap-2 text-sm font-semibold text-slate-700">
+                  Username
+                  <span className="relative block">
+                    <UserRound className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <input
+                      value={username}
+                      onChange={(event) => setUsername(event.target.value)}
+                      autoComplete="username"
+                      placeholder="Enter username"
+                      className="h-12 w-full rounded-lg border border-slate-300 bg-white pl-10 pr-3 text-sm font-medium text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
+                    />
+                  </span>
+                </label>
+                <label className="grid gap-2 text-sm font-semibold text-slate-700">
+                  Password
+                  <span className="relative block">
+                    <LockKeyhole className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <input
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      type={showPassword ? "text" : "password"}
+                      autoComplete="current-password"
+                      placeholder="Enter password"
+                      className="h-12 w-full rounded-lg border border-slate-300 bg-white pl-10 pr-11 text-sm font-medium text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-blue-600 focus:ring-4 focus:ring-blue-100"
+                    />
+                    <button
+                      type="button"
+                      aria-label={showPassword ? "Hide password" : "Show password"}
+                      onClick={() => setShowPassword((current) => !current)}
+                      className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-200"
+                    >
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </span>
+                </label>
+
+                {location.state?.successMessage && (
+                  <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700">
+                    {location.state.successMessage}
+                  </div>
+                )}
+
+                {error && (
+                  <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+                    {error}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={isSubmitting}
+                  className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-gradient-to-r from-blue-700 to-cyan-600 px-4 text-sm font-semibold text-white shadow-lg shadow-blue-950/20 transition hover:from-blue-800 hover:to-cyan-700 focus:outline-none focus:ring-4 focus:ring-blue-200 disabled:cursor-not-allowed disabled:opacity-70"
+                >
+                  {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
+                  Sign in
+                </button>
+              </div>
+            </form>
           </div>
         </section>
       </div>

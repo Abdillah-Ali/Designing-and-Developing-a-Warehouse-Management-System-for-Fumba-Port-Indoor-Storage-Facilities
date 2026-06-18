@@ -81,6 +81,8 @@ WHERE u.id = us.user_id
 CREATE TABLE IF NOT EXISTS audit_logs (
   id SERIAL PRIMARY KEY,
   user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  role_id_at_action INTEGER REFERENCES roles(id) ON DELETE SET NULL,
+  warehouse_id_at_action INTEGER REFERENCES warehouses(id) ON DELETE SET NULL,
   target_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   action VARCHAR(120) NOT NULL,
   module VARCHAR(120) NOT NULL,
@@ -91,6 +93,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 ALTER TABLE audit_logs
   ADD COLUMN IF NOT EXISTS target_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS role_id_at_action INTEGER REFERENCES roles(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS warehouse_id_at_action INTEGER REFERENCES warehouses(id) ON DELETE SET NULL,
   ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE TABLE IF NOT EXISTS system_settings (
@@ -270,6 +274,9 @@ CREATE TABLE IF NOT EXISTS cargo (
   relocation_reason TEXT,
   relocation_flagged_at TIMESTAMP,
   warehouse_id INTEGER REFERENCES warehouses(id) ON DELETE SET NULL,
+  warehouse_id_at_registration INTEGER REFERENCES warehouses(id) ON DELETE SET NULL,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  assigned_staff_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   received_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   approved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   approved_at TIMESTAMP,
@@ -304,6 +311,9 @@ ALTER TABLE cargo
   ADD COLUMN IF NOT EXISTS relocation_required BOOLEAN NOT NULL DEFAULT FALSE,
   ADD COLUMN IF NOT EXISTS relocation_reason TEXT,
   ADD COLUMN IF NOT EXISTS relocation_flagged_at TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS warehouse_id_at_registration INTEGER REFERENCES warehouses(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS assigned_staff_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   ADD COLUMN IF NOT EXISTS approved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP,
   ADD COLUMN IF NOT EXISTS rejected_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -320,6 +330,14 @@ ALTER TABLE cargo
   ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP,
   ADD COLUMN IF NOT EXISTS archived_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   ADD COLUMN IF NOT EXISTS archive_reason TEXT;
+
+UPDATE cargo
+SET created_by = COALESCE(created_by, received_by_user_id),
+    assigned_staff_id = COALESCE(assigned_staff_id, created_by, received_by_user_id),
+    warehouse_id_at_registration = COALESCE(warehouse_id_at_registration, warehouse_id)
+WHERE created_by IS NULL
+   OR assigned_staff_id IS NULL
+   OR warehouse_id_at_registration IS NULL;
 
 ALTER TABLE cargo DROP CONSTRAINT IF EXISTS cargo_status_check;
 ALTER TABLE cargo DROP CONSTRAINT IF EXISTS cargo_workflow_status_check;
@@ -402,12 +420,28 @@ ALTER TABLE cargo
 CREATE TABLE IF NOT EXISTS cargo_movements (
   id SERIAL PRIMARY KEY,
   cargo_id INTEGER NOT NULL REFERENCES cargo(id) ON DELETE CASCADE,
+  from_bin_id INTEGER REFERENCES bins(id) ON DELETE SET NULL,
+  to_bin_id INTEGER REFERENCES bins(id) ON DELETE SET NULL,
   from_location TEXT,
   to_location TEXT,
   moved_by VARCHAR(120),
+  moved_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  warehouse_id_at_action INTEGER REFERENCES warehouses(id) ON DELETE SET NULL,
+  movement_type VARCHAR(80),
   action VARCHAR(80) NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE cargo_movements
+  ADD COLUMN IF NOT EXISTS from_bin_id INTEGER REFERENCES bins(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS to_bin_id INTEGER REFERENCES bins(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS moved_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS warehouse_id_at_action INTEGER REFERENCES warehouses(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS movement_type VARCHAR(80);
+
+UPDATE cargo_movements
+SET movement_type = COALESCE(movement_type, action)
+WHERE movement_type IS NULL;
 
 CREATE TABLE IF NOT EXISTS placement_validation_logs (
   id SERIAL PRIMARY KEY,
@@ -419,6 +453,9 @@ CREATE TABLE IF NOT EXISTS placement_validation_logs (
   attempt_stage VARCHAR(30) NOT NULL DEFAULT 'validation',
   manual_reason VARCHAR(80),
   user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  performed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  warehouse_id_at_action INTEGER REFERENCES warehouses(id) ON DELETE SET NULL,
+  result VARCHAR(20),
   previous_location TEXT,
   new_location TEXT,
   approved BOOLEAN NOT NULL DEFAULT FALSE,
@@ -433,8 +470,17 @@ ALTER TABLE placement_validation_logs
   ADD COLUMN IF NOT EXISTS attempt_stage VARCHAR(30) NOT NULL DEFAULT 'validation',
   ADD COLUMN IF NOT EXISTS manual_reason VARCHAR(80),
   ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS performed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS warehouse_id_at_action INTEGER REFERENCES warehouses(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS result VARCHAR(20),
   ADD COLUMN IF NOT EXISTS previous_location TEXT,
   ADD COLUMN IF NOT EXISTS new_location TEXT;
+
+UPDATE placement_validation_logs
+SET performed_by = COALESCE(performed_by, user_id),
+    result = COALESCE(result, CASE WHEN approved THEN 'Passed' ELSE 'Failed' END)
+WHERE performed_by IS NULL
+   OR result IS NULL;
 
 CREATE TABLE IF NOT EXISTS cargo_documents (
   id SERIAL PRIMARY KEY,
@@ -463,7 +509,9 @@ CREATE TABLE IF NOT EXISTS approval_requests (
   request_type VARCHAR(80) NOT NULL,
   cargo_id INTEGER NOT NULL REFERENCES cargo(id) ON DELETE CASCADE,
   requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,
   assigned_supervisor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  warehouse_id_at_request INTEGER REFERENCES warehouses(id) ON DELETE SET NULL,
   reason TEXT NOT NULL,
   status VARCHAR(20) NOT NULL DEFAULT 'Pending',
   decision_notes TEXT,
@@ -482,6 +530,17 @@ CREATE TABLE IF NOT EXISTS approval_requests (
     'EMERGENCY_RELOCATION'
   ))
 );
+
+ALTER TABLE approval_requests
+  ADD COLUMN IF NOT EXISTS assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS warehouse_id_at_request INTEGER REFERENCES warehouses(id) ON DELETE SET NULL;
+
+UPDATE approval_requests ar
+SET assigned_to = COALESCE(ar.assigned_to, ar.assigned_supervisor_id),
+    warehouse_id_at_request = COALESCE(ar.warehouse_id_at_request, c.warehouse_id)
+FROM cargo c
+WHERE c.id = ar.cargo_id
+  AND (ar.assigned_to IS NULL OR ar.warehouse_id_at_request IS NULL);
 
 ALTER TABLE approval_requests DROP CONSTRAINT IF EXISTS approval_requests_status_check;
 ALTER TABLE approval_requests
@@ -507,18 +566,30 @@ CREATE TABLE IF NOT EXISTS cargo_approval_history (
   remarks TEXT,
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
   performed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  warehouse_id_at_action INTEGER REFERENCES warehouses(id) ON DELETE SET NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   performed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 ALTER TABLE cargo_approval_history
-  ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+  ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS warehouse_id_at_action INTEGER REFERENCES warehouses(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+UPDATE cargo_approval_history cah
+SET warehouse_id_at_action = COALESCE(cah.warehouse_id_at_action, c.warehouse_id),
+    created_at = COALESCE(cah.created_at, cah.performed_at)
+FROM cargo c
+WHERE c.id = cah.cargo_id
+  AND (cah.warehouse_id_at_action IS NULL OR cah.created_at IS NULL);
 
 INSERT INTO approval_requests
-  (request_type, cargo_id, requested_by, reason, status, request_data)
+  (request_type, cargo_id, requested_by, warehouse_id_at_request, reason, status, request_data)
 SELECT
   'CARGO_REGISTRATION',
   c.id,
-  c.received_by_user_id,
+  COALESCE(c.created_by, c.received_by_user_id),
+  c.warehouse_id,
   'Cargo registration requires independent Warehouse Supervisor review and may proceed to placement while review is pending.',
   'Pending',
   jsonb_build_object(
@@ -537,12 +608,14 @@ WHERE c.registration_status = 'Pending Review'
   );
 
 INSERT INTO cargo_approval_history
-  (cargo_id, action, remarks, performed_by, performed_at)
+  (cargo_id, action, remarks, performed_by, warehouse_id_at_action, created_at, performed_at)
 SELECT
   c.id,
   'REGISTRATION_SUBMITTED',
   'Cargo registration entered the independent supervisor review workflow and placement queue.',
-  c.received_by_user_id,
+  COALESCE(c.created_by, c.received_by_user_id),
+  c.warehouse_id,
+  c.created_at,
   c.created_at
 FROM cargo c
 WHERE c.registration_status = 'Pending Review'
@@ -674,6 +747,8 @@ CREATE INDEX IF NOT EXISTS idx_cargo_status ON cargo(status);
 CREATE INDEX IF NOT EXISTS idx_cargo_type ON cargo(cargo_type);
 CREATE INDEX IF NOT EXISTS idx_cargo_barcode ON cargo(barcode);
 CREATE INDEX IF NOT EXISTS idx_cargo_warehouse_id ON cargo(warehouse_id);
+CREATE INDEX IF NOT EXISTS idx_cargo_created_by ON cargo(created_by, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cargo_assigned_staff ON cargo(assigned_staff_id, registration_status, placement_status);
 CREATE INDEX IF NOT EXISTS idx_cargo_placement_status ON cargo(placement_status);
 CREATE INDEX IF NOT EXISTS idx_bins_barcode ON bins(barcode);
 CREATE INDEX IF NOT EXISTS idx_validation_logs_created_at ON placement_validation_logs(created_at DESC);
@@ -681,6 +756,8 @@ CREATE INDEX IF NOT EXISTS idx_cargo_documents_cargo_id ON cargo_documents(cargo
 CREATE INDEX IF NOT EXISTS idx_cargo_locations_current ON cargo_locations(cargo_id, is_current);
 CREATE INDEX IF NOT EXISTS idx_approval_requests_status ON approval_requests(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_approval_requests_cargo_id ON approval_requests(cargo_id);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_assigned_to ON approval_requests(assigned_to, status);
+CREATE INDEX IF NOT EXISTS idx_approval_requests_warehouse_request ON approval_requests(warehouse_id_at_request, status);
 CREATE INDEX IF NOT EXISTS idx_cargo_workflow_status ON cargo(workflow_status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cargo_registration_status ON cargo(registration_status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_cargo_received_by_user ON cargo(received_by_user_id, registration_status);
@@ -713,5 +790,7 @@ CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_target_user_id ON audit_logs(target_user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_role_snapshot ON audit_logs(role_id_at_action);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_warehouse_snapshot ON audit_logs(warehouse_id_at_action);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_users_bootstrap_admin ON users(is_bootstrap_admin);

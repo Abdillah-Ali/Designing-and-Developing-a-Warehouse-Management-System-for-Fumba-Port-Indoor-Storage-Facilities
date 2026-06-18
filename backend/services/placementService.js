@@ -189,8 +189,8 @@ const recordPlacementAttempt = async (
   await executor.query(
     `INSERT INTO placement_validation_logs
      (cargo_id, cargo_barcode, bin_id, bin_barcode, placement_mode, attempt_stage, manual_reason,
-      user_id, previous_location, new_location, approved, reason, detail, checks)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+      user_id, performed_by, warehouse_id_at_action, result, previous_location, new_location, approved, reason, detail, checks)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
     [
       validation.cargo?.id || null,
       normalized.scanned_cargo_barcode || normalized.cargo_id || null,
@@ -200,6 +200,8 @@ const recordPlacementAttempt = async (
       stage,
       normalized.manual_placement_reason,
       auth.userId || null,
+      auth.warehouseId || validation.cargo?.warehouse_id || null,
+      validation.approved ? "Passed" : "Failed",
       previousLocation,
       newLocation,
       validation.approved,
@@ -269,8 +271,8 @@ const recordPlacementError = async (
   await executor.query(
     `INSERT INTO placement_validation_logs
      (cargo_barcode, bin_barcode, placement_mode, attempt_stage, manual_reason,
-      user_id, approved, reason, detail, checks)
-     VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7, $8, $9)`,
+      user_id, performed_by, warehouse_id_at_action, result, approved, reason, detail, checks)
+     VALUES ($1, $2, $3, $4, $5, $6, $6, $7, 'Failed', FALSE, $8, $9, $10)`,
     [
       cargoIdentifier,
       binIdentifier,
@@ -278,6 +280,7 @@ const recordPlacementError = async (
       stage,
       normalizeManualReason(payload.manual_placement_reason || payload.manualPlacementReason),
       auth.userId || null,
+      auth.warehouseId || null,
       String(reason),
       detail,
       JSON.stringify({
@@ -438,14 +441,20 @@ const confirmPlacementOperation = async (payload, auth = {}) => {
     const movementResult = alreadyPlacedInThisBin
       ? { rows: [] }
       : await client.query(
-        `INSERT INTO cargo_movements (cargo_id, from_location, to_location, moved_by, action)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO cargo_movements
+         (cargo_id, from_bin_id, to_bin_id, from_location, to_location, moved_by,
+          moved_by_user_id, warehouse_id_at_action, movement_type, action)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
          RETURNING *`,
         [
           cargo.id,
+          previousBin?.id || null,
+          targetBin.id,
           previousLocation,
           newLocation,
           auth.username || cargo.received_by || "Warehouse Staff",
+          auth.userId || null,
+          auth.warehouseId || cargo.warehouse_id || null,
           isRelocation ? "Relocated" : "Placed"
         ]
       );

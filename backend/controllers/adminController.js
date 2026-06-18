@@ -19,10 +19,36 @@ const { buildError } = require("../utils/apiError");
 const { hashPassword, verifyPassword } = require("../utils/password");
 const { createToken, verifyToken } = require("../utils/token");
 const { roleNames } = require("../config/systemConfig");
+const {
+  TRANSFER_BLOCKED_MESSAGE,
+  getPendingWarehouseTaskSummary,
+  isWarehouseStaffRole,
+  isWarehouseSupervisorRole,
+  reassignStaffPendingTasks,
+  reassignSupervisorPendingTasks
+} = require("../services/taskOwnershipService");
 
 const allowedUserStatuses = ["active", "inactive", "suspended"];
 const allowedPortalRoleNames = Object.values(roleNames);
 const passwordPolicyMessage = "Password must be at least 8 characters and include uppercase, lowercase, number, and special character.";
+const databaseUnavailableMessage = "Unable to access system services. Please contact the administrator.";
+const databaseConnectivityCodes = new Set([
+  "08000",
+  "08001",
+  "08003",
+  "08004",
+  "08006",
+  "53300",
+  "53400",
+  "57P01",
+  "57P02",
+  "57P03",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+  "EAI_AGAIN"
+]);
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const phonePattern = /^\+?[0-9][0-9\s()-]{6,18}[0-9]$/;
 const usernamePattern = /^[A-Za-z0-9._-]{3,50}$/;
@@ -315,6 +341,54 @@ const auditSessionInvalidation = async (client, req, target, reason, result) => 
   );
 };
 
+const isWarehouseTransfer = (existing, payload) => (
+  Object.prototype.hasOwnProperty.call(payload, "warehouse_id")
+  && String(existing.warehouse_id ?? "") !== String(payload.warehouse_id ?? "")
+);
+
+const writeWarehouseTransferAttempt = async (client, req, existing, nextWarehouseId) => {
+  await writeAuditLog(
+    {
+      user_id: req.auth?.userId || null,
+      target_user_id: existing.id,
+      action: "WAREHOUSE_TRANSFER_ATTEMPT",
+      module: "User Management",
+      description: `Attempted warehouse transfer for ${existing.username}.`,
+      metadata: {
+        old_warehouse_id: existing.warehouse_id || null,
+        new_warehouse_id: nextWarehouseId || null,
+        role_name: existing.role_name
+      }
+    },
+    client
+  );
+};
+
+const blockWarehouseTransfer = async (client, req, existing, nextWarehouseId, pendingSummary) => {
+  await writeAuditLog(
+    {
+      user_id: req.auth?.userId || null,
+      target_user_id: existing.id,
+      action: "BLOCKED_WAREHOUSE_TRANSFER",
+      module: "User Management",
+      description: TRANSFER_BLOCKED_MESSAGE,
+      metadata: {
+        old_warehouse_id: existing.warehouse_id || null,
+        new_warehouse_id: nextWarehouseId || null,
+        pending_tasks: pendingSummary.tasks,
+        pending_task_count: pendingSummary.total_pending_tasks
+      }
+    },
+    client
+  );
+
+  await client.query("COMMIT");
+  const error = buildError(TRANSFER_BLOCKED_MESSAGE, 409);
+  error.details = pendingSummary;
+  error.transactionComplete = true;
+  throw error;
+};
+
 const mapDatabaseError = (error) => {
   if (error.code === "23505") {
     return buildError("A user with that username or email already exists.", 409);
@@ -330,6 +404,10 @@ const mapDatabaseError = (error) => {
 
   return error;
 };
+
+const isDatabaseConnectivityError = (error) => (
+  error?.code && databaseConnectivityCodes.has(error.code)
+);
 
 const sendRows = (res, result) => {
   res.json({
@@ -402,6 +480,111 @@ const getUser = async (req, res, next) => {
   }
 };
 
+const getUserPendingTasks = async (req, res, next) => {
+  try {
+    const id = readId(req.params.id, "User", true);
+    const result = await getUserById(id);
+
+    if (result.rowCount === 0) {
+      throw buildError("User account not found.", 404);
+    }
+
+    const user = result.rows[0];
+    const summary = await getPendingWarehouseTaskSummary(db, id, user.role_name);
+
+    res.json({
+      success: true,
+      data: {
+        user_id: id,
+        role_name: user.role_name,
+        ...summary
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const reassignUserPendingTasks = async (req, res, next) => {
+  const client = await db.pool.connect();
+
+  try {
+    const sourceUserId = readId(req.params.id, "User", true);
+    const targetUserId = readId(req.body?.target_user_id ?? req.body?.targetUserId, "Target user", true);
+    const reason = cleanString(req.body?.reason) || "Pending tasks reassigned before warehouse transfer.";
+
+    await client.query("BEGIN");
+
+    const sourceResult = await getUserById(sourceUserId, client);
+    if (sourceResult.rowCount === 0) {
+      throw buildError("Source user account not found.", 404);
+    }
+
+    const targetResult = await getUserById(targetUserId, client);
+    if (targetResult.rowCount === 0) {
+      throw buildError("Target user account not found.", 404);
+    }
+
+    const source = sourceResult.rows[0];
+    const target = targetResult.rows[0];
+    if (target.status !== "active") {
+      throw buildError("Pending tasks can only be reassigned to an active user.", 400);
+    }
+
+    let reassignment;
+    if (isWarehouseStaffRole(source.role_name)) {
+      if (!isWarehouseStaffRole(target.role_name)) {
+        throw buildError("Staff pending tasks can only be reassigned to another Warehouse Staff user.", 400);
+      }
+      reassignment = await reassignStaffPendingTasks(client, sourceUserId, targetUserId);
+    } else if (isWarehouseSupervisorRole(source.role_name)) {
+      if (!isWarehouseSupervisorRole(target.role_name)) {
+        throw buildError("Supervisor pending tasks can only be reassigned to another Supervisor.", 400);
+      }
+      reassignment = await reassignSupervisorPendingTasks(client, sourceUserId, targetUserId);
+    } else {
+      throw buildError("This user role does not own reassigned warehouse tasks.", 400);
+    }
+
+    await writeAuditLog(
+      {
+        user_id: req.auth?.userId || null,
+        target_user_id: sourceUserId,
+        action: "PENDING_TASK_REASSIGNMENT",
+        module: "User Management",
+        description: `Reassigned pending warehouse tasks from ${source.username} to ${target.username}.`,
+        metadata: {
+          source_user_id: sourceUserId,
+          source_username: source.username,
+          target_user_id: targetUserId,
+          target_username: target.username,
+          source_role: source.role_name,
+          target_role: target.role_name,
+          reassigned_count: reassignment.reassigned_count,
+          reason
+        }
+      },
+      client
+    );
+
+    const remaining = await getPendingWarehouseTaskSummary(client, sourceUserId, source.role_name);
+    await client.query("COMMIT");
+
+    res.json({
+      success: true,
+      data: {
+        reassignment,
+        remaining_pending_tasks: remaining
+      }
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    next(mapDatabaseError(error));
+  } finally {
+    client.release();
+  }
+};
+
 const createUser = async (req, res, next) => {
   const client = await db.pool.connect();
 
@@ -471,6 +654,19 @@ const updateUser = async (req, res, next) => {
       throw buildError("No user details changed.", 400);
     }
 
+    const warehouseTransfer = isWarehouseTransfer(existing, payload);
+    let transferPendingSummary = null;
+    if (
+      warehouseTransfer
+      && (isWarehouseStaffRole(existing.role_name) || isWarehouseSupervisorRole(existing.role_name))
+    ) {
+      await writeWarehouseTransferAttempt(client, req, existing, payload.warehouse_id || null);
+      transferPendingSummary = await getPendingWarehouseTaskSummary(client, existing.id, existing.role_name);
+      if (!transferPendingSummary.can_transfer) {
+        await blockWarehouseTransfer(client, req, existing, payload.warehouse_id || null, transferPendingSummary);
+      }
+    }
+
     const passwordHash = payload.password ? await hashPassword(payload.password, client) : null;
     const passwordReset = Boolean(passwordHash);
     delete payload.password;
@@ -496,6 +692,39 @@ const updateUser = async (req, res, next) => {
           module: "User Management",
           description: `Updated user account ${existing.username}.`,
           metadata: { changed_fields: changedFields }
+        },
+        client
+      );
+    }
+
+    if (warehouseTransfer) {
+      await writeAuditLog(
+        {
+          user_id: req.auth?.userId || null,
+          target_user_id: id,
+          action: "SUCCESSFUL_WAREHOUSE_TRANSFER",
+          module: "User Management",
+          description: `Transferred ${existing.username} from warehouse ${existing.warehouse_id || "none"} to ${payload.warehouse_id || "none"}.`,
+          metadata: {
+            old_warehouse_id: existing.warehouse_id || null,
+            new_warehouse_id: payload.warehouse_id || null,
+            pending_task_count: transferPendingSummary?.total_pending_tasks || 0
+          }
+        },
+        client
+      );
+      await writeAuditLog(
+        {
+          user_id: req.auth?.userId || null,
+          target_user_id: id,
+          action: "USER_ASSIGNMENT_CHANGE",
+          module: "User Management",
+          description: `Changed warehouse assignment for ${existing.username}.`,
+          metadata: {
+            old_warehouse_id: existing.warehouse_id || null,
+            new_warehouse_id: payload.warehouse_id || null,
+            changed_fields: changedFields
+          }
         },
         client
       );
@@ -795,10 +1024,11 @@ const getUserSessions = async (req, res, next) => {
 };
 
 const login = async (req, res, next) => {
-  const client = await db.pool.connect();
+  let client;
   let transactionStarted = false;
 
   try {
+    client = await db.pool.connect();
     const username = cleanString(req.body?.username);
     const password = req.body?.password;
 
@@ -935,12 +1165,20 @@ const login = async (req, res, next) => {
       }
     });
   } catch (error) {
-    if (transactionStarted) {
-      await client.query("ROLLBACK");
+    if (transactionStarted && client) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+      }
     }
-    next(error);
+
+    next(!client || isDatabaseConnectivityError(error)
+      ? buildError(databaseUnavailableMessage, 503)
+      : error);
   } finally {
-    client.release();
+    if (client) {
+      client.release();
+    }
   }
 };
 
@@ -1286,11 +1524,13 @@ module.exports = {
   getRoles,
   getShifts,
   getUser,
+  getUserPendingTasks,
   getUserSessions,
   getUsers,
   getWarehouses,
   login,
   logout,
+  reassignUserPendingTasks,
   resetUserPassword,
   updateUserStatus,
   updateUser,

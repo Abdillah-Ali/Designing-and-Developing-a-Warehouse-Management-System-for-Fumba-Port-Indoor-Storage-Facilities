@@ -7,10 +7,12 @@ const {
   REGISTRATION_STATUS,
   REJECTION_REASONS,
   captureCorrectionValues,
+  ensurePendingRegistrationApprovals,
   getRejectionReason,
   normalizeCorrectionFields,
   updateCargoRegistrationStatus
 } = require("../services/cargoWorkflowService");
+const { APPROVAL_ASSIGNEE_SQL } = require("../services/taskOwnershipService");
 
 const approvalSelect = `
   SELECT
@@ -29,6 +31,8 @@ const approvalSelect = `
     c.registration_status,
     c.warehouse_id,
     c.placement_status,
+    COALESCE(ar.assigned_to, ar.assigned_supervisor_id) AS assigned_to,
+    ar.warehouse_id_at_request,
     requester.full_name AS requested_by_name,
     requester.username AS requested_by_username,
     registrant.full_name AS registered_by_name,
@@ -50,7 +54,7 @@ const approvalSelect = `
   JOIN cargo c ON c.id = ar.cargo_id
   LEFT JOIN users requester ON requester.id = ar.requested_by
   LEFT JOIN users registrant ON registrant.id = c.received_by_user_id
-  LEFT JOIN users assignee ON assignee.id = ar.assigned_supervisor_id
+  LEFT JOIN users assignee ON assignee.id = COALESCE(ar.assigned_to, ar.assigned_supervisor_id)
   LEFT JOIN users decider ON decider.id = ar.decided_by
 `;
 
@@ -62,6 +66,31 @@ const assertWarehouseAccess = (req, warehouseId) => {
   ) {
     throw buildError("Approval request not found.", 404);
   }
+};
+
+const assertApprovalAccess = (req, approval) => {
+  assertWarehouseAccess(req, approval.warehouse_id);
+
+  if (req.auth?.role !== "warehouse-supervisor") return;
+
+  const assignedTo = approval.assigned_to || approval.assigned_supervisor_id;
+  if (assignedTo && Number(assignedTo) !== Number(req.auth?.userId)) {
+    throw buildError("Approval request not found.", 404);
+  }
+};
+
+const getSupervisorWarehouseScope = (req) => (
+  req.auth?.role === "warehouse-supervisor"
+    ? req.auth?.warehouseId || null
+    : null
+);
+
+const shouldRepairPendingRegistrationApprovals = (req) => {
+  const status = String(req.query.status || "").trim();
+  const requestType = String(req.query.request_type || "").trim();
+
+  return (!status || status === "Pending")
+    && (!requestType || requestType === "CARGO_REGISTRATION");
 };
 
 const getReviewConfiguration = (req, res) => {
@@ -82,7 +111,7 @@ const getReviewConfiguration = (req, res) => {
 
 const getSupervisorDashboard = async (req, res, next) => {
   try {
-    const warehouseId = req.auth?.warehouseId || null;
+    const warehouseId = getSupervisorWarehouseScope(req);
     const values = [roleNames.warehouseStaff];
     const warehouseCargo = warehouseId
       ? `AND c.warehouse_id = $${values.push(warehouseId)}`
@@ -90,12 +119,17 @@ const getSupervisorDashboard = async (req, res, next) => {
     const warehouseUsers = warehouseId
       ? `AND u.warehouse_id = $2`
       : "";
+    const approvalAssignment = req.auth?.role === "warehouse-supervisor"
+      ? `AND (${APPROVAL_ASSIGNEE_SQL} IS NULL OR ${APPROVAL_ASSIGNEE_SQL} = $${values.push(req.auth.userId)})`
+      : "";
+
+    await ensurePendingRegistrationApprovals(db, warehouseId);
 
     const metrics = await db.query(
       `SELECT
         (SELECT COUNT(*)::int FROM approval_requests ar
          JOIN cargo c ON c.id = ar.cargo_id
-         WHERE ar.status = 'Pending' AND c.is_deleted = FALSE ${warehouseCargo}) AS pending_approvals,
+         WHERE ar.status = 'Pending' AND c.is_deleted = FALSE ${warehouseCargo} ${approvalAssignment}) AS pending_approvals,
         (SELECT COUNT(*)::int FROM placement_validation_logs pvl
          LEFT JOIN cargo c ON c.id = pvl.cargo_id
          WHERE pvl.approved = FALSE ${warehouseCargo}) AS rejected_placements,
@@ -130,6 +164,12 @@ const getSupervisorDashboard = async (req, res, next) => {
 
 const getApprovals = async (req, res, next) => {
   try {
+    const warehouseId = getSupervisorWarehouseScope(req);
+
+    if (shouldRepairPendingRegistrationApprovals(req)) {
+      await ensurePendingRegistrationApprovals(db, warehouseId);
+    }
+
     const values = [];
     const clauses = ["c.is_deleted = FALSE"];
 
@@ -141,9 +181,13 @@ const getApprovals = async (req, res, next) => {
       values.push(req.query.request_type);
       clauses.push(`ar.request_type = $${values.length}`);
     }
-    if (req.auth?.warehouseId) {
-      values.push(req.auth.warehouseId);
+    if (warehouseId) {
+      values.push(warehouseId);
       clauses.push(`c.warehouse_id = $${values.length}`);
+    }
+    if (req.auth?.role === "warehouse-supervisor" && req.query.status === "Pending") {
+      values.push(req.auth.userId);
+      clauses.push(`(${APPROVAL_ASSIGNEE_SQL} IS NULL OR ${APPROVAL_ASSIGNEE_SQL} = $${values.length})`);
     }
 
     const result = await db.query(
@@ -169,7 +213,7 @@ const getApproval = async (req, res, next) => {
       [req.params.id]
     );
     if (result.rowCount === 0) throw buildError("Approval request not found.", 404);
-    assertWarehouseAccess(req, result.rows[0].warehouse_id);
+    assertApprovalAccess(req, result.rows[0]);
     res.json({ success: true, data: result.rows[0] });
   } catch (error) {
     next(error);
@@ -185,7 +229,8 @@ const decideApproval = async (req, res, next, decision) => {
 
     const approvalResult = await client.query(
       `SELECT ar.*, ar.cargo_id AS cargo_record_id, c.cargo_id,
-              c.registration_status, c.placement_status, c.warehouse_id
+              c.registration_status, c.placement_status, c.warehouse_id,
+              COALESCE(ar.assigned_to, ar.assigned_supervisor_id) AS assigned_to
        FROM approval_requests ar
        JOIN cargo c ON c.id = ar.cargo_id
        WHERE ar.id = $1
@@ -196,7 +241,7 @@ const decideApproval = async (req, res, next, decision) => {
     if (approvalResult.rowCount === 0) throw buildError("Approval request not found.", 404);
 
     const approval = approvalResult.rows[0];
-    assertWarehouseAccess(req, approval.warehouse_id);
+    assertApprovalAccess(req, approval);
     if (approval.status !== "Pending") {
       throw buildError(`Approval request has already been ${approval.status.toLowerCase()}.`, 409);
     }
@@ -224,6 +269,7 @@ const decideApproval = async (req, res, next, decision) => {
       `UPDATE approval_requests
        SET status = $1,
            decision_notes = $2,
+           assigned_to = COALESCE(assigned_to, $3),
            assigned_supervisor_id = COALESCE(assigned_supervisor_id, $3),
            decided_at = CURRENT_TIMESTAMP,
            decided_by = $3
@@ -290,8 +336,8 @@ const decideApproval = async (req, res, next, decision) => {
 
       await client.query(
         `INSERT INTO cargo_approval_history
-         (cargo_id, action, remarks, metadata, performed_by)
-         VALUES ($1, $2, $3, $4, $5)`,
+         (cargo_id, action, remarks, metadata, performed_by, warehouse_id_at_action)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
         [
           approval.cargo_record_id,
           decision === "Approved" ? "REGISTRATION_APPROVED" : "REGISTRATION_REJECTED",
@@ -304,7 +350,8 @@ const decideApproval = async (req, res, next, decision) => {
                 registration_can_be_revised: true
               }
             : {}),
-          req.auth?.userId || null
+          req.auth?.userId || null,
+          req.auth?.warehouseId || approval.warehouse_id || null
         ]
       );
     } else if (approval.request_type === "PLACEMENT_OVERRIDE") {
@@ -327,6 +374,22 @@ const decideApproval = async (req, res, next, decision) => {
       auditAction = decision === "Approved" ? "SUPERVISOR_APPROVE_CARGO" : "SUPERVISOR_REJECT_CARGO";
     }
 
+    if (!isRegistrationApproval) {
+      await client.query(
+        `INSERT INTO cargo_approval_history
+         (cargo_id, action, remarks, metadata, performed_by, warehouse_id_at_action)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          approval.cargo_record_id,
+          `${approval.request_type}_${decision.toUpperCase()}`,
+          notes || `${decision} ${approval.request_type} request.`,
+          JSON.stringify({ approval_request_id: approval.id }),
+          req.auth?.userId || null,
+          req.auth?.warehouseId || approval.warehouse_id || null
+        ]
+      );
+    }
+
     await writeAuditLog(
       {
         user_id: req.auth?.userId || null,
@@ -336,6 +399,7 @@ const decideApproval = async (req, res, next, decision) => {
         metadata: {
           approval_request_id: approval.id,
           cargo_id: approval.cargo_record_id,
+          warehouse_id: approval.warehouse_id,
           decision_notes: notes || null,
           rejection_code: rejectionCode || null
         }
@@ -377,6 +441,7 @@ const requestCorrection = async (req, res, next) => {
       `SELECT ar.id AS approval_id,
               ar.request_type,
               ar.status AS approval_status,
+              COALESCE(ar.assigned_to, ar.assigned_supervisor_id) AS assigned_to,
               ar.cargo_id AS cargo_record_id,
               c.*
        FROM approval_requests ar
@@ -389,7 +454,7 @@ const requestCorrection = async (req, res, next) => {
     if (approvalResult.rowCount === 0) throw buildError("Approval request not found.", 404);
 
     const approval = approvalResult.rows[0];
-    assertWarehouseAccess(req, approval.warehouse_id);
+    assertApprovalAccess(req, approval);
     if (approval.request_type !== "CARGO_REGISTRATION") {
       throw buildError("Corrections can only be requested for cargo registration approvals.", 400);
     }
@@ -402,6 +467,7 @@ const requestCorrection = async (req, res, next) => {
       `UPDATE approval_requests
        SET status = 'Correction Required',
            decision_notes = $1,
+           assigned_to = COALESCE(assigned_to, $2),
            assigned_supervisor_id = COALESCE(assigned_supervisor_id, $2),
            decided_at = CURRENT_TIMESTAMP,
            decided_by = $2,
@@ -436,8 +502,8 @@ const requestCorrection = async (req, res, next) => {
     );
     await client.query(
       `INSERT INTO cargo_approval_history
-       (cargo_id, action, remarks, metadata, performed_by)
-       VALUES ($1, 'CORRECTION_REQUESTED', $2, $3, $4)`,
+       (cargo_id, action, remarks, metadata, performed_by, warehouse_id_at_action)
+       VALUES ($1, 'CORRECTION_REQUESTED', $2, $3, $4, $5)`,
       [
         approval.cargo_record_id,
         notes,
@@ -446,7 +512,8 @@ const requestCorrection = async (req, res, next) => {
           correction_field_labels: correctionFields.map((field) => CORRECTION_FIELDS[field]),
           original_values: originalValues
         }),
-        req.auth?.userId || null
+        req.auth?.userId || null,
+        req.auth?.warehouseId || approval.warehouse_id || null
       ]
     );
     await writeAuditLog(
@@ -458,6 +525,7 @@ const requestCorrection = async (req, res, next) => {
         metadata: {
           approval_request_id: approval.approval_id,
           cargo_id: approval.cargo_record_id,
+          warehouse_id: approval.warehouse_id,
           correction_notes: notes,
           correction_fields: correctionFields
         }
@@ -476,6 +544,36 @@ const requestCorrection = async (req, res, next) => {
     next(error);
   } finally {
     client.release();
+  }
+};
+
+const getMyReviewHistory = async (req, res, next) => {
+  try {
+    const result = await db.query(
+      `SELECT
+         cah.*,
+         c.cargo_id,
+         c.barcode AS cargo_barcode,
+         c.cargo_type,
+         c.consignee_name,
+         c.registration_status,
+         c.placement_status,
+         COALESCE(action_warehouse.warehouse_name, current_warehouse.warehouse_name) AS warehouse_name,
+         COALESCE(action_warehouse.warehouse_code, current_warehouse.warehouse_code) AS warehouse_code
+       FROM cargo_approval_history cah
+       JOIN cargo c ON c.id = cah.cargo_id
+       LEFT JOIN warehouses action_warehouse ON action_warehouse.id = cah.warehouse_id_at_action
+       LEFT JOIN warehouses current_warehouse ON current_warehouse.id = c.warehouse_id
+       WHERE cah.performed_by = $1
+         AND c.is_deleted = FALSE
+       ORDER BY COALESCE(cah.created_at, cah.performed_at) DESC, cah.id DESC
+       LIMIT 200`,
+      [req.auth?.userId || 0]
+    );
+
+    res.json({ success: true, count: result.rowCount, data: result.rows });
+  } catch (error) {
+    next(error);
   }
 };
 
@@ -582,6 +680,7 @@ module.exports = {
   approveApproval,
   getApproval,
   getApprovals,
+  getMyReviewHistory,
   getPlacementMonitoring,
   getPlacementSummary,
   getReviewConfiguration,

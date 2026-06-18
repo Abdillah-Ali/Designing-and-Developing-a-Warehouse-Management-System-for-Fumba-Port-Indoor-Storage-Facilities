@@ -12,9 +12,9 @@ const {
 const {
   PLACEMENT_STATUS,
   REGISTRATION_STATUS,
-  REVIEW_QUEUE_STATUSES,
   CORRECTION_FIELDS,
   canStaffEditCargo,
+  canStaffViewSubmission,
   captureCorrectionValues,
   completeCargoResubmission,
   needsStorageRevalidation,
@@ -27,6 +27,7 @@ const {
 } = require("../config/systemConfig");
 const { findPossibleDuplicateCargo } = require("../services/cargoDuplicateService");
 const { writeAuditLog } = require("../models/adminModel");
+const { STAFF_TASK_OWNER_SQL } = require("../services/taskOwnershipService");
 
 const allowedDocumentTypes = new Map(Object.entries(documentTypes));
 
@@ -108,8 +109,26 @@ const isStaff = (req) => req.auth?.role === "warehouse-staff";
 const isSupervisor = (req) => req.auth?.role === "warehouse-supervisor";
 const isAdmin = (req) => req.auth?.role === "system-admin";
 
+const STAFF_HISTORY_OWNER_SQL = "COALESCE(c.created_by, c.received_by_user_id)";
+
+const isStaffPersonalCargo = (cargo, userId) => (
+  Number(cargo?.assigned_staff_id) === Number(userId)
+  || Number(cargo?.created_by) === Number(userId)
+  || Number(cargo?.received_by_user_id) === Number(userId)
+);
+
 const addCargoScopeFilters = (req, filters, values) => {
-  if ((isStaff(req) || isSupervisor(req)) && req.auth?.warehouseId) {
+  if (isStaff(req)) {
+    values.push(req.auth?.userId || 0);
+    filters.push(`${STAFF_TASK_OWNER_SQL} = $${values.length}`);
+    if (req.auth?.warehouseId) {
+      values.push(req.auth.warehouseId);
+      filters.push(`c.warehouse_id = $${values.length}`);
+    }
+    return;
+  }
+
+  if (isSupervisor(req) && req.auth?.warehouseId) {
     values.push(req.auth.warehouseId);
     filters.push(`c.warehouse_id = $${values.length}`);
   }
@@ -119,8 +138,11 @@ const assertCargoReadable = (req, cargo) => {
   if (cargo.is_deleted && !isAdmin(req)) {
     throw buildError("Cargo record not found.", 404);
   }
+  if (isStaff(req) && !isStaffPersonalCargo(cargo, req.auth?.userId)) {
+    throw buildError("Cargo record not found.", 404);
+  }
   if (
-    (isStaff(req) || isSupervisor(req))
+    isSupervisor(req)
     && req.auth?.warehouseId
     && Number(cargo.warehouse_id) !== Number(req.auth.warehouseId)
   ) {
@@ -403,7 +425,10 @@ const createCargo = async (req, res, next) => {
       "placement_status",
       "location",
       "warehouse_id",
-      "received_by_user_id"
+      "warehouse_id_at_registration",
+      "received_by_user_id",
+      "created_by",
+      "assigned_staff_id"
     ];
     const values = [
       identifiers.cargo_id,
@@ -414,6 +439,9 @@ const createCargo = async (req, res, next) => {
       placementStatus,
       null,
       req.auth?.warehouseId || null,
+      req.auth?.warehouseId || null,
+      req.auth?.userId || null,
+      req.auth?.userId || null,
       req.auth?.userId || null
     ];
     const placeholders = values.map((_, index) => `$${index + 1}`).join(", ");
@@ -426,24 +454,28 @@ const createCargo = async (req, res, next) => {
     );
 
     await client.query(
-      `INSERT INTO cargo_movements (cargo_id, from_location, to_location, moved_by, action)
-      VALUES ($1, $2, $3, $4, $5)`,
+      `INSERT INTO cargo_movements
+       (cargo_id, from_location, to_location, moved_by, moved_by_user_id, warehouse_id_at_action, movement_type, action)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
       [
         insertResult.rows[0].id,
         null,
         "Placement Queue",
         req.auth?.username || payload.received_by || "System",
+        req.auth?.userId || null,
+        req.auth?.warehouseId || null,
         "Registration Submitted"
       ]
     );
 
     await client.query(
       `INSERT INTO approval_requests
-       (request_type, cargo_id, requested_by, reason, status, request_data)
-       VALUES ('CARGO_REGISTRATION', $1, $2, $3, 'Pending', $4)`,
+       (request_type, cargo_id, requested_by, warehouse_id_at_request, reason, status, request_data)
+       VALUES ('CARGO_REGISTRATION', $1, $2, $3, $4, 'Pending', $5)`,
       [
         insertResult.rows[0].id,
         req.auth?.userId || null,
+        req.auth?.warehouseId || null,
         "New cargo registration requires independent Warehouse Supervisor review and is immediately available for placement.",
         JSON.stringify({
           cargo_condition: payload.cargo_condition,
@@ -455,12 +487,13 @@ const createCargo = async (req, res, next) => {
 
     await client.query(
       `INSERT INTO cargo_approval_history
-       (cargo_id, action, remarks, performed_by)
-       VALUES ($1, 'REGISTRATION_SUBMITTED', $2, $3)`,
+       (cargo_id, action, remarks, performed_by, warehouse_id_at_action)
+       VALUES ($1, 'REGISTRATION_SUBMITTED', $2, $3, $4)`,
       [
         insertResult.rows[0].id,
         "Cargo registered, added to the placement queue, and submitted for Warehouse Supervisor review.",
-        req.auth?.userId || null
+        req.auth?.userId || null,
+        req.auth?.warehouseId || null
       ]
     );
 
@@ -473,6 +506,7 @@ const createCargo = async (req, res, next) => {
         metadata: {
           registration_status: registrationStatus,
           placement_status: placementStatus,
+          warehouse_id: req.auth?.warehouseId || null,
           supervisor_review_required: true,
           placement_available: true
         }
@@ -496,18 +530,99 @@ const createCargo = async (req, res, next) => {
 
 const getMyCargoSubmissions = async (req, res, next) => {
   try {
-    const values = [req.auth?.userId || 0, REVIEW_QUEUE_STATUSES];
-    const warehouseClause = req.auth?.warehouseId
-      ? `AND c.warehouse_id = $${values.push(req.auth.warehouseId)}`
-      : "";
+    const values = [req.auth?.userId || 0];
     const result = await db.query(
       `${cargoSelect}
-       WHERE c.received_by_user_id = $1
-         AND c.registration_status = ANY($2::varchar[])
+       WHERE (${STAFF_HISTORY_OWNER_SQL} = $1 OR ${STAFF_TASK_OWNER_SQL} = $1)
          AND c.is_deleted = FALSE
-         ${warehouseClause}
        ORDER BY c.updated_at DESC, c.id DESC`,
       values
+    );
+    const rows = result.rows.map((row) => ({
+      ...row,
+      staff_can_edit: canStaffEditCargo(row, req.auth?.userId),
+      staff_can_view_history: canStaffViewSubmission(row, req.auth?.userId)
+    }));
+    res.json({ success: true, count: rows.length, data: rows });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getMyPlacementHistory = async (req, res, next) => {
+  try {
+    const result = await db.query(
+      `SELECT
+         cm.*,
+         c.cargo_id AS cargo_identifier,
+         c.barcode AS cargo_barcode,
+         c.cargo_type,
+         c.consignee_name,
+         w.warehouse_name,
+         w.warehouse_code
+       FROM cargo_movements cm
+       JOIN cargo c ON c.id = cm.cargo_id
+       LEFT JOIN warehouses w ON w.id = cm.warehouse_id_at_action
+       WHERE (cm.moved_by_user_id = $1 OR (${STAFF_HISTORY_OWNER_SQL} = $1 AND cm.action = 'Registration Submitted'))
+         AND c.is_deleted = FALSE
+       ORDER BY cm.created_at DESC, cm.id DESC
+       LIMIT 200`,
+      [req.auth?.userId || 0]
+    );
+    res.json({ success: true, count: result.rowCount, data: result.rows });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getMyUploadedDocuments = async (req, res, next) => {
+  try {
+    const result = await db.query(
+      `SELECT
+         cd.id,
+         cd.cargo_id,
+         cd.file_name,
+         cd.file_type,
+         cd.file_size,
+         cd.uploaded_at,
+         c.cargo_id AS cargo_identifier,
+         c.barcode AS cargo_barcode,
+         c.consignee_name,
+         w.warehouse_name,
+         w.warehouse_code
+       FROM cargo_documents cd
+       JOIN cargo c ON c.id = cd.cargo_id
+       LEFT JOIN warehouses w ON w.id = c.warehouse_id_at_registration
+       WHERE cd.uploaded_by = $1
+         AND c.is_deleted = FALSE
+       ORDER BY cd.uploaded_at DESC, cd.id DESC
+       LIMIT 200`,
+      [req.auth?.userId || 0]
+    );
+    res.json({ success: true, count: result.rowCount, data: result.rows });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getMyBarcodePrintLogs = async (req, res, next) => {
+  try {
+    const result = await db.query(
+      `SELECT
+         bpl.*,
+         c.cargo_id AS cargo_identifier,
+         c.barcode AS cargo_barcode,
+         c.consignee_name,
+         w.warehouse_name,
+         w.warehouse_code
+       FROM barcode_print_logs bpl
+       JOIN cargo c ON c.id = bpl.cargo_id
+       LEFT JOIN warehouses w ON w.id = c.warehouse_id_at_registration
+       WHERE bpl.printed_by = $1
+         AND c.is_deleted = FALSE
+       ORDER BY bpl.printed_at DESC, bpl.id DESC
+       LIMIT 200`,
+      [req.auth?.userId || 0]
     );
     res.json({ success: true, count: result.rowCount, data: result.rows });
   } catch (error) {
@@ -524,7 +639,7 @@ const resubmitCargo = async (req, res, next) => {
     if (!cargo) throw buildError("Cargo record not found.", 404);
     if (!canStaffEditCargo(cargo, req.auth?.userId)) {
       throw buildError(
-        "Only the original registering staff user can revise and resubmit this registration.",
+        "Only the assigned staff user can revise and resubmit this registration.",
         403
       );
     }
@@ -728,9 +843,9 @@ const uploadCargoDocument = async (req, res, next) => {
     assertCargoReadable(req, cargo);
     if (
       isStaff(req)
-      && Number(cargo.received_by_user_id) !== Number(req.auth?.userId)
+      && Number(cargo.assigned_staff_id || cargo.created_by || cargo.received_by_user_id) !== Number(req.auth?.userId)
     ) {
-      throw buildError("Only the original registering staff user can upload documents for this cargo.", 403);
+      throw buildError("Only the assigned staff user can upload documents for this cargo.", 403);
     }
     if (
       isStaff(req)
@@ -845,7 +960,7 @@ const updateCargo = async (req, res, next) => {
 
     if (isStaff(req) && !canStaffEditCargo(existingCargo, req.auth?.userId)) {
       throw buildError(
-        "Cargo can only be edited by its original registering staff user when correction is required.",
+        "Cargo can only be edited by its assigned staff user when correction is required.",
         403
       );
     }
@@ -949,15 +1064,16 @@ const updateCargo = async (req, res, next) => {
 
         await client.query(
           `INSERT INTO cargo_approval_history
-           (cargo_id, action, remarks, performed_by)
-           VALUES ($1, $2, $3, $4)`,
+           (cargo_id, action, remarks, performed_by, warehouse_id_at_action)
+           VALUES ($1, $2, $3, $4, $5)`,
           [
             updatedCargo.id,
             relocationRequired ? "LOCATION_REVALIDATION_FAILED" : "LOCATION_REVALIDATED",
             relocationRequired
               ? `Current storage location requires relocation. ${relocationReason}`
               : "Current storage location remains compatible after the registration correction.",
-            req.auth?.userId || null
+            req.auth?.userId || null,
+            req.auth?.warehouseId || updatedCargo.warehouse_id || null
           ]
         );
       }
@@ -1068,8 +1184,8 @@ const deleteCargo = async (req, res, next) => {
     );
     await client.query(
       `INSERT INTO cargo_approval_history
-       (cargo_id, action, remarks, metadata, performed_by)
-       VALUES ($1, 'CARGO_ARCHIVED', $2, $3, $4)`,
+       (cargo_id, action, remarks, metadata, performed_by, warehouse_id_at_action)
+       VALUES ($1, 'CARGO_ARCHIVED', $2, $3, $4, $5)`,
       [
         deletedCargo.id,
         archiveReason,
@@ -1077,7 +1193,8 @@ const deleteCargo = async (req, res, next) => {
           registration_status: deletedCargo.registration_status,
           placement_status: deletedCargo.placement_status
         }),
-        req.auth?.userId || null
+        req.auth?.userId || null,
+        req.auth?.warehouseId || deletedCargo.warehouse_id || null
       ]
     );
 
@@ -1116,6 +1233,9 @@ module.exports = {
   getCargo,
   getCargoById,
   getMyCargoSubmissions,
+  getMyBarcodePrintLogs,
+  getMyUploadedDocuments,
+  getMyPlacementHistory,
   createCargo,
   resubmitCargo,
   updateCargo,

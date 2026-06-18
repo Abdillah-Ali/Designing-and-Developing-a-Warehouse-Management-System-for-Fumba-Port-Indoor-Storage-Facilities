@@ -1,6 +1,45 @@
 import { getStoredAuthToken, setStoredAuthToken, clearStoredAuthToken } from "@/lib/portal-access";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000/api";
+const SERVER_CONNECTION_ERROR = "Unable to connect to the server. Please try again later.";
+const LOGIN_ERROR_MESSAGES = Object.freeze({
+  AUTHENTICATION_UNAVAILABLE: "Authentication service is currently unavailable.",
+  DATABASE_UNAVAILABLE: "Unable to access system services. Please contact the administrator.",
+  INVALID_CREDENTIALS: "Invalid username or password.",
+  UNEXPECTED: "An unexpected error occurred. Please try again."
+});
+
+const buildApiError = (message, details = {}) => {
+  const error = new Error(message);
+  Object.assign(error, details);
+  return error;
+};
+
+const getLoginErrorMessage = (response, payload = {}) => {
+  if (response.status === 401) {
+    return LOGIN_ERROR_MESSAGES.INVALID_CREDENTIALS;
+  }
+
+  if (response.status === 429 && payload.message) {
+    return payload.message;
+  }
+
+  if (response.status === 503) {
+    return payload.message === LOGIN_ERROR_MESSAGES.DATABASE_UNAVAILABLE
+      ? LOGIN_ERROR_MESSAGES.DATABASE_UNAVAILABLE
+      : LOGIN_ERROR_MESSAGES.AUTHENTICATION_UNAVAILABLE;
+  }
+
+  if (response.status === 502 || response.status === 504) {
+    return LOGIN_ERROR_MESSAGES.AUTHENTICATION_UNAVAILABLE;
+  }
+
+  if (response.status >= 500) {
+    return LOGIN_ERROR_MESSAGES.UNEXPECTED;
+  }
+
+  return payload.message || LOGIN_ERROR_MESSAGES.UNEXPECTED;
+};
 
 const request = async (path, options = {}) => {
   const headers = new Headers(options.headers || {});
@@ -26,7 +65,7 @@ const request = async (path, options = {}) => {
       body
     });
   } catch (error) {
-    throw new Error("Service is temporarily unavailable.");
+    throw new Error(SERVER_CONNECTION_ERROR);
   }
 
   const payload = await response.json().catch(() => ({}));
@@ -36,12 +75,12 @@ const request = async (path, options = {}) => {
       clearStoredAuthToken();
     }
 
-    const error = new Error(payload.message || "Request could not be completed.");
-    error.errors = payload.errors;
-    error.code = payload.code;
-    error.details = payload.details;
-    error.status = response.status;
-    throw error;
+    throw buildApiError(payload.message || "Request could not be completed.", {
+      errors: payload.errors,
+      code: payload.code,
+      details: payload.details,
+      status: response.status
+    });
   }
 
   return payload;
@@ -60,13 +99,18 @@ export const login = async (username, password) => {
       body: JSON.stringify({ username, password })
     });
   } catch (error) {
-    throw new Error("Service is temporarily unavailable.");
+    throw new Error(SERVER_CONNECTION_ERROR);
   }
 
   const payload = await response.json().catch(() => ({}));
 
   if (!response.ok || payload.success === false) {
-    throw new Error(payload.message || "Login failed.");
+    throw buildApiError(getLoginErrorMessage(response, payload), {
+      errors: payload.errors,
+      code: payload.code,
+      details: payload.details,
+      status: response.status
+    });
   }
 
   if (payload.data?.token) {
@@ -102,6 +146,9 @@ export const getCargo = (params = {}) => {
 
 export const getCargoById = (id) => request(`/cargo/${encodeURIComponent(id)}`);
 export const getMyCargoSubmissions = () => request("/cargo/my/submissions");
+export const getMyPlacementHistory = () => request("/cargo/my/placement-history");
+export const getMyUploadedDocuments = () => request("/cargo/my/documents");
+export const getMyBarcodePrintLogs = () => request("/cargo/my/barcode-prints");
 
 export const createCargo = (payload) => request("/cargo", {
   method: "POST",
@@ -168,6 +215,11 @@ export const getUsers = (params = {}) => {
 };
 
 export const getUserById = (id) => request(`/users/${encodeURIComponent(id)}`);
+export const getUserPendingTasks = (id) => request(`/users/${encodeURIComponent(id)}/pending-tasks`);
+export const reassignUserPendingTasks = (id, payload) => request(`/users/${encodeURIComponent(id)}/reassign-tasks`, {
+  method: "POST",
+  body: payload
+});
 
 export const createUser = (payload) => request("/users", {
   method: "POST",
@@ -237,6 +289,7 @@ export const requestPlacementOverride = (payload) => request("/placement/request
 });
 
 export const getSupervisorDashboard = () => request("/supervisor/dashboard");
+export const getSupervisorReviewHistory = () => request("/supervisor/my/review-history");
 export const getSupervisorReviewConfiguration = () => request("/supervisor/review-configuration");
 export const getSupervisorApprovals = (params = {}) => {
   const search = new URLSearchParams(params);

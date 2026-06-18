@@ -55,6 +55,7 @@ import {
   getSupervisorApprovals,
   getSupervisorDashboard,
   getSupervisorPlacementSummary,
+  getSupervisorReviewHistory,
   getSupervisorReviewConfiguration,
   getZones,
   logout,
@@ -70,6 +71,7 @@ const navigation = [
     icon: PackageSearch,
     children: [
       { label: "Pending Cargo Approvals", icon: ClipboardCheck, to: "/supervisor/cargo/pending-approvals" },
+      { label: "My Review History", icon: Activity, to: "/supervisor/cargo/review-history" },
       { label: "Cargo Records", icon: ClipboardList, to: "/supervisor/cargo/records" },
       { label: "Placement Monitoring", icon: ScanLine, to: "/supervisor/cargo/placement-monitoring" },
       { label: "Exception Handling", icon: AlertTriangle, to: "/supervisor/cargo/exceptions" }
@@ -300,6 +302,10 @@ function ApprovalsPage({ exceptionsOnly = false }) {
             error={approvals.error}
             rows={approvals.rows}
             emptyTitle="No pending approval requests"
+            emptyBody={exceptionsOnly
+              ? "Pending placement overrides for your assigned warehouse will appear here."
+              : "Pending cargo registrations for your assigned warehouse will appear here."
+            }
             columns={[
               { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
               { key: "cargo_barcode", label: "Barcode", className: "font-mono" },
@@ -411,6 +417,39 @@ function ApprovalsPage({ exceptionsOnly = false }) {
         }}
         onSubmit={submitReviewAction}
       />
+    </>
+  );
+}
+
+function ReviewHistoryPage() {
+  const history = useCollection(getSupervisorReviewHistory, "my-review-history");
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Cargo Supervision"
+        title="My Review History"
+        description="Approval, correction, and rejection actions you performed, including previous warehouse assignments."
+      />
+      <div className="flex-1 overflow-auto p-4">
+        <SectionCard title="Review Actions" icon={Activity}>
+          <DataTable
+            loading={history.loading}
+            error={history.error}
+            rows={history.rows}
+            emptyTitle="No review history recorded"
+            columns={[
+              { key: "created_at", label: "Time", render: (row) => formatDateTime(row.created_at || row.performed_at) },
+              { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
+              { key: "cargo_type", label: "Cargo Type" },
+              { key: "warehouse", label: "Warehouse", render: (row) => row.warehouse_code || row.warehouse_name || "Previous warehouse" },
+              { key: "action", label: "Action", className: "font-mono font-semibold" },
+              { key: "registration_status", label: "Registration", render: (row) => <StatusBadge tone={statusTone(row.registration_status)}>{row.registration_status}</StatusBadge> },
+              { key: "remarks", label: "Notes", render: (row) => row.remarks || "No notes" }
+            ]}
+          />
+        </SectionCard>
+      </div>
     </>
   );
 }
@@ -911,6 +950,7 @@ function SupervisorPortal() {
         <Route index element={<DashboardPage />} />
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="cargo/pending-approvals" element={<ApprovalsPage />} />
+        <Route path="cargo/review-history" element={<ReviewHistoryPage />} />
         <Route path="cargo/records" element={<CargoRecordsPage />} />
         <Route path="cargo/placement-monitoring" element={<PlacementPage />} />
         <Route path="cargo/exceptions" element={<ApprovalsPage exceptionsOnly />} />

@@ -6,7 +6,10 @@ const {
   getCargoDocumentContent,
   getCargoDocuments,
   getCargoById,
+  getMyBarcodePrintLogs,
   getMyCargoSubmissions,
+  getMyUploadedDocuments,
+  getMyPlacementHistory,
   printCargoBarcode,
   resubmitCargo,
   updateCargoStatus,
@@ -18,6 +21,9 @@ const router = express.Router();
 
 router.route("/").get(getCargo).post(createCargo);
 router.get("/my/submissions", getMyCargoSubmissions);
+router.get("/my/placement-history", getMyPlacementHistory);
+router.get("/my/documents", getMyUploadedDocuments);
+router.get("/my/barcode-prints", getMyBarcodePrintLogs);
 router.get("/:id/documents", getCargoDocuments);
 router.get("/:id/documents/:documentId/content", getCargoDocumentContent);
 router.post("/:id/documents", uploadCargoDocument);

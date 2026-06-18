@@ -11,6 +11,7 @@ const {
   canStaffViewSubmission,
   captureCorrectionValues,
   completeCargoResubmission,
+  ensurePendingRegistrationApprovals,
   getRejectionReason,
   isOperationallyVisibleToStaff,
   needsStorageRevalidation,
@@ -117,6 +118,25 @@ test("registration status updates use the authoritative field only", async () =>
   assert.match(calls[0].sql, /registration_status = \$1/);
   assert.doesNotMatch(calls[0].sql, /workflow_status/);
   assert.doesNotMatch(calls[0].sql, /\bstatus = \$1/);
+});
+
+test("pending registrations can be reconciled into the supervisor approval queue", async () => {
+  const calls = [];
+  const executor = {
+    query: async (sql, values) => {
+      calls.push({ sql, values });
+      return { rows: [{ id: 4, cargo_id: 12 }] };
+    }
+  };
+
+  await ensurePendingRegistrationApprovals(executor, 3);
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /INSERT INTO approval_requests/);
+  assert.match(calls[0].sql, /c\.registration_status = \$1/);
+  assert.match(calls[0].sql, /c\.warehouse_id = \$2/);
+  assert.match(calls[0].sql, /NOT EXISTS/);
+  assert.deepEqual(calls[0].values, [REGISTRATION_STATUS.PENDING_REVIEW, 3]);
 });
 
 test("resubmission clears active correction markers and records submitted changes", async () => {

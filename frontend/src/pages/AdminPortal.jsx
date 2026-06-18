@@ -16,6 +16,7 @@ import {
   DoorOpen,
   Edit,
   Eye,
+  EyeOff,
   FileWarning,
   Filter,
   HelpCircle,
@@ -90,12 +91,14 @@ import {
   getShifts,
   getSupervisorApprovals,
   getSupervisorReviewConfiguration,
+  getUserPendingTasks,
   getUserSessions,
   getUsers,
   getWarehouses,
   getZones,
   logout,
   printBinBarcode,
+  reassignUserPendingTasks,
   rejectSupervisorApproval,
   resetUserPassword,
   updateBin,
@@ -1089,10 +1092,12 @@ function UsersPage() {
           roles={roles.rows}
           warehouses={warehouses.rows}
           shifts={shifts.rows}
+          users={users.rows}
           referenceLoading={roles.loading || warehouses.loading || shifts.loading}
           currentUserId={currentUserId}
           onCancel={closeDrawer}
           onSave={saveUser}
+          onReassigned={refreshUsers}
         />
       </Drawer>
       <Drawer open={drawerMode === "reset-password"} title="Reset User Password" onClose={closeDrawer}>
@@ -1102,7 +1107,7 @@ function UsersPage() {
   );
 }
 
-function UserForm({ mode, user, roles, warehouses, shifts, referenceLoading, currentUserId, onCancel, onSave }) {
+function UserForm({ mode, user, roles, warehouses, shifts, users = [], referenceLoading, currentUserId, onCancel, onSave, onReassigned }) {
   const [form, setForm] = useState({
     full_name: "",
     username: "",
@@ -1116,6 +1121,11 @@ function UserForm({ mode, user, roles, warehouses, shifts, referenceLoading, cur
   });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [pendingTasks, setPendingTasks] = useState(null);
+  const [pendingTasksLoading, setPendingTasksLoading] = useState(false);
+  const [reassignTargetId, setReassignTargetId] = useState("");
+  const [reassigning, setReassigning] = useState(false);
 
   useEffect(() => {
     setForm({
@@ -1130,6 +1140,9 @@ function UserForm({ mode, user, roles, warehouses, shifts, referenceLoading, cur
       password: ""
     });
     setFormError("");
+    setShowPassword(false);
+    setPendingTasks(null);
+    setReassignTargetId("");
   }, [user, mode]);
 
   const updateField = (field, value) => {
@@ -1146,6 +1159,66 @@ function UserForm({ mode, user, roles, warehouses, shifts, referenceLoading, cur
   const protectedStatus = Boolean(
     (user?.is_system_user && !user?.is_bootstrap_admin) || isCurrentUser
   );
+  const warehouseChanged = mode === "edit"
+    && user?.id
+    && String(user?.warehouse_id || "") !== String(form.warehouse_id || "");
+  const canOwnWarehouseTasks = isWarehouseStaff || isWarehouseSupervisor;
+  const reassignmentCandidates = users.filter((candidate) => (
+    Number(candidate.id) !== Number(user?.id)
+    && candidate.status === "active"
+    && candidate.role_name === selectedRole?.role_name
+    && (!user?.warehouse_id || String(candidate.warehouse_id || "") === String(user.warehouse_id || ""))
+  ));
+
+  useEffect(() => {
+    if (!warehouseChanged || !canOwnWarehouseTasks || !user?.id) {
+      setPendingTasks(null);
+      setReassignTargetId("");
+      return undefined;
+    }
+
+    let active = true;
+    setPendingTasksLoading(true);
+    getUserPendingTasks(user.id)
+      .then((response) => {
+        if (active) setPendingTasks(response.data || null);
+      })
+      .catch((error) => {
+        if (active) {
+          setPendingTasks(null);
+          setFormError(getErrorMessage(error));
+        }
+      })
+      .finally(() => {
+        if (active) setPendingTasksLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [canOwnWarehouseTasks, user?.id, warehouseChanged]);
+
+  const pendingTaskCount = pendingTasks?.total_pending_tasks || 0;
+
+  const reassignPendingTasks = async () => {
+    if (!user?.id || !reassignTargetId) return;
+    setReassigning(true);
+    setFormError("");
+    try {
+      const response = await reassignUserPendingTasks(user.id, {
+        target_user_id: reassignTargetId,
+        reason: "Reassigned before warehouse transfer."
+      });
+      setPendingTasks(response.data?.remaining_pending_tasks || null);
+      setReassignTargetId("");
+      onReassigned?.();
+      toast.success("Pending tasks reassigned.");
+    } catch (error) {
+      setFormError(getErrorMessage(error));
+    } finally {
+      setReassigning(false);
+    }
+  };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -1165,6 +1238,12 @@ function UserForm({ mode, user, roles, warehouses, shifts, referenceLoading, cur
 
     if (form.password) {
       payload.password = form.password;
+    }
+
+    if (warehouseChanged && pendingTaskCount > 0) {
+      setFormError("Cannot transfer this user because they have pending warehouse tasks. Complete or reassign pending tasks before changing warehouse.");
+      setSaving(false);
+      return;
     }
 
     try {
@@ -1229,15 +1308,25 @@ function UserForm({ mode, user, roles, warehouses, shifts, referenceLoading, cur
           </SelectField>
         </FormField>
         <FormField label={mode === "edit" ? "New Password" : "Password"}>
-          <input
-            className={inputClass}
-            type="password"
-            value={form.password}
-            onChange={(event) => updateField("password", event.target.value)}
-            placeholder={mode === "edit" ? "Leave blank to keep current password" : "Minimum 8 characters"}
-            required={mode !== "edit"}
-            minLength={form.password || mode !== "edit" ? 8 : undefined}
-          />
+          <div className="relative">
+            <input
+              className={cn(inputClass, "pr-9")}
+              type={showPassword ? "text" : "password"}
+              value={form.password}
+              onChange={(event) => updateField("password", event.target.value)}
+              placeholder={mode === "edit" ? "Leave blank to keep current password" : "Minimum 8 characters"}
+              required={mode !== "edit"}
+              minLength={form.password || mode !== "edit" ? 8 : undefined}
+            />
+            <button
+              type="button"
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              onClick={() => setShowPassword((current) => !current)}
+              className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              {showPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+            </button>
+          </div>
           <span className="block text-[10px] font-normal leading-4 text-muted-foreground">
             Minimum 8 characters, including uppercase, lowercase, number, and special character.
           </span>
@@ -1260,9 +1349,58 @@ function UserForm({ mode, user, roles, warehouses, shifts, referenceLoading, cur
             : "This administrator account cannot be demoted or disabled from User Management."}
         </div>
       )}
+      {warehouseChanged && canOwnWarehouseTasks && (
+        <div className="space-y-2 rounded border border-warning/30 bg-warning/10 px-3 py-3 text-[11px] text-warning">
+          <div className="font-semibold">Warehouse transfer check</div>
+          {pendingTasksLoading ? (
+            <div>Checking pending warehouse tasks...</div>
+          ) : pendingTaskCount > 0 ? (
+            <>
+              <div>
+                Cannot transfer this user until pending tasks are completed or reassigned.
+              </div>
+              <div className="space-y-1">
+                {pendingTasks.tasks.map((task) => (
+                  <div key={task.code} className="flex items-center justify-between gap-3 rounded border border-warning/25 bg-background/70 px-2 py-1.5">
+                    <span>{task.label}</span>
+                    <strong>{task.count}</strong>
+                  </div>
+                ))}
+              </div>
+              <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+                <SelectField
+                  value={reassignTargetId}
+                  onChange={setReassignTargetId}
+                  disabled={reassigning || reassignmentCandidates.length === 0}
+                >
+                  <option value="">Select reassignment target</option>
+                  {reassignmentCandidates.map((candidate) => (
+                    <option key={candidate.id} value={String(candidate.id)}>
+                      {candidate.full_name || candidate.username}
+                    </option>
+                  ))}
+                </SelectField>
+                <ToolbarButton
+                  icon={reassigning ? Loader2 : RefreshCw}
+                  variant="warning"
+                  disabled={!reassignTargetId || reassigning}
+                  onClick={reassignPendingTasks}
+                >
+                  {reassigning ? "Reassigning" : "Reassign"}
+                </ToolbarButton>
+              </div>
+              {reassignmentCandidates.length === 0 && (
+                <div>No active user with the same role and current warehouse is available for reassignment.</div>
+              )}
+            </>
+          ) : (
+            <div>No pending tasks are blocking this transfer.</div>
+          )}
+        </div>
+      )}
       <div className="flex justify-end gap-2 border-t border-border pt-3">
         <ToolbarButton icon={X} variant="secondary" onClick={onCancel} disabled={saving}>Cancel</ToolbarButton>
-        <ToolbarButton icon={saving ? Loader2 : CheckCircle2} type="submit" disabled={saving || referenceLoading}>
+        <ToolbarButton icon={saving ? Loader2 : CheckCircle2} type="submit" disabled={saving || referenceLoading || pendingTaskCount > 0}>
           {saving ? "Saving" : "Save User"}
         </ToolbarButton>
       </div>

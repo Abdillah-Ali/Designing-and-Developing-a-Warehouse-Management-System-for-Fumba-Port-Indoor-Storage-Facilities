@@ -5,6 +5,7 @@ const {
   PLACEMENT_STATUS,
   REGISTRATION_STATUS
 } = require("../services/cargoWorkflowService");
+const { STAFF_TASK_OWNER_SQL } = require("../services/taskOwnershipService");
 
 const dispatchSelect = `
   SELECT
@@ -41,6 +42,15 @@ const requestDispatchAuthorization = async (req, res, next) => {
     );
     if (cargoResult.rowCount === 0) throw buildError("Cargo record not found.", 404);
     const cargo = cargoResult.rows[0];
+    if (
+      req.auth?.role === "warehouse-staff"
+      && (
+        Number(cargo.warehouse_id) !== Number(req.auth?.warehouseId)
+        || Number(cargo.assigned_staff_id || cargo.created_by || cargo.received_by_user_id) !== Number(req.auth?.userId)
+      )
+    ) {
+      throw buildError("Cargo record not found.", 404);
+    }
     if (cargo.registration_status !== REGISTRATION_STATUS.APPROVED) {
       throw buildError("Cargo registration must be approved before dispatch processing.", 400);
     }
@@ -92,6 +102,14 @@ const getDispatchRequests = async (req, res, next) => {
       values.push(req.auth.warehouseId);
       clauses.push(`c.warehouse_id = $${values.length}`);
     }
+    if (req.auth?.role === "warehouse-staff") {
+      values.push(req.auth?.userId || 0);
+      clauses.push(`(${STAFF_TASK_OWNER_SQL} = $${values.length} OR dr.requested_by = $${values.length})`);
+      if (req.auth?.warehouseId) {
+        values.push(req.auth.warehouseId);
+        clauses.push(`c.warehouse_id = $${values.length}`);
+      }
+    }
     const result = await db.query(
       `${dispatchSelect}
        ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
@@ -118,6 +136,13 @@ const decideDispatchRequest = async (req, res, next, decision) => {
     );
     if (requestResult.rowCount === 0) throw buildError("Dispatch request not found.", 404);
     const request = requestResult.rows[0];
+    if (
+      req.auth?.role === "warehouse-supervisor"
+      && req.auth?.warehouseId
+      && Number(request.warehouse_id) !== Number(req.auth.warehouseId)
+    ) {
+      throw buildError("Dispatch request not found.", 404);
+    }
     if (request.status !== "Pending") {
       throw buildError(`Dispatch request has already been ${request.status.toLowerCase()}.`, 409);
     }
