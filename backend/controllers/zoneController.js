@@ -18,6 +18,17 @@ const numberValue = (value, fallback = 0) => {
   return normalized;
 };
 
+const booleanValue = (value, fallback = false) => {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+
+  const normalized = String(value).trim().toLowerCase();
+  if (["true", "1", "yes"].includes(normalized)) return true;
+  if (["false", "0", "no"].includes(normalized)) return false;
+
+  throw buildError("is_hazard_zone must be true or false.", 400);
+};
+
 const isAdmin = (req) => req.auth?.role === "system-admin";
 
 const zoneSelect = (activeOnly) => `
@@ -147,6 +158,11 @@ const createZone = async (req, res, next) => {
     const zoneType = textValue(req.body.zone_type) || "Standard";
     const status = textValue(req.body.status) || "Active";
     const warehouseId = req.body.warehouse_id;
+    const defaultHazardZone = zoneType.toLowerCase() === "hazardous"
+      || allowedCargoType?.toLowerCase() === "hazardous cargo";
+    const isHazardZone = booleanValue(req.body.is_hazard_zone, defaultHazardZone);
+    const maxWeight = numberValue(req.body.max_weight);
+    const maxVolume = numberValue(req.body.max_volume);
 
     if (!code || !ZONE_CODE_PATTERN.test(code)) {
       throw buildError("Zone code must follow the format Z-A.", 400);
@@ -230,7 +246,10 @@ const updateZone = async (req, res, next) => {
     const zoneType = textValue(req.body.zone_type) || "Standard";
     const maxWeight = numberValue(req.body.max_weight);
     const maxVolume = numberValue(req.body.max_volume);
-    const isHazardZone = req.body.is_hazard_zone === true || zoneType.toLowerCase() === "hazardous";
+    const isHazardZone = booleanValue(
+      req.body.is_hazard_zone,
+      zoneType.toLowerCase() === "hazardous" || allowedCargoType.toLowerCase() === "hazardous cargo"
+    );
 
     await client.query("BEGIN");
 

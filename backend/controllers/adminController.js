@@ -546,6 +546,32 @@ const reassignUserPendingTasks = async (req, res, next) => {
       throw buildError("This user role does not own reassigned warehouse tasks.", 400);
     }
 
+    const reassignedAt = new Date().toISOString();
+    if (isWarehouseSupervisorRole(source.role_name) && reassignment.approvals?.length) {
+      for (const approval of reassignment.approvals) {
+        await client.query(
+          `INSERT INTO cargo_approval_history
+           (cargo_id, action, remarks, metadata, performed_by, warehouse_id_at_action)
+           VALUES ($1, 'APPROVAL_REASSIGNED', $2, $3, $4, $5)`,
+          [
+            approval.cargo_id,
+            reason,
+            JSON.stringify({
+              approval_request_id: approval.id,
+              request_type: approval.request_type,
+              previous_supervisor_id: approval.previous_supervisor_id,
+              new_supervisor_id: approval.new_supervisor_id,
+              reassigned_by: req.auth?.userId || null,
+              reason,
+              reassigned_at: reassignedAt
+            }),
+            req.auth?.userId || null,
+            source.warehouse_id || target.warehouse_id || req.auth?.warehouseId || null
+          ]
+        );
+      }
+    }
+
     await writeAuditLog(
       {
         user_id: req.auth?.userId || null,
@@ -561,7 +587,8 @@ const reassignUserPendingTasks = async (req, res, next) => {
           source_role: source.role_name,
           target_role: target.role_name,
           reassigned_count: reassignment.reassigned_count,
-          reason
+          reason,
+          timestamp: reassignedAt
         }
       },
       client
@@ -978,7 +1005,16 @@ const getRoles = async (req, res, next) => {
 
 const getWarehouses = async (req, res, next) => {
   try {
-    sendRows(res, await fetchWarehouses());
+    const result = await fetchWarehouses();
+    const formattedRows = (result.rows || []).map(row => ({
+      ...row,
+      status: row.status === "active" ? "Active" : row.status === "inactive" ? "Inactive" : row.status
+    }));
+    res.json({
+      success: true,
+      count: result.rowCount,
+      data: formattedRows
+    });
   } catch (error) {
     next(error);
   }
@@ -1237,51 +1273,16 @@ const getProfile = async (req, res, next) => {
       throw buildError("Unauthorized.", 401);
     }
 
-    const userResult = await db.query(
-      `SELECT
-        u.id,
-        u.full_name,
-        u.username,
-        u.email,
-        u.phone_number,
-        u.status,
-        u.role_id,
-        r.role_name,
-        u.warehouse_id,
-        w.warehouse_name,
-        u.shift_id,
-        s.shift_name,
-        u.must_change_password,
-        u.is_system_user,
-        u.is_bootstrap_admin,
-        u.bootstrap_completed,
-        u.created_at
-      FROM users u
-      JOIN roles r ON r.id = u.role_id
-      LEFT JOIN warehouses w ON w.id = u.warehouse_id
-      LEFT JOIN shifts s ON s.id = u.shift_id
-      WHERE u.id = $1`,
-      [userId]
-    );
+    const userResult = await getUserById(userId);
 
     if (userResult.rowCount === 0) {
       throw buildError("User not found.", 404);
     }
 
-    const sessionsResult = await db.query(
-      `SELECT id, login_time, session_status, ip_address
-       FROM user_sessions
-       WHERE user_id = $1
-       ORDER BY login_time DESC
-       LIMIT 10`,
-      [userId]
-    );
-
     res.json({
       success: true,
       data: {
-        user: userResult.rows[0],
-        sessions: sessionsResult.rows
+        user: userResult.rows[0]
       }
     });
   } catch (error) {
@@ -1297,53 +1298,97 @@ const updateProfile = async (req, res, next) => {
       throw buildError("Unauthorized.", 401);
     }
 
-    const email = cleanString(req.body.email);
-    const phone_number = cleanString(req.body.phone_number);
-    const full_name = cleanString(req.body.full_name);
+    const disallowedFields = [
+      "full_name",
+      "username",
+      "role_id",
+      "role_name",
+      "warehouse_id",
+      "shift_id",
+      "status",
+      "must_change_password",
+      "is_system_user",
+      "is_bootstrap_admin",
+      "bootstrap_completed"
+    ];
+    const attemptedReadOnlyFields = disallowedFields.filter((field) => (
+      Object.prototype.hasOwnProperty.call(req.body || {}, field)
+    ));
+    if (attemptedReadOnlyFields.length > 0) {
+      throw buildError("Role, warehouse, shift, status, name, and username cannot be changed from your own profile.", 400);
+    }
 
-    if (!email || !phone_number || !full_name) {
-      throw buildError("Email, phone number, and full name are required.", 400);
+    const payload = {};
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "email")) {
+      payload.email = cleanString(req.body.email);
+      if (!payload.email || !emailPattern.test(payload.email)) {
+        throw buildError("Enter a valid email address.", 400);
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "phone_number")) {
+      payload.phone_number = cleanString(req.body.phone_number);
+      if (!payload.phone_number || !phonePattern.test(payload.phone_number)) {
+        throw buildError("Enter a valid phone number using digits and an optional leading +.", 400);
+      }
+    }
+
+    if (Object.keys(payload).length === 0) {
+      throw buildError("Provide an email address or phone number to update.", 400);
     }
 
     await client.query("BEGIN");
 
-    // Check if email already taken by someone else
-    const emailCheck = await client.query(
-      "SELECT id FROM users WHERE email = $1 AND id <> $2",
-      [email, userId]
-    );
-    if (emailCheck.rowCount > 0) {
-      throw buildError("Email is already in use by another account.", 409);
-    }
-
-    const result = await client.query(
-      `UPDATE users
-       SET email = $1, phone_number = $2, full_name = $3, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $4
-       RETURNING id, full_name, username, email, phone_number`,
-      [email, phone_number, full_name, userId]
-    );
-
-    if (result.rowCount === 0) {
+    const existingResult = await getUserById(userId, client);
+    if (existingResult.rowCount === 0) {
       throw buildError("User not found.", 404);
     }
+
+    const existing = existingResult.rows[0];
+
+    if (payload.email) {
+      const emailCheck = await client.query(
+        "SELECT id FROM users WHERE LOWER(email) = LOWER($1) AND id <> $2",
+        [payload.email, userId]
+      );
+      if (emailCheck.rowCount > 0) {
+        throw buildError("Email is already in use by another account.", 409);
+      }
+    }
+
+    const changedFields = getChangedFields(existing, payload);
+    if (changedFields.length === 0) {
+      throw buildError("No profile details changed.", 400);
+    }
+
+    await patchUser(userId, payload, null, client);
 
     await writeAuditLog(
       {
         user_id: userId,
+        target_user_id: userId,
         action: "UPDATE_PROFILE",
         module: "User Management",
-        description: `Updated profile details for account.`
+        description: `Updated profile details for ${existing.username}.`,
+        metadata: {
+          changed_fields: changedFields,
+          updated_email: changedFields.includes("email"),
+          updated_phone_number: changedFields.includes("phone_number")
+        }
       },
       client
     );
+
+    const updatedResult = await getUserById(userId, client);
 
     await client.query("COMMIT");
 
     res.json({
       success: true,
       message: "Profile updated successfully.",
-      data: result.rows[0]
+      data: {
+        user: updatedResult.rows[0]
+      }
     });
   } catch (error) {
     await client.query("ROLLBACK");
@@ -1361,11 +1406,16 @@ const changePassword = async (req, res, next) => {
       throw buildError("Unauthorized.", 401);
     }
 
-    const currentPassword = req.body.currentPassword;
-    const newPassword = req.body.newPassword;
+    const currentPassword = req.body.currentPassword ?? req.body.current_password;
+    const newPassword = req.body.newPassword ?? req.body.new_password;
+    const confirmPassword = req.body.confirmPassword ?? req.body.confirm_password;
 
-    if (!currentPassword || !newPassword) {
-      throw buildError("Current password and new password are required.", 400);
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      throw buildError("Current password, new password, and confirmation are required.", 400);
+    }
+
+    if (newPassword !== confirmPassword) {
+      throw buildError("New password and confirmation do not match.", 400);
     }
 
     if (!passwordPattern.test(newPassword)) {
@@ -1382,11 +1432,18 @@ const changePassword = async (req, res, next) => {
          u.username,
          u.role_id,
          r.role_name,
+         u.warehouse_id,
+         w.warehouse_name,
+         u.shift_id,
+         s.shift_name,
          u.must_change_password,
+         u.is_system_user,
          u.is_bootstrap_admin,
          u.bootstrap_completed
        FROM users u
        JOIN roles r ON r.id = u.role_id
+       LEFT JOIN warehouses w ON w.id = u.warehouse_id
+       LEFT JOIN shifts s ON s.id = u.shift_id
        WHERE u.id = $1`,
       [userId]
     );
@@ -1430,7 +1487,10 @@ const changePassword = async (req, res, next) => {
         target_user_id: userId,
         action: "CHANGE_PASSWORD",
         module: "User Management",
-        description: `Password changed for user ${user.username}.`
+        description: `Password changed for user ${user.username}.`,
+        metadata: {
+          timestamp: new Date().toISOString()
+        }
       },
       client
     );

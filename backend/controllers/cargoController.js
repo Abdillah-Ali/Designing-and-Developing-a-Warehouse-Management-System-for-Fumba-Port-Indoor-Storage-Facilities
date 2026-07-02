@@ -28,6 +28,11 @@ const {
 const { findPossibleDuplicateCargo } = require("../services/cargoDuplicateService");
 const { writeAuditLog } = require("../models/adminModel");
 const { STAFF_TASK_OWNER_SQL } = require("../services/taskOwnershipService");
+const { getPlacementActivity } = require("../services/placementActivityService");
+const {
+  notifyCargoRegistrationPending,
+  notifyWarehouseAlert
+} = require("../services/notificationService");
 
 const allowedDocumentTypes = new Map(Object.entries(documentTypes));
 
@@ -361,6 +366,31 @@ const getCargoById = async (req, res, next) => {
   }
 };
 
+const getCargoPlacementActivity = async (req, res, next) => {
+  try {
+    const cargo = await findCargoForAccess(db, req.params.id);
+    if (!cargo) throw buildError("Cargo record not found.", 404);
+    assertCargoReadable(req, cargo);
+
+    const result = await getPlacementActivity({
+      auth: req.auth,
+      filters: req.query,
+      cargoIdentifier: cargo.id
+    });
+
+    res.json({
+      success: true,
+      count: result.rows.length,
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+      data: result.rows
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 const createCargo = async (req, res, next) => {
   const client = await db.pool.connect();
 
@@ -472,7 +502,7 @@ const createCargo = async (req, res, next) => {
       [
         insertResult.rows[0].id,
         null,
-        "Placement Queue",
+        "Supervisor Review Queue",
         req.auth?.username || payload.received_by || "System",
         req.auth?.userId || null,
         req.auth?.warehouseId || null,
@@ -480,15 +510,16 @@ const createCargo = async (req, res, next) => {
       ]
     );
 
-    await client.query(
+    const approvalResult = await client.query(
       `INSERT INTO approval_requests
        (request_type, cargo_id, requested_by, warehouse_id_at_request, reason, status, request_data)
-       VALUES ('CARGO_REGISTRATION', $1, $2, $3, $4, 'Pending', $5)`,
+       VALUES ('CARGO_REGISTRATION', $1, $2, $3, $4, 'Pending', $5)
+       RETURNING id`,
       [
         insertResult.rows[0].id,
         req.auth?.userId || null,
         req.auth?.warehouseId || null,
-        "New cargo registration requires independent Warehouse Supervisor review and is immediately available for placement.",
+        "New cargo registration requires independent Warehouse Supervisor review before placement can begin.",
         JSON.stringify({
           cargo_condition: payload.cargo_condition,
           cargo_type: payload.cargo_type,
@@ -503,7 +534,7 @@ const createCargo = async (req, res, next) => {
        VALUES ($1, 'REGISTRATION_SUBMITTED', $2, $3, $4)`,
       [
         insertResult.rows[0].id,
-        "Cargo registered, added to the placement queue, and submitted for Warehouse Supervisor review.",
+        "Cargo registered and submitted for Warehouse Supervisor review. Placement is blocked until approval.",
         req.auth?.userId || null,
         req.auth?.warehouseId || null
       ]
@@ -520,8 +551,18 @@ const createCargo = async (req, res, next) => {
           placement_status: placementStatus,
           warehouse_id: req.auth?.warehouseId || null,
           supervisor_review_required: true,
-          placement_available: true
+          placement_available: false,
+          placement_blocked_until: REGISTRATION_STATUS.APPROVED
         }
+      },
+      client
+    );
+
+    await notifyCargoRegistrationPending(
+      {
+        cargo: insertResult.rows[0],
+        approvalRequestId: approvalResult.rows[0]?.id || null,
+        actorId: req.auth?.userId || null
       },
       client
     );
@@ -676,6 +717,14 @@ const resubmitCargo = async (req, res, next) => {
           correction_fields: resubmission.correctionFields,
           changes: resubmission.changes
         }
+      },
+      client
+    );
+    await notifyCargoRegistrationPending(
+      {
+        cargo: resubmission.cargo,
+        approvalRequestId: null,
+        actorId: req.auth?.userId || null
       },
       client
     );
@@ -1088,6 +1137,26 @@ const updateCargo = async (req, res, next) => {
             req.auth?.warehouseId || updatedCargo.warehouse_id || null
           ]
         );
+
+        if (relocationRequired) {
+          await notifyWarehouseAlert(
+            {
+              title: "Cargo requires relocation after correction",
+              message: `Cargo ${updatedCargo.cargo_id} requires relocation after correction. ${relocationReason}`,
+              warehouseId: updatedCargo.warehouse_id || req.auth?.warehouseId || null,
+              relatedEntityType: "cargo",
+              relatedEntityId: updatedCargo.id,
+              priority: "high",
+              actorId: req.auth?.userId || null,
+              metadata: {
+                cargo_id: updatedCargo.id,
+                cargo_identifier: updatedCargo.cargo_id,
+                relocation_reason: relocationReason
+              }
+            },
+            client
+          );
+        }
       }
     }
 
@@ -1244,6 +1313,7 @@ const deleteCargo = async (req, res, next) => {
 module.exports = {
   getCargo,
   getCargoById,
+  getCargoPlacementActivity,
   getMyCargoSubmissions,
   getMyBarcodePrintLogs,
   getMyUploadedDocuments,

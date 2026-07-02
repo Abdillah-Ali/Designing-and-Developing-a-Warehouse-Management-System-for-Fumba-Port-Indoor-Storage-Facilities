@@ -12,7 +12,6 @@ import {
   PackageSearch,
   Rows3,
   ScanLine,
-  ShieldCheck,
   SquareStack,
   Truck,
   UserCircle2,
@@ -24,7 +23,6 @@ import {
   DataTable,
   EmptyState,
   ErrorState,
-  LoadingState,
   OperationalStatCard,
   PageHeader,
   SectionCard,
@@ -33,7 +31,11 @@ import {
 import { CargoReviewModal } from "@/components/wms/CargoReviewModal";
 import { DecisionNotesModal } from "@/components/wms/DecisionNotesModal";
 import { ManualPlacementSetting } from "@/components/wms/ManualPlacementSetting";
+import { PlacementActivityPanel } from "@/components/wms/PlacementActivityTimeline";
 import { ReviewActionModal } from "@/components/wms/ReviewActionModal";
+import { HeaderActions } from "@/components/wms/HeaderActions";
+import { NotificationsPage } from "@/components/wms/NotificationsPage";
+import { AccountProfilePage } from "@/components/wms/ProfilePage";
 import { cn } from "@/lib/utils";
 import {
   formatCount,
@@ -51,10 +53,8 @@ import {
   getCargo,
   getCargoById,
   getDispatchAuthorizationRequests,
-  getProfile,
   getSupervisorApprovals,
   getSupervisorDashboard,
-  getSupervisorPlacementSummary,
   getSupervisorReviewHistory,
   getSupervisorReviewConfiguration,
   getZones,
@@ -73,7 +73,7 @@ const navigation = [
       { label: "Pending Cargo Approvals", icon: ClipboardCheck, to: "/supervisor/cargo/pending-approvals" },
       { label: "My Review History", icon: Activity, to: "/supervisor/cargo/review-history" },
       { label: "Cargo Records", icon: ClipboardList, to: "/supervisor/cargo/records" },
-      { label: "Placement Monitoring", icon: ScanLine, to: "/supervisor/cargo/placement-monitoring" },
+      { label: "Placement Activity", icon: ScanLine, to: "/supervisor/cargo/placement-monitoring" },
       { label: "Exception Handling", icon: AlertTriangle, to: "/supervisor/cargo/exceptions" }
     ]
   },
@@ -194,10 +194,7 @@ function SupervisorLayout({ children }) {
           <div className="text-base font-semibold">Fumba Port WMS</div>
           <div className="text-[11px] text-white/75">Warehouse Supervision</div>
         </div>
-        <div className="flex items-center gap-2 text-sm font-medium">
-          <ShieldCheck className="h-5 w-5" />
-          Warehouse Supervisor
-        </div>
+        <HeaderActions />
       </header>
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <SupervisorSidebar />
@@ -531,31 +528,14 @@ function CargoRecordsPage() {
 }
 
 function PlacementPage() {
-  const [state, setState] = useState({ summary: null, loading: true, error: "" });
-
-  useEffect(() => {
-    getSupervisorPlacementSummary()
-      .then((response) => setState({ summary: response.data || {}, loading: false, error: "" }))
-      .catch((error) => setState({ summary: null, loading: false, error: getErrorMessage(error) }));
-  }, []);
-
-  const summary = state.summary || {};
-
   return (
     <>
-      <PageHeader eyebrow="Cargo Supervision" title="Placement Monitoring" description="Count-only placement summary for the assigned warehouse. Raw validation records remain restricted to System Administrators." />
+      <PageHeader eyebrow="Cargo Supervision" title="Placement Activity" description="Warehouse-scoped placement activity, failed attempts, relocations, and override workflow." />
       <div className="flex-1 overflow-auto p-4">
-        {state.error && <ErrorState message={state.error} />}
         <div className="mb-3">
           <ManualPlacementSetting />
         </div>
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-          <OperationalStatCard title="Validation Attempts Today" icon={ScanLine} loading={state.loading} value={summary.validation_attempts_today} emptyTitle="No placement attempts today" tone="info" />
-          <OperationalStatCard title="Successful Today" icon={CheckCircle2} loading={state.loading} value={summary.successful_placements_today} emptyTitle="No successful placements today" tone="success" />
-          <OperationalStatCard title="Rejected Today" icon={XCircle} loading={state.loading} value={summary.rejected_placements_today} emptyTitle="No rejected placements today" tone="destructive" />
-          <OperationalStatCard title="Stored Cargo Today" icon={Warehouse} loading={state.loading} value={summary.stored_cargo_today} emptyTitle="No cargo stored today" tone="success" />
-          <OperationalStatCard title="Pending Overrides" icon={ClipboardCheck} loading={state.loading} value={summary.pending_placement_approvals} emptyTitle="No pending placement overrides" tone="warning" />
-        </div>
+        <PlacementActivityPanel title="Warehouse Placement Activity" />
       </div>
     </>
   );
@@ -918,28 +898,11 @@ function DispatchPage({ approved = false }) {
 }
 
 function ProfilePage() {
-  const [state, setState] = useState({ profile: null, loading: true, error: "" });
-  useEffect(() => {
-    getProfile()
-      .then((response) => setState({ profile: response.data?.user, loading: false, error: "" }))
-      .catch((error) => setState({ profile: null, loading: false, error: getErrorMessage(error) }));
-  }, []);
   return (
-    <>
-      <PageHeader eyebrow="Profile" title="Warehouse Supervisor Profile" description="Current role, warehouse assignment, and shift context." />
-      <div className="flex-1 overflow-auto p-4">
-        <SectionCard title="Supervisor Assignment" icon={UserCircle2}>
-          {state.loading ? <LoadingState /> : state.error ? <ErrorState message={state.error} /> : (
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4 text-xs">
-              <div className="rounded border p-3"><div className="text-muted-foreground">Name</div><div className="mt-1 font-semibold">{state.profile?.full_name}</div></div>
-              <div className="rounded border p-3"><div className="text-muted-foreground">Role</div><div className="mt-1 font-semibold">Warehouse Supervisor</div></div>
-              <div className="rounded border p-3"><div className="text-muted-foreground">Warehouse</div><div className="mt-1 font-semibold">{state.profile?.warehouse_name || "Not assigned"}</div></div>
-              <div className="rounded border p-3"><div className="text-muted-foreground">Shift</div><div className="mt-1 font-semibold">{state.profile?.shift_name || "Not assigned"}</div></div>
-            </div>
-          )}
-        </SectionCard>
-      </div>
-    </>
+    <AccountProfilePage
+      title="Warehouse Supervisor Profile"
+      description="Your authenticated account details, contact information, warehouse assignment, and shift."
+    />
   );
 }
 
@@ -961,6 +924,7 @@ function SupervisorPortal() {
         <Route path="warehouse/bins" element={<WarehousePage scope="bins" />} />
         <Route path="dispatch/requests" element={<DispatchPage />} />
         <Route path="dispatch/approved" element={<DispatchPage approved />} />
+        <Route path="notifications" element={<NotificationsPage />} />
         <Route path="profile" element={<ProfilePage />} />
         <Route path="*" element={<Navigate to="/supervisor" replace />} />
       </Routes>

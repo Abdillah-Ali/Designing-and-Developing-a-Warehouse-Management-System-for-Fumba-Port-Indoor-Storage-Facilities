@@ -53,7 +53,10 @@ const CORRECTION_FIELDS = Object.freeze({
 const NUMERIC_CORRECTION_FIELDS = new Set(["quantity", "weight", "volume"]);
 
 const CARGO_NOT_OPERATIONAL_MESSAGE =
-  "This cargo is unavailable for warehouse placement.";
+  "Only approved cargo can enter the warehouse placement workflow.";
+
+const PLACEMENT_APPROVAL_REQUIRED_MESSAGE =
+  "Cargo has not yet been approved by the Warehouse Supervisor. Placement cannot begin until registration is approved.";
 
 const isOperationallyVisibleToStaff = () => true;
 
@@ -86,9 +89,46 @@ const canStaffEditCargo = (cargo, userId) => (
 
 const canCargoBePlaced = (cargo) => (
   !cargo?.is_deleted
-  && cargo?.registration_status !== REGISTRATION_STATUS.REJECTED
+  && cargo?.registration_status === REGISTRATION_STATUS.APPROVED
   && cargo?.placement_status !== PLACEMENT_STATUS.DISPATCHED
 );
+
+const getCargoPlacementBlock = (cargo) => {
+  if (cargo?.is_deleted) {
+    return {
+      reason: "Cargo Archived",
+      detail: CARGO_NOT_OPERATIONAL_MESSAGE
+    };
+  }
+  if (cargo?.placement_status === PLACEMENT_STATUS.DISPATCHED) {
+    return {
+      reason: "Cargo Dispatched",
+      detail: "Dispatched cargo cannot be placed again."
+    };
+  }
+  if (cargo?.registration_status === REGISTRATION_STATUS.REJECTED) {
+    return {
+      reason: "Registration Rejected",
+      detail: "Rejected cargo cannot be placed in warehouse storage."
+    };
+  }
+  if (cargo?.registration_status === REGISTRATION_STATUS.CORRECTION_REQUIRED) {
+    return {
+      reason: "Correction Required",
+      detail: "Cargo registration requires correction before placement can begin."
+    };
+  }
+  if (cargo?.registration_status !== REGISTRATION_STATUS.APPROVED) {
+    return {
+      reason: "Pending Supervisor Approval",
+      detail: PLACEMENT_APPROVAL_REQUIRED_MESSAGE
+    };
+  }
+  return {
+    reason: "Cargo Not Available",
+    detail: CARGO_NOT_OPERATIONAL_MESSAGE
+  };
+};
 
 const needsStorageRevalidation = (updatedFields = []) => (
   updatedFields.some((field) => REVALIDATION_FIELDS.includes(field))
@@ -199,7 +239,7 @@ const ensurePendingRegistrationApprovals = async (executor, warehouseId = null) 
        c.id,
        COALESCE(c.created_by, c.received_by_user_id),
        c.warehouse_id,
-       'Cargo registration requires independent Warehouse Supervisor review and may proceed to placement while review is pending.',
+       'Cargo registration requires independent Warehouse Supervisor review before placement can begin.',
        'Pending',
        jsonb_build_object(
          'cargo_condition', c.cargo_condition,
@@ -347,6 +387,7 @@ module.exports = {
   CARGO_NOT_OPERATIONAL_MESSAGE,
   CORRECTION_FIELDS,
   PLACEMENT_STATUS,
+  PLACEMENT_APPROVAL_REQUIRED_MESSAGE,
   REGISTRATION_STATUS,
   REJECTION_REASONS,
   REVIEW_QUEUE_STATUSES,
@@ -357,6 +398,7 @@ module.exports = {
   captureCorrectionValues,
   completeCargoResubmission,
   ensurePendingRegistrationApprovals,
+  getCargoPlacementBlock,
   getStaffHistoricalOwnerId,
   getStaffTaskOwnerId,
   getCorrectionContext,

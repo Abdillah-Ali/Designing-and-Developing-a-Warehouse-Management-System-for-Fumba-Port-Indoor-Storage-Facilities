@@ -13,7 +13,6 @@ import {
   ScanLine,
   SquareStack,
   Truck,
-  UserCircle2,
   Warehouse
 } from "lucide-react";
 import { AppLayout } from "@/components/wms/AppLayout";
@@ -22,6 +21,9 @@ import { CargoCorrectionModal } from "@/components/wms/CargoCorrectionModal";
 import { DetailForm } from "@/components/wms/DetailForm";
 import { EnterpriseModal } from "@/components/wms/EnterpriseModal";
 import { PlacementSessionModal } from "@/components/wms/PlacementSessionModal";
+import { PlacementActivityPanel } from "@/components/wms/PlacementActivityTimeline";
+import { NotificationsPage } from "@/components/wms/NotificationsPage";
+import { AccountProfilePage } from "@/components/wms/ProfilePage";
 import {
   DataTable,
   ErrorState,
@@ -43,7 +45,6 @@ import {
   getCargo,
   getLevels,
   getMyCargoSubmissions,
-  getMyPlacementHistory,
   getRacks,
   getZones,
   printCargoBarcode,
@@ -118,6 +119,47 @@ function formatCapacity(record) {
       <div className="text-muted-foreground">{formatMeasure(currentVolume, "m³")} / {formatMeasure(maxVolume, "m³")}</div>
     </div>
   );
+}
+
+function placementGate(record) {
+  if (record?.placement_status === "Dispatched") {
+    return {
+      canPlace: false,
+      label: "Dispatched",
+      tone: "released",
+      message: "Dispatched cargo cannot be placed again."
+    };
+  }
+  if (record?.registration_status === "Approved") {
+    return {
+      canPlace: true,
+      label: "Ready for Placement",
+      tone: "success",
+      message: "Cargo is approved and ready for placement."
+    };
+  }
+  if (record?.registration_status === "Correction Required") {
+    return {
+      canPlace: false,
+      label: "Awaiting Correction",
+      tone: "warning",
+      message: "Cargo must be corrected and approved before placement."
+    };
+  }
+  if (record?.registration_status === "Rejected") {
+    return {
+      canPlace: false,
+      label: "Rejected",
+      tone: "destructive",
+      message: "Rejected cargo is not eligible for placement."
+    };
+  }
+  return {
+    canPlace: false,
+    label: "Pending Supervisor Approval",
+    tone: "pending",
+    message: "Placement cannot begin until supervisor approval is complete."
+  };
 }
 
 function useCargo(status) {
@@ -201,7 +243,7 @@ function DashboardPage() {
   const pendingPlacement = useMemo(
     () => cargo.filter((record) =>
       record.placement_status === "Unplaced"
-      && record.registration_status !== "Rejected"
+      && record.registration_status === "Approved"
     ),
     [cargo]
   );
@@ -412,35 +454,45 @@ function PlacementQueuePanel() {
             tableClassName="!min-w-0 table-fixed"
             containerClassName="overflow-hidden"
             columns={[
-              { key: "cargo_id", label: "Cargo ID", headerClassName: "w-[18%] whitespace-nowrap", className: "truncate whitespace-nowrap font-mono font-semibold" },
-              { key: "cargo_type", label: "Cargo Type", headerClassName: "w-[17%] whitespace-nowrap", className: "truncate whitespace-nowrap" },
+              { key: "cargo_id", label: "Cargo ID", headerClassName: "w-[15%] whitespace-nowrap", className: "truncate whitespace-nowrap font-mono font-semibold" },
+              { key: "cargo_type", label: "Cargo Type", headerClassName: "w-[14%] whitespace-nowrap", className: "truncate whitespace-nowrap" },
               {
                 key: "placement_status",
                 label: "Placement Status",
-                headerClassName: "w-[18%] whitespace-nowrap",
+                headerClassName: "w-[14%] whitespace-nowrap",
                 className: "whitespace-nowrap",
                 render: (row) => <StatusBadge tone={statusTone(row.placement_status)}>{row.placement_status}</StatusBadge>
               },
               {
+                key: "approval_gate",
+                label: "Queue Status",
+                headerClassName: "w-[18%] whitespace-nowrap",
+                className: "whitespace-nowrap",
+                render: (row) => {
+                  const gate = placementGate(row);
+                  return <StatusBadge tone={gate.tone}>{gate.label}</StatusBadge>;
+                }
+              },
+              {
                 key: "location",
                 label: "Current Location",
-                headerClassName: "w-[17%] whitespace-nowrap",
+                headerClassName: "w-[16%] whitespace-nowrap",
                 className: "truncate whitespace-nowrap",
                 render: (row) => row.location || "Not placed"
               },
               {
                 key: "actions",
                 label: "Actions",
-                headerClassName: "w-[30%] whitespace-nowrap",
+                headerClassName: "w-[23%] whitespace-nowrap",
                 className: "overflow-hidden whitespace-nowrap",
                 render: (row) => {
-                  const canStart = row.registration_status !== "Rejected"
-                    && row.placement_status !== "Dispatched";
+                  const gate = placementGate(row);
                   return (
                     <div className="flex min-w-0 flex-nowrap items-center gap-1">
                       <button
                         type="button"
-                        disabled={!canStart}
+                        title={gate.message}
+                        disabled={!gate.canPlace}
                         onClick={() => startPlacement(row)}
                         className="min-w-0 whitespace-nowrap rounded bg-success px-1.5 py-1 text-[9px] font-semibold text-success-foreground disabled:opacity-40"
                       >
@@ -659,51 +711,9 @@ function RegistrationReviewsPanel() {
 }
 
 function PlacementHistoryPanel() {
-  const [records, setRecords] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let active = true;
-    setLoading(true);
-    setError("");
-
-    getMyPlacementHistory()
-      .then((response) => {
-        if (active) setRecords(response.data || []);
-      })
-      .catch((loadError) => {
-        if (active) setError(getErrorMessage(loadError));
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, []);
-
   return (
     <div className="h-full overflow-auto p-3">
-      <SectionCard title="My Placement History" icon={PackageCheck}>
-        <DataTable
-          loading={loading}
-          error={error}
-          rows={records}
-          emptyTitle="No placement activity recorded"
-          tableClassName="!min-w-0 table-fixed"
-          containerClassName="overflow-hidden"
-          columns={[
-            { key: "created_at", label: "Time", headerClassName: "w-[18%]", render: (row) => formatDateTime(row.created_at) },
-            { key: "cargo_identifier", label: "Cargo ID", headerClassName: "w-[16%]", className: "truncate font-mono font-semibold" },
-            { key: "movement_type", label: "Action", headerClassName: "w-[16%]", render: (row) => row.movement_type || row.action || "Movement" },
-            { key: "warehouse", label: "Warehouse", headerClassName: "w-[16%]", render: (row) => row.warehouse_code || row.warehouse_name || "Previous warehouse" },
-            { key: "from_location", label: "From", headerClassName: "w-[17%]", className: "truncate", render: (row) => row.from_location || "Start" },
-            { key: "to_location", label: "To", headerClassName: "w-[17%]", className: "truncate", render: (row) => row.to_location || "Not recorded" }
-          ]}
-        />
-      </SectionCard>
+      <PlacementActivityPanel title="My Placement Activity" />
     </div>
   );
 }
@@ -723,7 +733,7 @@ const registrationWorkspaceTabs = [
   { id: "registration", label: "Cargo Registration", icon: ClipboardList },
   { id: "reviews", label: "My Registration Reviews", icon: ClipboardCheck },
   { id: "placement", label: "Placement Queue", icon: PackagePlus },
-  { id: "placement-history", label: "My Placement History", icon: PackageCheck }
+  { id: "placement-history", label: "My Placement Activity", icon: PackageCheck }
 ];
 
 function CompactCargoList({ records, loading, error, emptyTitle }) {
@@ -1399,53 +1409,10 @@ function DispatchOperationPage({ mode }) {
 
 function ProfilePage() {
   return (
-    <>
-      <PageHeader
-        eyebrow="Profile"
-        title="Warehouse Staff Profile"
-        description="Role context for the current warehouse operations session."
-      />
-      <div className="flex-1 overflow-auto p-4">
-        <div className="grid gap-3 lg:grid-cols-3">
-          <SectionCard title="User Profile" icon={UserCircle2}>
-            <div className="space-y-3 text-xs">
-              <div className="rounded border border-border bg-muted/20 p-3">
-                <div className="text-[11px] font-semibold text-muted-foreground">Name</div>
-                <div className="mt-1 font-semibold">Warehouse Staff</div>
-              </div>
-              <div className="rounded border border-border bg-muted/20 p-3">
-                <div className="text-[11px] font-semibold text-muted-foreground">Role</div>
-                <div className="mt-1"><StatusBadge tone="released">Warehouse Staff</StatusBadge></div>
-              </div>
-            </div>
-          </SectionCard>
-
-          <SectionCard title="Operational Assignment" icon={Warehouse}>
-            <div className="space-y-3 text-xs">
-              <div className="rounded border border-border bg-muted/20 p-3">
-                <div className="text-[11px] font-semibold text-muted-foreground">Current Shift</div>
-                <div className="mt-1 font-semibold">Shift not assigned</div>
-              </div>
-              <div className="rounded border border-border bg-muted/20 p-3">
-                <div className="text-[11px] font-semibold text-muted-foreground">Active Warehouse</div>
-                <div className="mt-1 font-semibold">Warehouse not assigned</div>
-              </div>
-            </div>
-          </SectionCard>
-
-          <SectionCard title="Role Responsibilities" icon={ClipboardList}>
-            <div className="space-y-2 text-xs text-muted-foreground">
-              <div className="rounded border border-border bg-muted/20 px-3 py-2">Receiving cargo</div>
-              <div className="rounded border border-border bg-muted/20 px-3 py-2">Registering cargo</div>
-              <div className="rounded border border-border bg-muted/20 px-3 py-2">Physical placement</div>
-              <div className="rounded border border-border bg-muted/20 px-3 py-2">Barcode-assisted storage operations</div>
-              <div className="rounded border border-border bg-muted/20 px-3 py-2">Cargo tracking</div>
-              <div className="rounded border border-border bg-muted/20 px-3 py-2">Dispatch preparation</div>
-            </div>
-          </SectionCard>
-        </div>
-      </div>
-    </>
+    <AccountProfilePage
+      title="Warehouse Staff Profile"
+      description="Your authenticated account details, contact information, warehouse assignment, and shift."
+    />
   );
 }
 
@@ -1490,6 +1457,7 @@ const Index = () => {
         <Route path="dispatch/queue" element={<DispatchOperationPage mode="queue" />} />
         <Route path="dispatch/gate-release" element={<DispatchOperationPage mode="gate" />} />
         <Route path="dispatch/released" element={<DispatchOperationPage mode="released" />} />
+        <Route path="notifications" element={<NotificationsPage />} />
         <Route path="profile" element={<ProfilePage />} />
         <Route path="*" element={<Navigate to="/staff" replace />} />
       </Routes>

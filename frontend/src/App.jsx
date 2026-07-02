@@ -73,10 +73,6 @@ function PasswordChangeGate() {
     return <Navigate to="/bootstrap-admin-setup" replace />;
   }
 
-  if (!mustChangeStoredPassword()) {
-    return <Navigate to={getPortalDefaultPath(activeRole)} replace />;
-  }
-
   return <ChangePassword />;
 }
 

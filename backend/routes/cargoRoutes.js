@@ -10,6 +10,7 @@ const {
   getMyCargoSubmissions,
   getMyUploadedDocuments,
   getMyPlacementHistory,
+  getCargoPlacementActivity,
   printCargoBarcode,
   resubmitCargo,
   updateCargoStatus,
@@ -24,6 +25,7 @@ router.get("/my/submissions", getMyCargoSubmissions);
 router.get("/my/placement-history", getMyPlacementHistory);
 router.get("/my/documents", getMyUploadedDocuments);
 router.get("/my/barcode-prints", getMyBarcodePrintLogs);
+router.get("/:id/placement-activity", getCargoPlacementActivity);
 router.get("/:id/documents", getCargoDocuments);
 router.get("/:id/documents/:documentId/content", getCargoDocumentContent);
 router.post("/:id/documents", uploadCargoDocument);

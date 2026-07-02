@@ -1,5 +1,6 @@
 const db = require("../config/db");
 const { buildError } = require("../utils/apiError");
+const { notifyWarehouseAlert } = require("../services/notificationService");
 
 const BIN_CODE_PATTERN = /^BIN-([A-Z]\d{2})-(L[1-9]\d*)-(\d{2})$/;
 const BIN_STATUSES = ["Available", "Occupied", "Full", "Reserved", "Blocked", "Maintenance", "Inactive"];
@@ -339,7 +340,8 @@ const updateBinStatus = async (req, res, next) => {
 
     await client.query("BEGIN");
     const binResult = await client.query(
-      `SELECT b.*, l.active AS level_active, r.active AS rack_active, z.active AS zone_active
+      `SELECT b.*, z.warehouse_id,
+              l.active AS level_active, r.active AS rack_active, z.active AS zone_active
        FROM bins b
        JOIN levels l ON l.id = b.level_id
        JOIN racks r ON r.id = l.rack_id
@@ -402,6 +404,28 @@ const updateBinStatus = async (req, res, next) => {
        VALUES ($1, $2, 'Warehouse Configuration', $3)`,
       [req.auth?.userId || null, actions[status], `Changed bin ${bin.code} status to ${status}.`]
     );
+
+    if (["Blocked", "Maintenance", "Full"].includes(status)) {
+      await notifyWarehouseAlert(
+        {
+          title: `Bin ${result.rows[0].barcode || bin.barcode} is ${status.toLowerCase()}`,
+          message: status === "Full"
+            ? `Bin ${result.rows[0].barcode || bin.barcode} is full.`
+            : `Bin ${result.rows[0].barcode || bin.barcode} is now ${status.toLowerCase()}.`,
+          warehouseId: bin.warehouse_id || req.auth?.warehouseId || null,
+          relatedEntityType: "bin",
+          relatedEntityId: result.rows[0].id,
+          priority: status === "Full" ? "urgent" : "high",
+          actorId: req.auth?.userId || null,
+          metadata: {
+            bin_id: result.rows[0].id,
+            bin_barcode: result.rows[0].barcode || bin.barcode,
+            status
+          }
+        },
+        client
+      );
+    }
     await client.query("COMMIT");
     res.json({ success: true, data: result.rows[0] });
   } catch (error) {

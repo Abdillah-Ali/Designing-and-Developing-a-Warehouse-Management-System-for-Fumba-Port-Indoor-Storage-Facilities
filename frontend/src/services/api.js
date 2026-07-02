@@ -287,6 +287,21 @@ export const updatePlacementSettings = (manualPlacementEnabled) => request("/pla
 });
 export const getPlacementLogs = () => request("/placement/logs");
 export const getPlacementFailures = () => request("/placement/failures");
+export const getPlacementActivity = (params = {}) => {
+  const search = new URLSearchParams(params);
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  return request(`/placement/activity${suffix}`);
+};
+export const getPlacementActivitySummary = (params = {}) => {
+  const search = new URLSearchParams(params);
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  return request(`/placement/activity/summary${suffix}`);
+};
+export const getCargoPlacementActivity = (id, params = {}) => {
+  const search = new URLSearchParams(params);
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  return request(`/cargo/${encodeURIComponent(id)}/placement-activity${suffix}`);
+};
 export const requestPlacementOverride = (payload) => request("/placement/request-override", {
   method: "POST",
   body: payload
@@ -306,6 +321,10 @@ export const approveSupervisorApproval = (id, decisionNotes = "") => request(`/s
   body: typeof decisionNotes === "string"
     ? { decision_notes: decisionNotes }
     : decisionNotes
+});
+export const emergencyApproveSupervisorApproval = (id, payload = {}) => request(`/supervisor/approvals/${encodeURIComponent(id)}/emergency-approve`, {
+  method: "POST",
+  body: payload
 });
 export const rejectSupervisorApproval = (id, decisionNotes = "") => request(`/supervisor/approvals/${encodeURIComponent(id)}/reject`, {
   method: "POST",
@@ -345,17 +364,43 @@ export const rejectDispatchAuthorization = (id, decisionNotes = "") => request(`
     : decisionNotes
 });
 
-// Profile endpoints
-export const getProfile = () => request("/auth/profile");
+// Notification endpoints
+export const getNotifications = (params = {}) => {
+  const search = new URLSearchParams(params);
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  return request(`/notifications${suffix}`);
+};
 
-export const updateProfile = (payload) => request("/auth/profile", {
-  method: "PUT",
+export const getUnreadNotificationCount = () => request("/notifications/unread-count");
+
+export const markNotificationRead = (id) => request(`/notifications/${encodeURIComponent(id)}/read`, {
+  method: "PATCH"
+});
+
+export const markAllNotificationsRead = () => request("/notifications/read-all", {
+  method: "PATCH"
+});
+
+export const archiveNotification = (id) => request(`/notifications/${encodeURIComponent(id)}/archive`, {
+  method: "PATCH"
+});
+
+export const createSystemAnnouncement = (payload) => request("/notifications/system-announcement", {
+  method: "POST",
+  body: payload
+});
+
+// Profile endpoints
+export const getProfile = () => request("/profile");
+
+export const updateProfile = (payload) => request("/profile", {
+  method: "PATCH",
   body: payload
 });
 
 export const changePassword = async (payload) => {
-  const response = await request("/auth/change-password", {
-    method: "POST",
+  const response = await request("/profile/change-password", {
+    method: "PATCH",
     body: payload
   });
 

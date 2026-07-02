@@ -11,6 +11,7 @@ export const PORTAL_CONFIG = Object.freeze({
   [PORTAL_ROLES.SYSTEM_ADMIN]: {
     label: "System Administrator",
     roleName: "System Admin",
+    displayRoleName: "System Admin",
     basePath: "/admin",
     defaultPath: "/admin",
     allowedPaths: Object.freeze([
@@ -42,6 +43,7 @@ export const PORTAL_CONFIG = Object.freeze({
       "/admin/audit/user-activity",
       "/admin/audit/login-sessions",
       "/admin/audit/security-events",
+      "/admin/notifications",
       "/admin/profile"
     ]),
     modules: Object.freeze([
@@ -58,6 +60,7 @@ export const PORTAL_CONFIG = Object.freeze({
   [PORTAL_ROLES.WAREHOUSE_STAFF]: {
     label: "Warehouse Staff",
     roleName: "Warehouse Staff",
+    displayRoleName: "Warehouse Staff",
     basePath: "/staff",
     defaultPath: "/staff",
     allowedPaths: Object.freeze([
@@ -77,6 +80,7 @@ export const PORTAL_CONFIG = Object.freeze({
       "/staff/dispatch/queue",
       "/staff/dispatch/gate-release",
       "/staff/dispatch/released",
+      "/staff/notifications",
       "/staff/profile"
     ]),
     modules: Object.freeze([
@@ -92,6 +96,7 @@ export const PORTAL_CONFIG = Object.freeze({
   [PORTAL_ROLES.WAREHOUSE_SUPERVISOR]: {
     label: "Warehouse Supervisor",
     roleName: "Supervisor",
+    displayRoleName: "Warehouse Supervisor",
     basePath: "/supervisor",
     defaultPath: "/supervisor",
     allowedPaths: Object.freeze([
@@ -109,6 +114,7 @@ export const PORTAL_CONFIG = Object.freeze({
       "/supervisor/warehouse/bins",
       "/supervisor/dispatch/requests",
       "/supervisor/dispatch/approved",
+      "/supervisor/notifications",
       "/supervisor/profile"
     ]),
     modules: Object.freeze([
@@ -261,6 +267,17 @@ export function clearStoredAuthToken(storage = canUseSessionStorage() ? window.s
 
 export function extractRoleFromToken(token) {
   return normalizeRole(decodeTokenPayload(token)?.role);
+}
+
+export function getDisplayRoleName(role) {
+  const normalizedRole = normalizeRole(role);
+  const configuredRole = getPortalConfig(normalizedRole);
+
+  if (configuredRole?.displayRoleName) {
+    return configuredRole.displayRoleName;
+  }
+
+  return role ? String(role).trim() : "";
 }
 
 export function getStoredAuthRole(storage = canUseSessionStorage() ? window.sessionStorage : null) {

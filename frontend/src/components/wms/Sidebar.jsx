@@ -33,6 +33,7 @@ const navigation = [
     children: [
       { label: "Cargo Registration", icon: ClipboardList, to: "/staff/cargo/registration" },
       { label: "Placement & Scanning", icon: ScanLine, to: "/staff/cargo/placement-scanning" },
+      { label: "Placement Activity", icon: PackageCheck, to: "/staff/cargo/placement-history" },
       { label: "Cargo Tracking", icon: MapPin, to: "/staff/cargo/tracking" }
     ]
   },

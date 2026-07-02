@@ -1,11 +1,15 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
+const db = require("../config/db");
+const { validatePlacement: validatePlacementController } = require("../controllers/placementController");
 const {
+  confirmPlacementOperation,
   formatLocation,
   getNextPlacementStatus,
   normalizeManualReason,
-  normalizePlacementRequest
+  normalizePlacementRequest,
+  validatePlacementOperation
 } = require("../services/placementService");
 const {
   isCargoAllowedByBinCategory,
@@ -16,6 +20,188 @@ const {
   PORTAL_ROLES,
   canAccessRoute
 } = require("../middleware/authMiddleware");
+
+const basePlacementPayload = () => ({
+  cargo_id: "CARGO-2026-OWN",
+  placement_mode: "scan",
+  scanned_cargo_barcode: "CARGO-2026-OWN",
+  scanned_bin_barcode: "BIN-A01-L1-01"
+});
+
+const mockResponse = () => {
+  const res = { statusCode: 200, body: null };
+  res.status = (code) => {
+    res.statusCode = code;
+    return res;
+  };
+  res.json = (payload) => {
+    res.body = payload;
+    return res;
+  };
+  return res;
+};
+
+const createPlacementQueryMock = ({
+  ownerUserId = 10,
+  cargoWarehouseId = 1,
+  currentBinId = null,
+  registrationStatus = "Approved"
+} = {}) => {
+  const queries = [];
+  const cargo = {
+    id: 101,
+    cargo_id: "CARGO-2026-OWN",
+    barcode: "CARGO-2026-OWN",
+    cargo_type: "General Goods",
+    weight: 10,
+    volume: 1,
+    hazard_class: null,
+    registration_status: registrationStatus,
+    placement_status: currentBinId ? "Placed" : "Unplaced",
+    warehouse_id: cargoWarehouseId,
+    current_bin_id: currentBinId,
+    location: currentBinId ? "WH-A -> Z-A -> R-A01 -> L1 -> 01" : null,
+    relocation_required: false,
+    relocation_reason: null,
+    assigned_staff_id: ownerUserId,
+    created_by: 77,
+    received_by_user_id: 88,
+    is_deleted: false
+  };
+  const bin = {
+    id: 202,
+    bin_id: 202,
+    code: "BIN-A01-L1-01",
+    barcode: "BIN-A01-L1-01",
+    status: "Available",
+    active: true,
+    level_id: 301,
+    level_code: "L1",
+    level_active: true,
+    rack_id: 401,
+    rack_code: "R-A01",
+    rack_active: true,
+    zone_id: 501,
+    zone_code: "Z-A",
+    zone_name: "General Goods",
+    zone_type: "Standard",
+    zone_allowed_cargo_type: "General Goods",
+    allowed_cargo_type: "General Goods",
+    is_hazard_zone: false,
+    zone_active: true,
+    warehouse_id: cargoWarehouseId,
+    warehouse_name: "Warehouse A",
+    warehouse_code: "WH-A",
+    max_weight: 100,
+    max_volume: 10,
+    current_weight: 0,
+    current_volume: 0,
+    reserved_for_cargo_type: null
+  };
+
+  const query = async (sql, params = []) => {
+    queries.push({ sql, params });
+
+    if (["BEGIN", "COMMIT", "ROLLBACK"].includes(sql)) {
+      return { rowCount: 0, rows: [] };
+    }
+    if (sql.includes("SELECT COALESCE(assigned_staff_id")) {
+      return { rowCount: 1, rows: [{ owner_user_id: ownerUserId }] };
+    }
+    if (sql.includes("SELECT * FROM cargo") && sql.includes("id::text")) {
+      return { rowCount: 1, rows: [cargo] };
+    }
+    if (sql.includes("SELECT * FROM cargo WHERE id = $1")) {
+      return { rowCount: 1, rows: [cargo] };
+    }
+    if (sql.includes("FROM bins b") && sql.includes("WHERE b.id::text")) {
+      return { rowCount: 1, rows: [bin] };
+    }
+    if (sql.includes("FROM bins b") && sql.includes("WHERE b.id = ANY")) {
+      return { rowCount: 1, rows: [bin] };
+    }
+    if (sql.includes("FROM bin_rules")) {
+      return { rowCount: 0, rows: [] };
+    }
+    if (sql.includes("FROM approval_requests")) {
+      return { rowCount: 0, rows: [] };
+    }
+    if (sql.startsWith("UPDATE bins")) {
+      return {
+        rowCount: 1,
+        rows: [{
+          ...bin,
+          current_weight: Number(bin.current_weight) + Number(cargo.weight),
+          current_volume: Number(bin.current_volume) + Number(cargo.volume),
+          status: "Occupied"
+        }]
+      };
+    }
+    if (sql.startsWith("UPDATE cargo")) {
+      return {
+        rowCount: 1,
+        rows: [{
+          ...cargo,
+          placement_status: params[0],
+          location: params[1],
+          current_bin_id: params[2]
+        }]
+      };
+    }
+    if (sql.includes("INSERT INTO cargo_movements")) {
+      return {
+        rowCount: 1,
+        rows: [{
+          id: 303,
+          cargo_id: params[0],
+          from_bin_id: params[1],
+          to_bin_id: params[2],
+          action: params[8]
+        }]
+      };
+    }
+    if (sql.includes("UPDATE cargo_locations")) {
+      return { rowCount: 0, rows: [] };
+    }
+    if (sql.includes("INSERT INTO cargo_locations")) {
+      return { rowCount: 1, rows: [{ id: 404 }] };
+    }
+    if (sql.includes("INSERT INTO placement_validation_logs")) {
+      return { rowCount: 1, rows: [{ id: 505 }] };
+    }
+    if (sql.includes("INSERT INTO audit_logs")) {
+      return { rowCount: 1, rows: [{ id: 606 }] };
+    }
+
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+
+  return { query, queries, cargo, bin };
+};
+
+const withMockDbQuery = async (query, run) => {
+  const originalQuery = db.query;
+  db.query = query;
+  try {
+    await run();
+  } finally {
+    db.query = originalQuery;
+  }
+};
+
+const withMockPlacementClient = async (query, run) => {
+  const originalConnect = db.pool.connect;
+  const client = {
+    query,
+    release: () => {}
+  };
+  db.pool.connect = async () => client;
+  try {
+    await run();
+  } finally {
+    db.pool.connect = originalConnect;
+  }
+};
 
 test("scan placement normalizes the requested cargo and scanned labels", () => {
   const request = normalizePlacementRequest({
@@ -194,6 +380,34 @@ test("compatibility and capacity checks cannot be disabled or supervisor-overrid
   assert.equal(validation.checks.weightCapacity.passed, false);
 });
 
+test("placement validation rejects cargo before supervisor approval", async () => {
+  for (const registrationStatus of ["Pending Review", "Correction Required", "Rejected"]) {
+    const mock = createPlacementQueryMock({ registrationStatus });
+    const validation = await validatePlacement(basePlacementPayload(), { query: mock.query });
+
+    assert.equal(validation.approved, false);
+    assert.equal(validation.checks.cargoPlacementStatus.passed, false);
+    assert.match(validation.detail, /approved|Rejected|correction/i);
+  }
+});
+
+test("manual placement cannot bypass supervisor approval", async () => {
+  const mock = createPlacementQueryMock({ registrationStatus: "Pending Review" });
+  const validation = await validatePlacement({
+    cargo_id: "CARGO-2026-OWN",
+    placement_mode: "manual",
+    bin_id: "202",
+    manual_placement_reason: "supervisor_approved"
+  }, { query: mock.query });
+
+  assert.equal(validation.approved, false);
+  assert.equal(validation.reason, "Pending Supervisor Approval");
+  assert.equal(
+    validation.detail,
+    "Cargo has not yet been approved by the Warehouse Supervisor. Placement cannot begin until registration is approved."
+  );
+});
+
 test("repeated confirmations preserve a relocated cargo status", () => {
   assert.equal(
     getNextPlacementStatus({
@@ -218,4 +432,126 @@ test("manual placement setting is readable by staff and editable only by supervi
   assert.equal(canAccessRoute(PORTAL_ROLES.WAREHOUSE_STAFF, "PUT", "/placement/settings"), false);
   assert.equal(canAccessRoute(PORTAL_ROLES.WAREHOUSE_SUPERVISOR, "PUT", "/placement/settings"), true);
   assert.equal(canAccessRoute(PORTAL_ROLES.SYSTEM_ADMIN, "PUT", "/placement/settings"), true);
+});
+
+test("staff can confirm placement for cargo they own", async () => {
+  const mock = createPlacementQueryMock({ ownerUserId: 10 });
+
+  await withMockPlacementClient(mock.query, async () => {
+    const result = await confirmPlacementOperation(basePlacementPayload(), {
+      role: "warehouse-staff",
+      userId: 10,
+      username: "staff-a",
+      warehouseId: 1
+    });
+
+    assert.equal(result.rejected, false);
+    assert.equal(result.cargo.current_bin_id, 202);
+    assert.equal(result.movement.to_bin_id, 202);
+    assert.equal(result.movement.action, "Placed");
+  });
+});
+
+test("staff cannot validate another staff user's cargo in the same warehouse", async () => {
+  const mock = createPlacementQueryMock({ ownerUserId: 10 });
+
+  await assert.rejects(
+    () => validatePlacementOperation(basePlacementPayload(), {
+      role: "warehouse-staff",
+      userId: 20,
+      username: "staff-b",
+      warehouseId: 1
+    }, { query: mock.query }),
+    (error) => {
+      assert.equal(error.statusCode, 404);
+      assert.equal(error.message, "Cargo record not found.");
+      return true;
+    }
+  );
+});
+
+test("staff cannot confirm placement for cargo whose historical owner was transferred", async () => {
+  const mock = createPlacementQueryMock({ ownerUserId: 10 });
+
+  await withMockPlacementClient(mock.query, async () => {
+    await assert.rejects(
+      () => confirmPlacementOperation(basePlacementPayload(), {
+        role: "warehouse-staff",
+        userId: 20,
+        username: "staff-b",
+        warehouseId: 1
+      }),
+      /Cargo record not found/
+    );
+  });
+
+  assert.equal(mock.queries.some((entry) => entry.sql.startsWith("UPDATE cargo")), false);
+  assert.equal(mock.queries.some((entry) => entry.sql.startsWith("UPDATE bins")), false);
+});
+
+test("supervisor can review placement activity for warehouse cargo without staff ownership", async () => {
+  const mock = createPlacementQueryMock({ ownerUserId: 10 });
+
+  assert.equal(canAccessRoute(PORTAL_ROLES.WAREHOUSE_SUPERVISOR, "GET", "/supervisor/placement-summary"), true);
+
+  const { validation } = await validatePlacementOperation(basePlacementPayload(), {
+    role: "warehouse-supervisor",
+    userId: 30,
+    username: "supervisor-a",
+    warehouseId: 1
+  }, { query: mock.query });
+
+  assert.equal(validation.approved, true);
+  assert.equal(mock.queries.some((entry) => entry.sql.includes("SELECT COALESCE(assigned_staff_id")), false);
+});
+
+test("system admin can confirm placement without staff ownership", async () => {
+  const mock = createPlacementQueryMock({ ownerUserId: 10 });
+
+  await withMockPlacementClient(mock.query, async () => {
+    const result = await confirmPlacementOperation(basePlacementPayload(), {
+      role: "system-admin",
+      userId: 1,
+      username: "admin"
+    });
+
+    assert.equal(result.rejected, false);
+    assert.equal(result.cargo.current_bin_id, 202);
+  });
+
+  assert.equal(mock.queries.some((entry) => entry.sql.includes("SELECT COALESCE(assigned_staff_id")), false);
+});
+
+test("placement validation logs staff ownership failures", async () => {
+  const mock = createPlacementQueryMock({ ownerUserId: 10 });
+  let placementFailureLogged = false;
+
+  const query = async (sql, params = []) => {
+    if (sql.includes("INSERT INTO placement_validation_logs")) {
+      placementFailureLogged = true;
+    }
+    return mock.query(sql, params);
+  };
+
+  await withMockDbQuery(query, async () => {
+    const req = {
+      body: basePlacementPayload(),
+      auth: {
+        role: "warehouse-staff",
+        userId: 20,
+        username: "staff-b",
+        warehouseId: 1
+      }
+    };
+    const res = mockResponse();
+    let nextError = null;
+
+    await validatePlacementController(req, res, (error) => {
+      nextError = error;
+    });
+
+    assert.equal(nextError.statusCode, 404);
+    assert.equal(res.body, null);
+    assert.equal(placementFailureLogged, true);
+  });
 });

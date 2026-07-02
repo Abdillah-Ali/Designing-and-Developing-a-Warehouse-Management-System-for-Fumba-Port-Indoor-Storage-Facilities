@@ -150,6 +150,24 @@ const assertWarehouseCargoAccess = (auth, validation) => {
   }
 };
 
+const assertStaffCargoOwnership = async (auth, validation, executor = db) => {
+  if (auth?.role !== "warehouse-staff" || !validation.cargo?.id) return;
+
+  const result = await executor.query(
+    `SELECT COALESCE(assigned_staff_id, created_by, received_by_user_id)::int AS owner_user_id
+     FROM cargo
+     WHERE id = $1
+       AND is_deleted = FALSE
+     LIMIT 1`,
+    [validation.cargo.id]
+  );
+  const ownerUserId = result.rows[0]?.owner_user_id;
+
+  if (!ownerUserId || Number(ownerUserId) !== Number(auth.userId)) {
+    throw buildError("Cargo record not found.", 404);
+  }
+};
+
 const validatePlacementOperation = async (payload, auth = {}, executor = db) => {
   const normalized = normalizePlacementRequest(payload);
   if (
@@ -161,6 +179,7 @@ const validatePlacementOperation = async (payload, auth = {}, executor = db) => 
 
   const validation = await runPlacementValidation(normalized, executor);
   assertWarehouseCargoAccess(auth, validation);
+  await assertStaffCargoOwnership(auth, validation, executor);
   return { normalized, validation };
 };
 

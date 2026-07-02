@@ -2,6 +2,10 @@ const db = require("../config/db");
 const { writeAuditLog } = require("../models/adminModel");
 const { buildError } = require("../utils/apiError");
 const {
+  notifyDispatchDecision,
+  notifyDispatchSubmitted
+} = require("../services/notificationService");
+const {
   PLACEMENT_STATUS,
   REGISTRATION_STATUS
 } = require("../services/cargoWorkflowService");
@@ -77,6 +81,15 @@ const requestDispatchAuthorization = async (req, res, next) => {
         module: "Dispatch Operations",
         description: `Requested dispatch authorization for cargo ${cargo.cargo_id}.`,
         metadata: { dispatch_request_id: result.rows[0].id }
+      },
+      client
+    );
+    await notifyDispatchSubmitted(
+      {
+        cargo,
+        dispatchRequestId: result.rows[0].id,
+        requesterId: req.auth?.userId || null,
+        actorId: req.auth?.userId || null
       },
       client
     );
@@ -171,6 +184,20 @@ const decideDispatchRequest = async (req, res, next, decision) => {
           cargo_id: request.cargo_record_id,
           decision_notes: notes || null
         }
+      },
+      client
+    );
+
+    await notifyDispatchDecision(
+      {
+        cargo: {
+          ...request,
+          id: request.cargo_record_id
+        },
+        dispatchRequest: request,
+        decision,
+        notes,
+        actorId: req.auth?.userId || null
       },
       client
     );

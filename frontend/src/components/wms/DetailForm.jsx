@@ -925,6 +925,11 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
 
   const validationCards = [
     {
+      title: "Supervisor Approval",
+      passed: checkPassed(validation, "cargoPlacementStatus", validation.approved),
+      body: checkMessage(validation, "cargoPlacementStatus", "Cargo must be approved by a Warehouse Supervisor before placement.")
+    },
+    {
       title: "Cargo Compatibility",
       passed: checkPassed(validation, "cargoCompatibility", validation.approved),
       body: checkMessage(validation, "cargoCompatibility", validation.detail)
@@ -1191,7 +1196,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
             {saveNotice && (
               <div className="flex items-center gap-2 rounded-md border border-success/40 bg-success/10 px-3 py-2 text-xs font-semibold text-success">
                 <CheckCircle2 className="h-4 w-4" />
-                Registration successful. Cargo is in the placement queue and pending independent supervisor review.
+                Registration successful. Cargo is pending independent supervisor review and placement is locked until approval.
               </div>
             )}
             {saveError && (

@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 
 const {
   CARGO_NOT_OPERATIONAL_MESSAGE,
+  PLACEMENT_APPROVAL_REQUIRED_MESSAGE,
   PLACEMENT_STATUS,
   REGISTRATION_STATUS,
   buildCorrectionChanges,
@@ -23,17 +24,17 @@ const {
   canAccessRoute
 } = require("../middleware/authMiddleware");
 
-test("staff visibility and placement do not wait for supervisor approval", () => {
+test("staff visibility remains broad but placement waits for supervisor approval", () => {
   assert.equal(isOperationallyVisibleToStaff(REGISTRATION_STATUS.PENDING_REVIEW), true);
   assert.equal(isOperationallyVisibleToStaff(REGISTRATION_STATUS.CORRECTION_REQUIRED), true);
   assert.equal(canCargoBePlaced({
     registration_status: REGISTRATION_STATUS.PENDING_REVIEW,
     placement_status: PLACEMENT_STATUS.UNPLACED
-  }), true);
+  }), false);
   assert.equal(canCargoBePlaced({
     registration_status: REGISTRATION_STATUS.CORRECTION_REQUIRED,
     placement_status: PLACEMENT_STATUS.UNPLACED
-  }), true);
+  }), false);
   assert.equal(canCargoBePlaced({
     registration_status: REGISTRATION_STATUS.REJECTED,
     placement_status: PLACEMENT_STATUS.UNPLACED
@@ -59,7 +60,11 @@ test("only the registering staff user can view and edit correction submissions",
     received_by_user_id: 42,
     registration_status: REGISTRATION_STATUS.REJECTED
   }, 42), true);
-  assert.equal(CARGO_NOT_OPERATIONAL_MESSAGE, "This cargo is unavailable for warehouse placement.");
+  assert.equal(CARGO_NOT_OPERATIONAL_MESSAGE, "Only approved cargo can enter the warehouse placement workflow.");
+  assert.equal(
+    PLACEMENT_APPROVAL_REQUIRED_MESSAGE,
+    "Cargo has not yet been approved by the Warehouse Supervisor. Placement cannot begin until registration is approved."
+  );
 });
 
 test("storage revalidation is limited to placement-sensitive corrections", () => {
@@ -202,6 +207,7 @@ test("staff can access only their review inbox and resubmission endpoint", () =>
 test("supervisors and administrators can decide registration approvals", () => {
   for (const role of [PORTAL_ROLES.WAREHOUSE_SUPERVISOR, PORTAL_ROLES.SYSTEM_ADMIN]) {
     assert.equal(canAccessRoute(role, "POST", "/supervisor/approvals/1/approve"), true);
+    assert.equal(canAccessRoute(role, "POST", "/supervisor/approvals/1/emergency-approve"), true);
     assert.equal(canAccessRoute(role, "POST", "/supervisor/approvals/1/reject"), true);
   }
 

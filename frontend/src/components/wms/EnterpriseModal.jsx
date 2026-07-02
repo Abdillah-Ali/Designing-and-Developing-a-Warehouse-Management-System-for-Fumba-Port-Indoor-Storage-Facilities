@@ -47,7 +47,7 @@ function EnterpriseModal({
       }}
     >
       <section className={cn(
-        "flex max-h-[90vh] w-full flex-col overflow-hidden rounded-lg border border-white/10 bg-card shadow-2xl",
+        "flex max-h-[90vh] w-full flex-col overflow-hidden rounded-lg border border-white/10 bg-card text-card-foreground shadow-2xl",
         sizes[size] || sizes.large
       )}>
         <header className="flex items-start justify-between gap-4 border-b border-sidebar-border bg-sidebar px-5 py-4 text-sidebar-foreground">
@@ -64,11 +64,11 @@ function EnterpriseModal({
             <X className="h-5 w-5" />
           </button>
         </header>
-        <div className="min-h-0 flex-1 overflow-auto bg-background p-4 sm:p-5">
+        <div className="min-h-0 flex-1 overflow-auto bg-background p-4 text-foreground sm:p-5">
           {children}
         </div>
         {footer && (
-          <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-border bg-card px-5 py-3">
+          <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-border bg-card px-5 py-3 text-card-foreground">
             {footer}
           </footer>
         )}

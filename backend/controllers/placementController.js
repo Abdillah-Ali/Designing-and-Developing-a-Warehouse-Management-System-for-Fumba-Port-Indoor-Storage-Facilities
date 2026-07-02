@@ -13,6 +13,14 @@ const {
   updatePlacementSettings: savePlacementSettings,
   validatePlacementOperation
 } = require("../services/placementService");
+const {
+  getPlacementActivity: readPlacementActivity,
+  getPlacementActivitySummary: readPlacementActivitySummary
+} = require("../services/placementActivityService");
+const {
+  notifyPlacementOverridePending,
+  notifyWarehouseAlert
+} = require("../services/notificationService");
 const { buildError } = require("../utils/apiError");
 
 const logPlacementError = async (req, stage, error) => {
@@ -38,6 +46,50 @@ const readBoolean = (value) => {
   return value;
 };
 
+const getWarehouseAlertFromValidation = (validation) => {
+  if (validation?.approved || !validation?.cargo || !validation?.bin) return null;
+
+  const checks = validation.checks || {};
+  const binLabel = validation.bin.barcode || "Selected bin";
+  const cargoType = validation.cargo.cargo_type || "cargo";
+
+  if (checks.availableBin?.passed === false || checks.weightCapacity?.passed === false || checks.volumeCapacity?.passed === false) {
+    return {
+      title: `${binLabel} cannot accept more cargo`,
+      message: checks.availableBin?.passed === false
+        ? `Bin ${binLabel} is full.`
+        : `Bin ${binLabel} does not have enough capacity for ${cargoType}.`,
+      priority: "urgent"
+    };
+  }
+
+  if (checks.blockedBin?.passed === false) {
+    return {
+      title: `${binLabel} is blocked`,
+      message: `Bin ${binLabel} is blocked for operations.`,
+      priority: "high"
+    };
+  }
+
+  if (checks.maintenanceBin?.passed === false) {
+    return {
+      title: `${binLabel} is under maintenance`,
+      message: `Bin ${binLabel} is under maintenance.`,
+      priority: "high"
+    };
+  }
+
+  if (checks.cargoCompatibility?.passed === false) {
+    return {
+      title: `No compatible placement for ${cargoType}`,
+      message: validation.detail || `No compatible bin is available for ${cargoType}.`,
+      priority: "high"
+    };
+  }
+
+  return null;
+};
+
 const validatePlacement = async (req, res, next) => {
   try {
     const { normalized, validation } = await validatePlacementOperation(req.body, req.auth);
@@ -49,6 +101,28 @@ const validatePlacement = async (req, res, next) => {
       previousLocation: validation.cargo?.location || null,
       newLocation: validation.bin?.display_location || null
     });
+
+    const alert = getWarehouseAlertFromValidation(validation);
+    if (alert) {
+      await notifyWarehouseAlert(
+        {
+          ...alert,
+          warehouseId: validation.cargo?.warehouse_id || req.auth?.warehouseId || null,
+          relatedEntityType: validation.cargo?.id ? "cargo" : "bin",
+          relatedEntityId: validation.cargo?.id || validation.bin?.id || null,
+          actorId: req.auth?.userId || null,
+          metadata: {
+            cargo_id: validation.cargo?.id || null,
+            cargo_identifier: validation.cargo?.cargo_id || null,
+            cargo_type: validation.cargo?.cargo_type || null,
+            bin_id: validation.bin?.id || null,
+            bin_barcode: validation.bin?.barcode || null,
+            validation_reason: validation.reason
+          }
+        },
+        db
+      );
+    }
 
     res.json({ success: true, data: validation });
   } catch (error) {
@@ -219,6 +293,16 @@ const requestPlacementOverride = async (req, res, next) => {
       client
     );
 
+    await notifyPlacementOverridePending(
+      {
+        cargo: validation.cargo,
+        bin: validation.bin,
+        approvalRequestId: result.rows[0].id,
+        actorId: req.auth?.userId || null
+      },
+      client
+    );
+
     await client.query("COMMIT");
     res.status(201).json({ success: true, data: result.rows[0] });
   } catch (error) {
@@ -270,8 +354,44 @@ const getPlacementLogs = async (req, res, next) => {
   }
 };
 
+const getPlacementActivityTimeline = async (req, res, next) => {
+  try {
+    const result = await readPlacementActivity({
+      auth: req.auth,
+      filters: req.query
+    });
+
+    res.json({
+      success: true,
+      count: result.rows.length,
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+      data: result.rows
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getPlacementActivitySummary = async (req, res, next) => {
+  try {
+    res.json({
+      success: true,
+      data: await readPlacementActivitySummary({
+        auth: req.auth,
+        filters: req.query
+      })
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   confirmPlacement,
+  getPlacementActivitySummary,
+  getPlacementActivityTimeline,
   getPlacementFailures,
   getPlacementLogs,
   getPlacementSettings,

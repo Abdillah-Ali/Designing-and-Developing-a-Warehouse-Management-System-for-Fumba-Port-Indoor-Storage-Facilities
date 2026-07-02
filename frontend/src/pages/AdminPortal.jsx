@@ -19,7 +19,6 @@ import {
   EyeOff,
   FileWarning,
   Filter,
-  HelpCircle,
   KeyRound,
   LayoutDashboard,
   ListChecks,
@@ -61,7 +60,11 @@ import {
 import { BinBarcodeLabel, printBinBarcodeLabel } from "@/components/wms/BarcodeLabel";
 import { EnterpriseModal } from "@/components/wms/EnterpriseModal";
 import { ManualPlacementSetting } from "@/components/wms/ManualPlacementSetting";
+import { PlacementActivityPanel } from "@/components/wms/PlacementActivityTimeline";
 import { ReviewActionModal } from "@/components/wms/ReviewActionModal";
+import { HeaderActions } from "@/components/wms/HeaderActions";
+import { NotificationsPage } from "@/components/wms/NotificationsPage";
+import { AccountProfilePage } from "@/components/wms/ProfilePage";
 import { cn } from "@/lib/utils";
 import { getStoredAuthUserId } from "@/lib/portal-access";
 import {
@@ -174,7 +177,7 @@ const adminNavigation = [
     children: [
       { label: "Cargo Records", icon: ClipboardList, to: "/admin/cargo/records" },
       { label: "Approval Overrides", icon: ShieldCheck, to: "/admin/cargo/approval-overrides" },
-      { label: "Placement Monitoring", icon: ClipboardCheck, to: "/admin/cargo/placement-monitoring" },
+      { label: "Placement Activity", icon: ClipboardCheck, to: "/admin/cargo/placement-monitoring" },
       { label: "Cargo Tracking", icon: Search, to: "/admin/cargo/tracking" },
       { label: "Blocked Cargo", icon: Ban, to: "/admin/cargo/blocked" }
     ]
@@ -552,28 +555,7 @@ function AdminHeader() {
         </div>
       </div>
 
-      <div className="flex min-w-0 items-center gap-2">
-        <button
-          className="inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-white/10"
-          aria-label="Help"
-        >
-          <HelpCircle className="h-4 w-4" />
-          <span className="hidden sm:inline">Help</span>
-        </button>
-        <button
-          className="inline-flex h-8 w-8 items-center justify-center rounded transition-colors hover:bg-white/10"
-          aria-label="Settings"
-        >
-          <Settings className="h-4 w-4" />
-        </button>
-        <div className="flex min-w-0 items-center gap-2 border-l border-white/20 pl-3">
-          <UserCircle2 className="h-7 w-7 shrink-0" />
-          <div className="hidden min-w-0 leading-tight text-right sm:block">
-            <div className="truncate text-sm font-medium">System Admin</div>
-            <div className="truncate text-[11px] text-white/75">Administrator</div>
-          </div>
-        </div>
-      </div>
+      <HeaderActions />
     </header>
   );
 }
@@ -653,15 +635,6 @@ function Drawer({ open, title, children, onClose }) {
         </div>
         <div className="p-4">{children}</div>
       </div>
-    </div>
-  );
-}
-
-function ActionPlaceholder({ title, body }) {
-  return (
-    <div className="rounded border border-dashed border-border bg-muted/20 px-3 py-3 text-xs text-muted-foreground">
-      <div className="font-semibold text-foreground">{title}</div>
-      <div className="mt-1">{body}</div>
     </div>
   );
 }
@@ -1716,10 +1689,11 @@ function useWarehouseHierarchy() {
         if (active) {
           const list = response.data || [];
           setWarehouses(list);
-          if (list.length > 0 && !selectedWarehouse) {
+          setSelectedWarehouse((current) => {
+            if (current || list.length === 0) return current;
             const firstActive = list.find(w => w.status === 'Active') || list[0];
-            setSelectedWarehouse(String(firstActive.id));
-          }
+            return String(firstActive.id);
+          });
         }
       } catch (err) {
         if (active) setError(getErrorMessage(err));
@@ -3023,57 +2997,18 @@ function CargoRecordsPage({ mode = "records" }) {
 }
 
 function PlacementMonitoringPage() {
-  const logs = useApiCollection(() => getPlacementLogs(), "placement-logs");
-
   return (
     <>
       <PageHeader
         eyebrow="Cargo Oversight"
-        title="Placement Monitoring"
-        description="Monitor placement attempts, validation failures, occupied bins, rejected placements, and scanner activity."
+        title="Placement Activity"
+        description="Global placement activity, failed attempts, relocations, override workflow, and support events."
       />
       <div className="flex-1 overflow-auto p-4">
         <div className="mb-3">
           <ManualPlacementSetting />
         </div>
-        <div className="grid gap-3 lg:grid-cols-4">
-          <SectionCard title="Placement Attempts" icon={ClipboardCheck}>
-            <DataTable
-              loading={logs.loading}
-              error={logs.error}
-              rows={logs.rows}
-              emptyTitle="No placement attempts loaded"
-              columns={[
-                { key: "created_at", label: "Time", render: (row) => formatDateTime(row.created_at) },
-                { key: "attempt_stage", label: "Stage", render: (row) => row.attempt_stage || "validation" },
-                { key: "placement_mode", label: "Mode", render: (row) => row.placement_mode || "scan" },
-                { key: "result", label: "Status", render: (row) => <StatusBadge tone={row.approved ? "success" : "destructive"}>{row.approved ? "Passed" : "Failed"}</StatusBadge> },
-                { key: "cargo_barcode", label: "Cargo", render: (row) => row.cargo_barcode || "No cargo barcode" },
-                { key: "bin_barcode", label: "Bin", render: (row) => row.bin_barcode || "No bin barcode" },
-                { key: "detail", label: "Detail", render: (row) => row.detail || row.reason || "No detail recorded" }
-              ]}
-            />
-          </SectionCard>
-          <SectionCard title="Validation Failures" icon={FileWarning}>
-            <DataTable
-              loading={logs.loading}
-              error={logs.error}
-              rows={logs.rows.filter((log) => log.approved === false)}
-              emptyTitle="No validation failures loaded"
-              columns={[
-                { key: "created_at", label: "Time", render: (row) => formatDateTime(row.created_at) },
-                { key: "reason", label: "Failure", render: (row) => row.reason || "No reason recorded" },
-                { key: "detail", label: "Detail", render: (row) => row.detail || "No detail recorded" }
-              ]}
-            />
-          </SectionCard>
-          <SectionCard title="Occupied Bins" icon={Box}>
-            <EmptyState title="No occupied-bin activity" body="Occupied bin activity will appear as storage work is recorded." />
-          </SectionCard>
-          <SectionCard title="Scanner Activity" icon={ScanLine}>
-            <EmptyState title="No scanner activity" body="Scanner and rejected placement events will appear here." />
-          </SectionCard>
-        </div>
+        <PlacementActivityPanel title="Global Placement Activity" adminFilters />
       </div>
     </>
   );
@@ -3324,45 +3259,10 @@ function AuditPage({ mode }) {
 
 function ProfilePage() {
   return (
-    <>
-      <PageHeader
-        eyebrow="Profile"
-        title="System Administrator Profile"
-        description="Administrator identity, warehouse scope, permissions summary, and session placeholders."
-      />
-      <div className="flex-1 overflow-auto p-4">
-        <div className="grid gap-3 lg:grid-cols-3">
-          <SectionCard title="Administrator Profile" icon={UserCircle2}>
-            <div className="space-y-3 text-xs">
-              <ReadonlyValue label="Name" value="System Administrator" />
-              <ReadonlyValue label="Role" value={<StatusBadge tone="released">System Admin</StatusBadge>} />
-              <ReadonlyValue label="Warehouse Scope" value="All warehouses" />
-            </div>
-          </SectionCard>
-          <SectionCard title="Permissions Summary" icon={ShieldCheck}>
-            <div className="space-y-2 text-xs text-muted-foreground">
-              <div className="rounded border border-border bg-muted/20 px-3 py-2">Full system configuration access</div>
-              <div className="rounded border border-border bg-muted/20 px-3 py-2">User and role access oversight</div>
-              <div className="rounded border border-border bg-muted/20 px-3 py-2">Warehouse hierarchy configuration</div>
-              <div className="rounded border border-border bg-muted/20 px-3 py-2">Audit and security monitoring</div>
-            </div>
-          </SectionCard>
-          <SectionCard title="Session Information" icon={LockKeyhole}>
-            <div className="space-y-3 text-xs">
-              <ReadonlyValue label="Session Status" value="Session not loaded" />
-              <ReadonlyValue label="Last Login" value="Not recorded" />
-              <ReadonlyValue label="IP Placeholder" value="Not recorded" />
-            </div>
-          </SectionCard>
-          <SectionCard title="Change Password" icon={KeyRound}>
-            <ActionPlaceholder title="Password change placeholder" body="Password updates will be available when account security settings are enabled." />
-          </SectionCard>
-          <SectionCard title="Notification Settings" icon={Settings}>
-            <ActionPlaceholder title="Notification settings placeholder" body="System alerts and admin notification preferences will be configured here." />
-          </SectionCard>
-        </div>
-      </div>
-    </>
+    <AccountProfilePage
+      title="System Administrator Profile"
+      description="Your authenticated account details, contact information, and read-only system assignment."
+    />
   );
 }
 
@@ -3407,6 +3307,7 @@ function AdminPortal() {
         <Route path="audit/user-activity" element={<AuditPage mode="activity" />} />
         <Route path="audit/login-sessions" element={<AuditPage mode="sessions" />} />
         <Route path="audit/security-events" element={<AuditPage mode="security" />} />
+        <Route path="notifications" element={<NotificationsPage />} />
         <Route path="profile" element={<ProfilePage />} />
         <Route path="*" element={<Navigate to="/admin" replace />} />
       </Routes>

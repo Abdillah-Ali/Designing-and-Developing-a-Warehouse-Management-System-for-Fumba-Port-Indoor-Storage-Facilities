@@ -1,7 +1,7 @@
 const db = require("../config/db");
 const {
-  REGISTRATION_STATUS,
-  canCargoBePlaced
+  canCargoBePlaced,
+  getCargoPlacementBlock
 } = require("./cargoWorkflowService");
 
 const cargoFields = [
@@ -479,15 +479,8 @@ const validatePlacement = async (payload = {}, executor = db) => {
   }
 
   if (!canCargoBePlaced(cargo)) {
-    addIssue(
-      "cargoPlacementStatus",
-      cargo.registration_status === REGISTRATION_STATUS.REJECTED
-        ? "Registration Rejected"
-        : "Cargo Dispatched",
-      cargo.registration_status === REGISTRATION_STATUS.REJECTED
-        ? "Rejected cargo cannot be placed in warehouse storage."
-        : "Dispatched cargo cannot be placed again."
-    );
+    const block = getCargoPlacementBlock(cargo);
+    addIssue("cargoPlacementStatus", block.reason, block.detail);
   }
 
   if (!bin.active || !bin.level_active || !bin.rack_active || !bin.zone_active || bin.status === "Inactive") {

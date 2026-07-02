@@ -1,4 +1,5 @@
-import { Anchor, HelpCircle, UserCircle2 } from "lucide-react";
+import { Anchor } from "lucide-react";
+import { HeaderActions } from "@/components/wms/HeaderActions";
 
 function WmsHeader() {
   return (
@@ -13,23 +14,7 @@ function WmsHeader() {
         </div>
       </div>
 
-      <div className="flex min-w-0 items-center gap-4">
-        <button
-          className="inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition-colors hover:bg-white/10"
-          aria-label="Help"
-        >
-          <HelpCircle className="h-4 w-4" />
-          <span className="hidden sm:inline">Help</span>
-        </button>
-
-        <div className="flex min-w-0 items-center gap-2 border-l border-white/20 pl-3">
-          <UserCircle2 className="h-7 w-7 shrink-0" />
-          <div className="hidden min-w-0 leading-tight text-right sm:block">
-            <div className="truncate text-sm font-medium">Warehouse Staff</div>
-            <div className="truncate text-[11px] text-white/75">Operations</div>
-          </div>
-        </div>
-      </div>
+      <HeaderActions />
     </header>
   );
 }

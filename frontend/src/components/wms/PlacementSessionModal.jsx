@@ -38,6 +38,42 @@ function DetailCard({ label, value }) {
   );
 }
 
+function placementGate(cargo) {
+  if (cargo?.placement_status === "Dispatched") {
+    return {
+      canPlace: false,
+      label: "Dispatched",
+      message: "Dispatched cargo cannot be placed again."
+    };
+  }
+  if (cargo?.registration_status === "Approved") {
+    return {
+      canPlace: true,
+      label: "Ready for Placement",
+      message: "Cargo is approved and ready for placement."
+    };
+  }
+  if (cargo?.registration_status === "Correction Required") {
+    return {
+      canPlace: false,
+      label: "Awaiting Correction",
+      message: "Cargo must be corrected and approved before placement can begin."
+    };
+  }
+  if (cargo?.registration_status === "Rejected") {
+    return {
+      canPlace: false,
+      label: "Rejected",
+      message: "Rejected cargo is not eligible for placement."
+    };
+  }
+  return {
+    canPlace: false,
+    label: "Pending Supervisor Approval",
+    message: "Placement cannot begin until supervisor approval is complete."
+  };
+}
+
 function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
   const [mode, setMode] = useState("scan");
   const [settings, setSettings] = useState({
@@ -100,6 +136,7 @@ function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
     () => bins.find((bin) => recordId(bin, "bin_id") === selectedBin) || null,
     [bins, selectedBin]
   );
+  const gate = useMemo(() => placementGate(cargo), [cargo]);
 
   const resetValidation = () => {
     setValidation(null);
@@ -183,9 +220,9 @@ function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
         manual_placement_reason: manualReason
       };
 
-  const canValidate = mode === "scan"
+  const canValidate = gate.canPlace && (mode === "scan"
     ? Boolean(scannedCargo.trim() && scannedBin.trim())
-    : Boolean(selectedBin && manualReason);
+    : Boolean(selectedBin && manualReason));
 
   const runValidation = async () => {
     if (!canValidate) return;
@@ -263,6 +300,12 @@ function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
     >
       <div className="space-y-4">
         {error && <ErrorState message={error} />}
+        {!gate.canPlace && (
+          <div className="flex items-center gap-2 rounded border border-warning/40 bg-warning/10 px-3 py-3 text-xs font-semibold text-warning">
+            <AlertTriangle className="h-4 w-4" />
+            {gate.label}: {gate.message}
+          </div>
+        )}
         {result && (
           <div className="flex items-center gap-2 rounded border border-success/40 bg-success/10 px-3 py-3 text-xs font-semibold text-success">
             <CheckCircle2 className="h-4 w-4" />
@@ -287,9 +330,10 @@ function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
               <button
                 type="button"
                 onClick={() => selectMode("scan")}
+                disabled={!gate.canPlace}
                 className={`inline-flex items-center gap-2 rounded px-3 py-2 text-xs font-semibold ${
                   mode === "scan" ? "bg-info text-info-foreground" : "bg-background text-muted-foreground"
-                }`}
+                } disabled:cursor-not-allowed disabled:opacity-50`}
               >
                 <ScanLine className="h-4 w-4" />
                 Scan Placement
@@ -298,9 +342,10 @@ function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
                 <button
                   type="button"
                   onClick={() => selectMode("manual")}
+                  disabled={!gate.canPlace}
                   className={`inline-flex items-center gap-2 rounded px-3 py-2 text-xs font-semibold ${
                     mode === "manual" ? "bg-info text-info-foreground" : "bg-background text-muted-foreground"
-                  }`}
+                  } disabled:cursor-not-allowed disabled:opacity-50`}
                 >
                   <Warehouse className="h-4 w-4" />
                   Manual Placement

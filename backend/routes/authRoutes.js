@@ -45,7 +45,9 @@ router.post("/logout", requireAuthenticated, logout);
 
 // Profile endpoints (auth required)
 router.get("/profile", requireAuthenticated, getProfile);
+router.patch("/profile", requireAuthenticated, updateProfile);
 router.put("/profile", requireAuthenticated, updateProfile);
+router.patch("/profile/change-password", requireAuthenticated, changePassword);
 router.post("/change-password", requireAuthenticated, changePassword);
 
 router.post("/refresh", refreshToken);

@@ -6,6 +6,7 @@ import {
   clearStoredPortalRole,
   extractRoleFromToken,
   getPortalRoleForPath,
+  getDisplayRoleName,
   getStoredAuthRole,
   getStoredAuthUserId,
   getStoredPortalRole,
@@ -114,6 +115,12 @@ describe("portal access", () => {
     });
 
     expect(extractRoleFromToken(token)).toBe(PORTAL_ROLES.WAREHOUSE_SUPERVISOR);
+  });
+
+  it("formats authenticated account roles for header display", () => {
+    expect(getDisplayRoleName("System Admin")).toBe("System Admin");
+    expect(getDisplayRoleName("Warehouse Staff")).toBe("Warehouse Staff");
+    expect(getDisplayRoleName("Supervisor")).toBe("Warehouse Supervisor");
   });
 
   it("reads forced password-change and user identity claims from stored tokens", () => {

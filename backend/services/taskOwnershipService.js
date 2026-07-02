@@ -51,9 +51,9 @@ const getStaffPendingTasks = async (executor, userId) => {
      FROM cargo c
      WHERE ${STAFF_TASK_OWNER_SQL} = $1
        AND c.placement_status = $2
-       AND c.registration_status <> $3
+       AND c.registration_status = $3
        AND c.is_deleted = FALSE`,
-    [userId, PLACEMENT_STATUS.UNPLACED, REGISTRATION_STATUS.REJECTED]
+    [userId, PLACEMENT_STATUS.UNPLACED, REGISTRATION_STATUS.APPROVED]
   );
 
   const placementOverrides = await countRows(
@@ -127,7 +127,7 @@ const reassignStaffPendingTasks = async (executor, sourceUserId, targetUserId) =
          c.registration_status IN ($3, $4)
          OR (
            c.placement_status = $5
-           AND c.registration_status <> $6
+           AND c.registration_status = $6
          )
        )
      RETURNING id, cargo_id`,
@@ -137,7 +137,7 @@ const reassignStaffPendingTasks = async (executor, sourceUserId, targetUserId) =
       REGISTRATION_STATUS.PENDING_REVIEW,
       REGISTRATION_STATUS.CORRECTION_REQUIRED,
       PLACEMENT_STATUS.UNPLACED,
-      REGISTRATION_STATUS.REJECTED
+      REGISTRATION_STATUS.APPROVED
     ]
   );
 
@@ -149,15 +149,29 @@ const reassignStaffPendingTasks = async (executor, sourceUserId, targetUserId) =
 
 const reassignSupervisorPendingTasks = async (executor, sourceUserId, targetUserId) => {
   const result = await executor.query(
-    `UPDATE approval_requests ar
+    `WITH pending AS (
+       SELECT
+         ar.id,
+         ar.cargo_id,
+         ar.request_type,
+         ${APPROVAL_ASSIGNEE_SQL} AS previous_supervisor_id
+       FROM approval_requests ar
+       JOIN cargo c ON c.id = ar.cargo_id
+       WHERE ${APPROVAL_ASSIGNEE_SQL} = $1
+         AND ar.status = 'Pending'
+         AND c.is_deleted = FALSE
+     )
+     UPDATE approval_requests ar
      SET assigned_to = $2,
          assigned_supervisor_id = $2
-     FROM cargo c
-     WHERE c.id = ar.cargo_id
-       AND ${APPROVAL_ASSIGNEE_SQL} = $1
-       AND ar.status = 'Pending'
-       AND c.is_deleted = FALSE
-     RETURNING ar.id, ar.cargo_id, ar.request_type`,
+     FROM pending
+     WHERE ar.id = pending.id
+     RETURNING
+       ar.id,
+       ar.cargo_id,
+       ar.request_type,
+       pending.previous_supervisor_id,
+       ar.assigned_to AS new_supervisor_id`,
     [sourceUserId, targetUserId]
   );
 

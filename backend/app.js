@@ -18,6 +18,8 @@ const userSessionRoutes = require("./routes/userSessionRoutes");
 const binRuleRoutes = require("./routes/binRuleRoutes");
 const supervisorRoutes = require("./routes/supervisorRoutes");
 const dispatchRoutes = require("./routes/dispatchRoutes");
+const notificationRoutes = require("./routes/notificationRoutes");
+const profileRoutes = require("./routes/profileRoutes");
 const {
   errorHandler,
   notFoundHandler
@@ -82,6 +84,7 @@ app.get("/api/health", async (req, res, next) => {
 // Auth routes (no portal access check needed)
 app.use("/api/auth", authRoutes);
 app.use("/api/bootstrap", bootstrapRoutes);
+app.use("/api/profile", profileRoutes);
 
 app.use("/api", requirePortalAccess);
 
@@ -100,6 +103,7 @@ app.use("/api/user-sessions", userSessionRoutes);
 app.use("/api/bin-rules", binRuleRoutes);
 app.use("/api/supervisor", supervisorRoutes);
 app.use("/api/dispatch", dispatchRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

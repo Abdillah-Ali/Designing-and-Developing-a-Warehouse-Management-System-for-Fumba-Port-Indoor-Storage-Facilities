@@ -1,6 +1,8 @@
 const express = require("express");
 const {
   confirmPlacement,
+  getPlacementActivitySummary,
+  getPlacementActivityTimeline,
   getPlacementSettings,
   getPlacementFailures,
   getPlacementLogs,
@@ -14,6 +16,8 @@ const router = express.Router();
 
 router.get("/logs", requireRole("System Admin"), getPlacementLogs);
 router.get("/failures", requireRole("System Admin"), getPlacementFailures);
+router.get("/activity", getPlacementActivityTimeline);
+router.get("/activity/summary", getPlacementActivitySummary);
 router.get("/settings", getPlacementSettings);
 router.put(
   "/settings",

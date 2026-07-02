@@ -3,6 +3,13 @@ const { roleNames } = require("../config/systemConfig");
 const { writeAuditLog } = require("../models/adminModel");
 const { buildError } = require("../utils/apiError");
 const {
+  NOTIFICATION_TYPES,
+  createNotificationsForAudience,
+  notifyCorrectionRequested,
+  notifyPlacementOverrideDecision,
+  notifyRegistrationDecision
+} = require("../services/notificationService");
+const {
   CORRECTION_FIELDS,
   REGISTRATION_STATUS,
   REJECTION_REASONS,
@@ -12,7 +19,6 @@ const {
   normalizeCorrectionFields,
   updateCargoRegistrationStatus
 } = require("../services/cargoWorkflowService");
-const { APPROVAL_ASSIGNEE_SQL } = require("../services/taskOwnershipService");
 
 const approvalSelect = `
   SELECT
@@ -70,13 +76,6 @@ const assertWarehouseAccess = (req, warehouseId) => {
 
 const assertApprovalAccess = (req, approval) => {
   assertWarehouseAccess(req, approval.warehouse_id);
-
-  if (req.auth?.role !== "warehouse-supervisor") return;
-
-  const assignedTo = approval.assigned_to || approval.assigned_supervisor_id;
-  if (assignedTo && Number(assignedTo) !== Number(req.auth?.userId)) {
-    throw buildError("Approval request not found.", 404);
-  }
 };
 
 const getSupervisorWarehouseScope = (req) => (
@@ -119,9 +118,6 @@ const getSupervisorDashboard = async (req, res, next) => {
     const warehouseUsers = warehouseId
       ? `AND u.warehouse_id = $2`
       : "";
-    const approvalAssignment = req.auth?.role === "warehouse-supervisor"
-      ? `AND (${APPROVAL_ASSIGNEE_SQL} IS NULL OR ${APPROVAL_ASSIGNEE_SQL} = $${values.push(req.auth.userId)})`
-      : "";
 
     await ensurePendingRegistrationApprovals(db, warehouseId);
 
@@ -129,7 +125,7 @@ const getSupervisorDashboard = async (req, res, next) => {
       `SELECT
         (SELECT COUNT(*)::int FROM approval_requests ar
          JOIN cargo c ON c.id = ar.cargo_id
-         WHERE ar.status = 'Pending' AND c.is_deleted = FALSE ${warehouseCargo} ${approvalAssignment}) AS pending_approvals,
+         WHERE ar.status = 'Pending' AND c.is_deleted = FALSE ${warehouseCargo}) AS pending_approvals,
         (SELECT COUNT(*)::int FROM placement_validation_logs pvl
          LEFT JOIN cargo c ON c.id = pvl.cargo_id
          WHERE pvl.approved = FALSE ${warehouseCargo}) AS rejected_placements,
@@ -185,11 +181,6 @@ const getApprovals = async (req, res, next) => {
       values.push(warehouseId);
       clauses.push(`c.warehouse_id = $${values.length}`);
     }
-    if (req.auth?.role === "warehouse-supervisor" && req.query.status === "Pending") {
-      values.push(req.auth.userId);
-      clauses.push(`(${APPROVAL_ASSIGNEE_SQL} IS NULL OR ${APPROVAL_ASSIGNEE_SQL} = $${values.length})`);
-    }
-
     const result = await db.query(
       `${approvalSelect}
        ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
@@ -220,16 +211,20 @@ const getApproval = async (req, res, next) => {
   }
 };
 
-const decideApproval = async (req, res, next, decision) => {
+const decideApproval = async (req, res, next, decision, options = {}) => {
   const client = await db.pool.connect();
 
   try {
     const notes = String(req.body.decision_notes || "").trim();
+    const emergency = Boolean(options.emergency);
+    const emergencyReason = String(req.body.emergency_reason || req.body.reason || "").trim();
+    const decisionNotes = emergency ? emergencyReason : notes;
     await client.query("BEGIN");
 
     const approvalResult = await client.query(
       `SELECT ar.*, ar.cargo_id AS cargo_record_id, c.cargo_id,
               c.registration_status, c.placement_status, c.warehouse_id,
+              c.assigned_staff_id, c.created_by, c.received_by_user_id,
               COALESCE(ar.assigned_to, ar.assigned_supervisor_id) AS assigned_to
        FROM approval_requests ar
        JOIN cargo c ON c.id = ar.cargo_id
@@ -247,6 +242,15 @@ const decideApproval = async (req, res, next, decision) => {
     }
 
     const isRegistrationApproval = approval.request_type === "CARGO_REGISTRATION";
+    if (emergency) {
+      if (!isRegistrationApproval || decision !== "Approved") {
+        throw buildError("Emergency approval is only available for cargo registration approvals.", 400);
+      }
+      if (!emergencyReason) {
+        throw buildError("Emergency approval reason is required.", 400);
+      }
+    }
+
     const rejectionCode = String(req.body.rejection_code || "").trim();
     const rejectionCondition = getRejectionReason(rejectionCode);
     const rejectionDetails = String(req.body.rejection_reason || "").trim();
@@ -274,14 +278,16 @@ const decideApproval = async (req, res, next, decision) => {
            decided_at = CURRENT_TIMESTAMP,
            decided_by = $3
        WHERE id = $4`,
-      [decision, notes || null, req.auth?.userId || null, approval.id]
+      [decision, decisionNotes || null, req.auth?.userId || null, approval.id]
     );
 
     let auditAction;
     if (isRegistrationApproval) {
       const isAdminOverride = req.auth?.role === "system-admin";
       auditAction = decision === "Approved"
-        ? isAdminOverride ? "ADMIN_FORCE_APPROVE_CARGO" : "SUPERVISOR_APPROVE_CARGO"
+        ? emergency
+          ? "EMERGENCY_APPROVE_CARGO"
+          : isAdminOverride ? "ADMIN_FORCE_APPROVE_CARGO" : "SUPERVISOR_APPROVE_CARGO"
         : isAdminOverride ? "ADMIN_FORCE_REJECT_CARGO" : "SUPERVISOR_REJECT_CARGO";
 
       if (decision === "Approved") {
@@ -340,16 +346,26 @@ const decideApproval = async (req, res, next, decision) => {
          VALUES ($1, $2, $3, $4, $5, $6)`,
         [
           approval.cargo_record_id,
-          decision === "Approved" ? "REGISTRATION_APPROVED" : "REGISTRATION_REJECTED",
           decision === "Approved"
-            ? notes || "Cargo registration approved. Placement status was left unchanged."
+            ? emergency ? "EMERGENCY_REGISTRATION_APPROVED" : "REGISTRATION_APPROVED"
+            : "REGISTRATION_REJECTED",
+          decision === "Approved"
+            ? emergency
+              ? emergencyReason
+              : notes || "Cargo registration approved. Placement status was left unchanged."
             : `${rejectionReason}${correctiveNotes ? `\n${correctiveNotes}` : ""}`,
           JSON.stringify(decision === "Rejected"
             ? {
                 rejection_code: rejectionCode,
                 registration_can_be_revised: true
               }
-            : {}),
+            : {
+                emergency,
+                emergency_reason: emergency ? emergencyReason : null,
+                previous_status: approval.registration_status,
+                new_status: REGISTRATION_STATUS.APPROVED,
+                approval_request_id: approval.id
+              }),
           req.auth?.userId || null,
           req.auth?.warehouseId || approval.warehouse_id || null
         ]
@@ -400,12 +416,72 @@ const decideApproval = async (req, res, next, decision) => {
           approval_request_id: approval.id,
           cargo_id: approval.cargo_record_id,
           warehouse_id: approval.warehouse_id,
-          decision_notes: notes || null,
-          rejection_code: rejectionCode || null
+          decision_notes: emergency ? emergencyReason : notes || null,
+          rejection_code: rejectionCode || null,
+          emergency,
+          emergency_reason: emergency ? emergencyReason : null,
+          previous_status: approval.registration_status,
+          new_status: decision
         }
       },
       client
     );
+
+    if (isRegistrationApproval) {
+      await notifyRegistrationDecision(
+        {
+          cargo: {
+            ...approval,
+            id: approval.cargo_record_id
+          },
+          approvalRequestId: approval.id,
+          decision,
+          notes: emergency ? emergencyReason : decision === "Approved" ? notes : rejectionReason || notes,
+          actorId: req.auth?.userId || null
+        },
+        client
+      );
+      if (emergency) {
+        await createNotificationsForAudience(
+          {
+            notification_type: NOTIFICATION_TYPES.WAREHOUSE_ALERT,
+            title: `Emergency cargo approval: ${approval.cargo_id}`,
+            message: emergencyReason,
+            related_module: "Cargo Approvals",
+            related_entity_type: "cargo",
+            related_entity_id: approval.cargo_record_id,
+            priority: "urgent",
+            created_by: req.auth?.userId || null,
+            metadata: {
+              approval_request_id: approval.id,
+              cargo_id: approval.cargo_record_id,
+              cargo_identifier: approval.cargo_id,
+              emergency: true,
+              emergency_reason: emergencyReason,
+              acted_by: req.auth?.userId || null,
+              acted_at: new Date().toISOString()
+            }
+          },
+          { roleName: roleNames.systemAdmin },
+          client,
+          { actorId: req.auth?.userId || null, fallbackBroadTarget: true }
+        );
+      }
+    } else if (approval.request_type === "PLACEMENT_OVERRIDE") {
+      await notifyPlacementOverrideDecision(
+        {
+          cargo: {
+            ...approval,
+            id: approval.cargo_record_id
+          },
+          approval,
+          decision,
+          notes,
+          actorId: req.auth?.userId || null
+        },
+        client
+      );
+    }
 
     const result = await client.query(
       `${approvalSelect}
@@ -424,6 +500,13 @@ const decideApproval = async (req, res, next, decision) => {
 
 const approveApproval = (req, res, next) => decideApproval(req, res, next, "Approved");
 const rejectApproval = (req, res, next) => decideApproval(req, res, next, "Rejected");
+const emergencyApproveApproval = (req, res, next) => decideApproval(
+  req,
+  res,
+  next,
+  "Approved",
+  { emergency: true }
+);
 
 const requestCorrection = async (req, res, next) => {
   const client = await db.pool.connect();
@@ -529,6 +612,16 @@ const requestCorrection = async (req, res, next) => {
           correction_notes: notes,
           correction_fields: correctionFields
         }
+      },
+      client
+    );
+    await notifyCorrectionRequested(
+      {
+        cargo: approval,
+        approvalRequestId: approval.approval_id,
+        correctionFields,
+        notes,
+        actorId: req.auth?.userId || null
       },
       client
     );
@@ -678,6 +771,7 @@ const getPlacementSummary = async (req, res, next) => {
 
 module.exports = {
   approveApproval,
+  emergencyApproveApproval,
   getApproval,
   getApprovals,
   getMyReviewHistory,

@@ -108,6 +108,10 @@ INSERT INTO system_settings (setting_key, setting_value)
 VALUES ('manual_placement_enabled', 'false'::jsonb)
 ON CONFLICT (setting_key) DO NOTHING;
 
+INSERT INTO system_settings (setting_key, setting_value)
+VALUES ('cargo_pending_review_escalation_hours', '2'::jsonb)
+ON CONFLICT (setting_key) DO NOTHING;
+
 
 
 CREATE TABLE IF NOT EXISTS zones (
@@ -584,7 +588,7 @@ SELECT
   c.id,
   COALESCE(c.created_by, c.received_by_user_id),
   c.warehouse_id,
-  'Cargo registration requires independent Warehouse Supervisor review and may proceed to placement while review is pending.',
+  'Cargo registration requires independent Warehouse Supervisor review before placement can begin.',
   'Pending',
   jsonb_build_object(
     'cargo_condition', c.cargo_condition,
@@ -650,6 +654,49 @@ CREATE TABLE IF NOT EXISTS dispatch_requests (
   decided_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   CHECK (status IN ('Pending', 'Approved', 'Rejected', 'Cancelled'))
 );
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id SERIAL PRIMARY KEY,
+  recipient_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  recipient_role_id INTEGER REFERENCES roles(id) ON DELETE CASCADE,
+  recipient_warehouse_id INTEGER REFERENCES warehouses(id) ON DELETE CASCADE,
+  notification_type VARCHAR(80) NOT NULL,
+  title VARCHAR(180) NOT NULL,
+  message TEXT NOT NULL,
+  related_module VARCHAR(120),
+  related_entity_type VARCHAR(80),
+  related_entity_id INTEGER,
+  priority VARCHAR(20) NOT NULL DEFAULT 'normal',
+  is_read BOOLEAN NOT NULL DEFAULT FALSE,
+  read_at TIMESTAMP,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at TIMESTAMP,
+  archived_at TIMESTAMP,
+  archived_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  CHECK (priority IN ('low', 'normal', 'high', 'urgent'))
+);
+
+ALTER TABLE notifications
+  ADD COLUMN IF NOT EXISTS recipient_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  ADD COLUMN IF NOT EXISTS recipient_role_id INTEGER REFERENCES roles(id) ON DELETE CASCADE,
+  ADD COLUMN IF NOT EXISTS recipient_warehouse_id INTEGER REFERENCES warehouses(id) ON DELETE CASCADE,
+  ADD COLUMN IF NOT EXISTS related_module VARCHAR(120),
+  ADD COLUMN IF NOT EXISTS related_entity_type VARCHAR(80),
+  ADD COLUMN IF NOT EXISTS related_entity_id INTEGER,
+  ADD COLUMN IF NOT EXISTS priority VARCHAR(20) NOT NULL DEFAULT 'normal',
+  ADD COLUMN IF NOT EXISTS is_read BOOLEAN NOT NULL DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS read_at TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS archived_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_priority_check;
+ALTER TABLE notifications
+  ADD CONSTRAINT notifications_priority_check CHECK (priority IN ('low', 'normal', 'high', 'urgent'));
 
 CREATE TABLE IF NOT EXISTS bin_rules (
   id SERIAL PRIMARY KEY,
@@ -777,6 +824,11 @@ CREATE INDEX IF NOT EXISTS idx_cargo_active_vehicle_consignee_type
     AND placement_status <> 'Dispatched';
 CREATE INDEX IF NOT EXISTS idx_cargo_approval_history_cargo ON cargo_approval_history(cargo_id, performed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_dispatch_requests_status ON dispatch_requests(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_recipient_user ON notifications(recipient_user_id, is_read, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_recipient_role ON notifications(recipient_role_id, is_read, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_recipient_warehouse ON notifications(recipient_warehouse_id, is_read, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_type_priority ON notifications(notification_type, priority, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_archived ON notifications(archived_at);
 CREATE INDEX IF NOT EXISTS idx_users_role_id ON users(role_id);
 CREATE INDEX IF NOT EXISTS idx_users_warehouse_id ON users(warehouse_id);
 CREATE INDEX IF NOT EXISTS idx_users_shift_id ON users(shift_id);

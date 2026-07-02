@@ -10,6 +10,14 @@ const textValue = (value) => {
   return normalized || null;
 };
 
+const formatWarehouse = (row) => {
+  if (!row) return row;
+  return {
+    ...row,
+    status: row.status === "active" ? "Active" : row.status === "inactive" ? "Inactive" : row.status
+  };
+};
+
 const getWarehouses = async (req, res, next) => {
   try {
     const result = await db.query(
@@ -27,7 +35,7 @@ const getWarehouses = async (req, res, next) => {
       GROUP BY w.id
       ORDER BY w.warehouse_code`
     );
-    res.json({ success: true, count: result.rowCount, data: result.rows });
+    res.json({ success: true, count: result.rowCount, data: result.rows.map(formatWarehouse) });
   } catch (error) {
     next(error);
   }
@@ -38,7 +46,7 @@ const createWarehouse = async (req, res, next) => {
   try {
     const name = textValue(req.body.warehouse_name ?? req.body.name);
     const code = textValue(req.body.warehouse_code ?? req.body.code)?.toUpperCase();
-    const status = textValue(req.body.status) || "active";
+    const status = textValue(req.body.status)?.toLowerCase() || "active";
 
     if (!name) throw buildError("Warehouse name is required.", 400);
     if (!code || !WAREHOUSE_CODE_PATTERN.test(code)) {
@@ -82,7 +90,7 @@ const createWarehouse = async (req, res, next) => {
     );
 
     await client.query("COMMIT");
-    res.status(201).json({ success: true, data: result.rows[0] });
+    res.status(201).json({ success: true, data: formatWarehouse(result.rows[0]) });
   } catch (error) {
     await client.query("ROLLBACK");
     next(error);
@@ -97,7 +105,7 @@ const updateWarehouse = async (req, res, next) => {
     const id = req.params.id;
     const name = textValue(req.body.warehouse_name ?? req.body.name);
     const code = textValue(req.body.warehouse_code ?? req.body.code)?.toUpperCase();
-    const status = textValue(req.body.status);
+    const status = textValue(req.body.status)?.toLowerCase();
 
     if (!name) throw buildError("Warehouse name is required.", 400);
     if (!code || !WAREHOUSE_CODE_PATTERN.test(code)) {
@@ -161,7 +169,7 @@ const updateWarehouse = async (req, res, next) => {
     );
 
     await client.query("COMMIT");
-    res.json({ success: true, data: result.rows[0] });
+    res.json({ success: true, data: formatWarehouse(result.rows[0]) });
   } catch (error) {
     await client.query("ROLLBACK");
     next(error);
@@ -174,7 +182,7 @@ const updateWarehouseStatus = async (req, res, next) => {
   const client = await db.pool.connect();
   try {
     const id = req.params.id;
-    const status = textValue(req.body.status);
+    const status = textValue(req.body.status)?.toLowerCase();
 
     if (!["active", "inactive"].includes(status)) {
       throw buildError("Warehouse status must be active or inactive.", 400);
@@ -218,7 +226,7 @@ const updateWarehouseStatus = async (req, res, next) => {
     );
 
     await client.query("COMMIT");
-    res.json({ success: true, data: result.rows[0] });
+    res.json({ success: true, data: formatWarehouse(result.rows[0]) });
   } catch (error) {
     await client.query("ROLLBACK");
     next(error);
