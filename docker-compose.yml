@@ -24,6 +24,7 @@ services:
     container_name: fumba-backend
 
     restart: unless-stopped
+    command: sh -c "npm install --no-audit --no-fund && npm run migrate && npm run dev"
 
     depends_on:
       - postgres
@@ -59,6 +60,7 @@ services:
     container_name: fumba-frontend
 
     restart: unless-stopped
+    command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host"
 
     depends_on:
       - backend

@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const { roleNames } = require("../config/systemConfig");
 
 const userSelect = `
   SELECT
@@ -10,6 +11,15 @@ const userSelect = `
     u.role_id,
     r.role_name,
     r.role_description,
+    CASE
+      WHEN r.role_name IN ('Warehouse Staff', 'Supervisor') THEN 'Warehouse'
+      WHEN r.role_name = 'System Admin' THEN 'Management'
+      WHEN LOWER(r.role_name) LIKE '%custom%' THEN 'Customs'
+      WHEN LOWER(r.role_name) LIKE '%finance%' THEN 'Finance'
+      WHEN LOWER(r.role_name) LIKE '%gate%' THEN 'Gate'
+      WHEN LOWER(r.role_name) LIKE '%management%' THEN 'Management'
+      ELSE r.role_name
+    END AS department_name,
     u.warehouse_id,
     w.warehouse_name,
     w.warehouse_code,
@@ -17,6 +27,9 @@ const userSelect = `
     s.shift_name,
     s.start_time,
     s.end_time,
+    scanner_account.id AS scanner_account_id,
+    scanner_account.status AS scanner_account_status,
+    scanner_account.last_login AS scanner_last_login,
     u.status,
     u.must_change_password,
     u.is_system_user,
@@ -29,11 +42,12 @@ const userSelect = `
   JOIN roles r ON r.id = u.role_id
   LEFT JOIN warehouses w ON w.id = u.warehouse_id
   LEFT JOIN shifts s ON s.id = u.shift_id
+  LEFT JOIN scanner_accounts scanner_account ON scanner_account.user_id = u.id
 `;
 
 const listUsers = async (filters = {}) => {
-  const values = [];
-  const clauses = [];
+  const values = [roleNames.scanner];
+  const clauses = ["r.role_name <> $1"];
 
   if (filters.search) {
     values.push(`%${filters.search}%`);
@@ -386,12 +400,18 @@ const listUserSessions = async (filters = {}) => {
   );
 };
 
-const createUserSession = async ({ user_id, ip_address }, executor = db) => {
+const createUserSession = async ({
+  user_id,
+  ip_address,
+  identity_type = "user",
+  scanner_account_id = null
+}, executor = db) => {
   return executor.query(
-    `INSERT INTO user_sessions (user_id, ip_address, session_status)
-    VALUES ($1, $2, 'active')
+    `INSERT INTO user_sessions
+      (user_id, identity_type, scanner_account_id, ip_address, session_status)
+    VALUES ($1, $2, $3, $4, 'active')
     RETURNING id, login_time, session_status`,
-    [user_id, ip_address || null]
+    [user_id, identity_type, scanner_account_id, ip_address || null]
   );
 };
 
@@ -415,6 +435,16 @@ const updateLastLogin = async (userId, executor = db) => {
         updated_at = CURRENT_TIMESTAMP
     WHERE id = $1`,
     [userId]
+  );
+};
+
+const updateScannerLastLogin = async (scannerAccountId, executor = db) => {
+  return executor.query(
+    `UPDATE scanner_accounts
+     SET last_login = CURRENT_TIMESTAMP,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = $1`,
+    [scannerAccountId]
   );
 };
 
@@ -460,6 +490,7 @@ module.exports = {
   listUsers,
   listWarehouses,
   updateLastLogin,
+  updateScannerLastLogin,
   updateUser,
   writeAuditLog
 };

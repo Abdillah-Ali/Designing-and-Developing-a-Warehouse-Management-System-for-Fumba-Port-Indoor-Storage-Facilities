@@ -12,6 +12,7 @@ const {
   listUsers: fetchUsers,
   listWarehouses: fetchWarehouses,
   updateLastLogin,
+  updateScannerLastLogin,
   updateUser: patchUser,
   writeAuditLog
 } = require("../models/adminModel");
@@ -193,6 +194,10 @@ const validateUserRecord = async (client, payload, existing = null) => {
 
   if (role.role_name === roleNames.warehouseSupervisor && !candidate.warehouse_id) {
     throw buildError("Warehouse Supervisor must be assigned to a warehouse.", 400);
+  }
+
+  if (role.role_name === roleNames.scanner) {
+    throw buildError("Use Create Scanner to add scanner credentials to an existing user.", 400);
   }
 
   const duplicateResult = await client.query(
@@ -423,28 +428,66 @@ const getClientIp = (req) => (
   || null
 );
 
-const buildAuthToken = (user, sessionId, mustChangePassword = user.must_change_password) => createToken({
+const assertPasswordDiffersFromScanner = async (client, userId, password) => {
+  if (!userId || !password) return;
+
+  const result = await client.query(
+    `SELECT password_hash
+     FROM scanner_accounts
+     WHERE user_id = $1
+       AND status = 'active'
+     LIMIT 1`,
+    [userId]
+  );
+
+  if (result.rows[0] && await verifyPassword(password, result.rows[0].password_hash, client)) {
+    throw buildError(
+      "Scanner password must be different from the user’s normal account password.",
+      400
+    );
+  }
+};
+
+const buildAuthToken = (
+  user,
+  sessionId,
+  mustChangePassword = user.must_change_password,
+  identity = {}
+) => {
+  const scannerAccountId = Number(identity.scannerAccountId) || null;
+  const isScannerIdentity = Boolean(scannerAccountId);
+  const roleName = isScannerIdentity ? roleNames.scanner : user.role_name;
+  const roleId = isScannerIdentity ? identity.scannerRoleId : user.role_id;
+
+  return createToken({
   userId: user.id,
   user_id: user.id,
   username: user.username,
-  role: user.role_name,
-  roleId: user.role_id,
-  role_id: user.role_id,
+  role: roleName,
+  roleId,
+  role_id: roleId,
   warehouseId: user.warehouse_id || null,
   warehouse_id: user.warehouse_id || null,
   shiftId: user.shift_id || null,
   shift_id: user.shift_id || null,
+  scannerStaffId: isScannerIdentity ? user.id : null,
+  scanner_staff_id: isScannerIdentity ? user.id : null,
+  scannerAccountId,
+  scanner_account_id: scannerAccountId,
+  identityType: isScannerIdentity ? "scanner" : "user",
+  identity_type: isScannerIdentity ? "scanner" : "user",
   sessionId,
   session_id: sessionId,
-  mustChangePassword: Boolean(mustChangePassword),
-  must_change_password: Boolean(mustChangePassword),
-  isSystemUser: Boolean(user.is_system_user),
-  is_system_user: Boolean(user.is_system_user),
-  isBootstrapAdmin: Boolean(user.is_bootstrap_admin),
-  is_bootstrap_admin: Boolean(user.is_bootstrap_admin),
-  bootstrapCompleted: Boolean(user.bootstrap_completed),
-  bootstrap_completed: Boolean(user.bootstrap_completed)
-}, process.env.JWT_EXPIRES_IN || "24h");
+  mustChangePassword: isScannerIdentity ? false : Boolean(mustChangePassword),
+  must_change_password: isScannerIdentity ? false : Boolean(mustChangePassword),
+  isSystemUser: isScannerIdentity ? false : Boolean(user.is_system_user),
+  is_system_user: isScannerIdentity ? false : Boolean(user.is_system_user),
+  isBootstrapAdmin: isScannerIdentity ? false : Boolean(user.is_bootstrap_admin),
+  is_bootstrap_admin: isScannerIdentity ? false : Boolean(user.is_bootstrap_admin),
+  bootstrapCompleted: isScannerIdentity ? false : Boolean(user.bootstrap_completed),
+  bootstrap_completed: isScannerIdentity ? false : Boolean(user.bootstrap_completed)
+  }, process.env.JWT_EXPIRES_IN || "24h");
+};
 
 const getUsers = async (req, res, next) => {
   try {
@@ -657,6 +700,125 @@ const createUser = async (req, res, next) => {
   }
 };
 
+const createScanner = async (req, res, next) => {
+  const client = await db.pool.connect();
+
+  try {
+    const userId = readId(req.body?.user_id, "User", true);
+    const password = req.body?.password;
+
+    if (!password) {
+      throw buildError("Scanner password is required.", 400);
+    }
+
+    if (!passwordPattern.test(password)) {
+      throw buildError(passwordPolicyMessage, 400);
+    }
+
+    await client.query("BEGIN");
+
+    const userResult = await client.query(
+      `SELECT
+         u.id,
+         u.full_name,
+         u.username,
+         u.email,
+         u.password_hash,
+         u.status,
+         u.is_bootstrap_admin,
+         u.role_id,
+         r.role_name,
+         CASE
+           WHEN r.role_name IN ('Warehouse Staff', 'Supervisor') THEN 'Warehouse'
+           WHEN r.role_name = 'System Admin' THEN 'Management'
+           WHEN LOWER(r.role_name) LIKE '%custom%' THEN 'Customs'
+           WHEN LOWER(r.role_name) LIKE '%finance%' THEN 'Finance'
+           WHEN LOWER(r.role_name) LIKE '%gate%' THEN 'Gate'
+           WHEN LOWER(r.role_name) LIKE '%management%' THEN 'Management'
+           ELSE r.role_name
+         END AS department_name
+       FROM users u
+       JOIN roles r ON r.id = u.role_id
+       WHERE u.id = $1
+       LIMIT 1
+       FOR UPDATE OF u`,
+      [userId]
+    );
+    const user = userResult.rows[0];
+
+    if (!user || user.status !== "active" || user.is_bootstrap_admin || user.role_name === roleNames.scanner) {
+      throw buildError("Select an active normal user account.", 400);
+    }
+
+    if (await verifyPassword(password, user.password_hash, client)) {
+      throw buildError(
+        "Scanner password must be different from the user’s normal account password.",
+        400
+      );
+    }
+
+    const existingResult = await client.query(
+      "SELECT id FROM scanner_accounts WHERE user_id = $1 LIMIT 1",
+      [userId]
+    );
+    if (existingResult.rowCount > 0) {
+      throw buildError("This user already has a scanner account.", 409);
+    }
+
+    const passwordHash = await hashPassword(password, client);
+    const scannerResult = await client.query(
+      `INSERT INTO scanner_accounts
+         (user_id, password_hash, status, created_by)
+       VALUES ($1, $2, 'active', $3)
+       RETURNING id, user_id, status, created_at`,
+      [userId, passwordHash, req.auth?.userId || null]
+    );
+    const scannerAccount = scannerResult.rows[0];
+
+    await writeAuditLog(
+      {
+        user_id: req.auth?.userId || null,
+        target_user_id: userId,
+        action: "CREATE_SCANNER_ACCOUNT",
+        module: "User Management",
+        description: `Created scanner credentials for ${user.username}.`,
+        metadata: {
+          scanner_account_id: scannerAccount.id,
+          linked_user_id: user.id,
+          linked_username: user.username,
+          department: user.department_name,
+          normal_role: user.role_name
+        }
+      },
+      client
+    );
+
+    await client.query("COMMIT");
+
+    res.status(201).json({
+      success: true,
+      message: "Scanner account created.",
+      data: {
+        ...scannerAccount,
+        full_name: user.full_name,
+        username: user.username,
+        email: user.email,
+        department_name: user.department_name,
+        role_name: user.role_name
+      }
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    if (error.code === "23505") {
+      next(buildError("This user already has a scanner account.", 409));
+      return;
+    }
+    next(mapDatabaseError(error));
+  } finally {
+    client.release();
+  }
+};
+
 const updateUser = async (req, res, next) => {
   const client = await db.pool.connect();
 
@@ -694,6 +856,9 @@ const updateUser = async (req, res, next) => {
       }
     }
 
+    if (payload.password) {
+      await assertPasswordDiffersFromScanner(client, id, payload.password);
+    }
     const passwordHash = payload.password ? await hashPassword(payload.password, client) : null;
     const passwordReset = Boolean(passwordHash);
     delete payload.password;
@@ -963,6 +1128,7 @@ const resetUserPassword = async (req, res, next) => {
       );
     }
 
+    await assertPasswordDiffersFromScanner(client, id, password);
     const passwordHash = await hashPassword(password, client);
     await patchUser(id, {}, passwordHash, client);
     const invalidated = await invalidateUserSessions(id, client);
@@ -1086,16 +1252,22 @@ const login = async (req, res, next) => {
         u.bootstrap_completed,
         u.role_id,
         r.role_name,
+        scanner_account.id AS scanner_account_id,
+        scanner_account.password_hash AS scanner_password_hash,
+        scanner_account.status AS scanner_account_status,
+        scanner_role.id AS scanner_role_id,
         u.warehouse_id,
         w.warehouse_name,
         u.shift_id,
         s.shift_name
       FROM users u
       JOIN roles r ON r.id = u.role_id
+      LEFT JOIN scanner_accounts scanner_account ON scanner_account.user_id = u.id
+      LEFT JOIN roles scanner_role ON scanner_role.role_name = $2
       LEFT JOIN warehouses w ON w.id = u.warehouse_id
       LEFT JOIN shifts s ON s.id = u.shift_id
-      WHERE u.username = $1`,
-      [username]
+      WHERE LOWER(u.username) = LOWER($1)`,
+      [username, roleNames.scanner]
     );
 
     if (result.rowCount === 0) {
@@ -1104,8 +1276,13 @@ const login = async (req, res, next) => {
 
     const user = result.rows[0];
 
-    const passwordMatch = await verifyPassword(password, user.password_hash, client);
-    if (!passwordMatch) {
+    const normalPasswordMatch = await verifyPassword(password, user.password_hash, client);
+    const scannerPasswordMatch = !normalPasswordMatch
+      && user.scanner_account_id
+      && user.scanner_account_status === "active"
+      && await verifyPassword(password, user.scanner_password_hash, client);
+
+    if (!normalPasswordMatch && !scannerPasswordMatch) {
       throw buildError("Invalid username or password.", 401);
     }
 
@@ -1113,11 +1290,17 @@ const login = async (req, res, next) => {
       throw buildError("User account is not active.", 403);
     }
 
-    if (!allowedPortalRoleNames.includes(user.role_name)) {
+    const isScannerLogin = Boolean(scannerPasswordMatch);
+
+    if (!isScannerLogin && user.role_name === roleNames.scanner) {
+      throw buildError("Legacy scanner users cannot sign in. Create scanner credentials for a normal user.", 403);
+    }
+
+    if (!isScannerLogin && !allowedPortalRoleNames.includes(user.role_name)) {
       throw buildError("No portal is currently available for this role.", 403);
     }
 
-    if (user.is_bootstrap_admin && user.bootstrap_completed) {
+    if (!isScannerLogin && user.is_bootstrap_admin && user.bootstrap_completed) {
       throw buildError(
         "Bootstrap setup is complete. Sign in with the real System Administrator account.",
         403
@@ -1130,25 +1313,38 @@ const login = async (req, res, next) => {
     const sessionResult = await createUserSession(
       {
         user_id: user.id,
+        identity_type: isScannerLogin ? "scanner" : "user",
+        scanner_account_id: isScannerLogin ? user.scanner_account_id : null,
         ip_address: getClientIp(req)
       },
       client
     );
     const session = sessionResult.rows[0];
 
-    await updateLastLogin(user.id, client);
+    if (isScannerLogin) {
+      await updateScannerLastLogin(user.scanner_account_id, client);
+    } else {
+      await updateLastLogin(user.id, client);
+    }
 
     await writeAuditLog(
       {
         user_id: user.id,
-        action: "USER_LOGIN",
+        role_id_at_action: isScannerLogin ? user.scanner_role_id : user.role_id,
+        action: isScannerLogin ? "SCANNER_LOGIN" : "USER_LOGIN",
         module: "Authentication",
-        description: `User ${user.username} logged in successfully.`
+        description: isScannerLogin
+          ? `Scanner identity for ${user.username} logged in successfully.`
+          : `User ${user.username} logged in successfully.`,
+        metadata: {
+          identity_type: isScannerLogin ? "scanner" : "user",
+          scanner_account_id: isScannerLogin ? user.scanner_account_id : null
+        }
       },
       client
     );
 
-    if (user.is_bootstrap_admin) {
+    if (!isScannerLogin && user.is_bootstrap_admin) {
       await writeAuditLog(
         {
           user_id: user.id,
@@ -1164,34 +1360,48 @@ const login = async (req, res, next) => {
     await client.query("COMMIT");
     transactionStarted = false;
 
-    const token = buildAuthToken(user, session.id);
+    const token = buildAuthToken(
+      user,
+      session.id,
+      isScannerLogin ? false : user.must_change_password,
+      isScannerLogin
+        ? {
+          scannerAccountId: user.scanner_account_id,
+          scannerRoleId: user.scanner_role_id
+        }
+        : {}
+    );
+    const loginRoleName = isScannerLogin ? roleNames.scanner : user.role_name;
+    const loginRoleId = isScannerLogin ? user.scanner_role_id : user.role_id;
 
     res.json({
       success: true,
       message: "Login successful.",
-      must_change_password: user.must_change_password,
-      is_bootstrap_admin: user.is_bootstrap_admin,
-      bootstrap_completed: user.bootstrap_completed,
+      must_change_password: isScannerLogin ? false : user.must_change_password,
+      is_bootstrap_admin: isScannerLogin ? false : user.is_bootstrap_admin,
+      bootstrap_completed: isScannerLogin ? false : user.bootstrap_completed,
       data: {
         token,
-        must_change_password: user.must_change_password,
-        is_bootstrap_admin: user.is_bootstrap_admin,
-        bootstrap_completed: user.bootstrap_completed,
+        must_change_password: isScannerLogin ? false : user.must_change_password,
+        is_bootstrap_admin: isScannerLogin ? false : user.is_bootstrap_admin,
+        bootstrap_completed: isScannerLogin ? false : user.bootstrap_completed,
         user: {
           id: user.id,
           full_name: user.full_name,
           username: user.username,
           email: user.email,
-          role_id: user.role_id,
-          role_name: user.role_name,
+          role_id: loginRoleId,
+          role_name: loginRoleName,
           warehouse_id: user.warehouse_id,
           warehouse_name: user.warehouse_name,
           shift_id: user.shift_id,
           shift_name: user.shift_name,
-          must_change_password: user.must_change_password,
-          is_system_user: user.is_system_user,
-          is_bootstrap_admin: user.is_bootstrap_admin,
-          bootstrap_completed: user.bootstrap_completed
+          scanner_staff_id: isScannerLogin ? user.id : null,
+          scanner_account_id: isScannerLogin ? user.scanner_account_id : null,
+          must_change_password: isScannerLogin ? false : user.must_change_password,
+          is_system_user: isScannerLogin ? false : user.is_system_user,
+          is_bootstrap_admin: isScannerLogin ? false : user.is_bootstrap_admin,
+          bootstrap_completed: isScannerLogin ? false : user.bootstrap_completed
         },
         session: {
           id: session.id,
@@ -1472,6 +1682,7 @@ const changePassword = async (req, res, next) => {
       throw buildError("New password must be different from the current password.", 400);
     }
 
+    await assertPasswordDiffersFromScanner(client, userId, newPassword);
     const newPasswordHash = await hashPassword(newPassword, client);
 
     await client.query(
@@ -1555,6 +1766,12 @@ const refreshToken = async (req, res, next) => {
       warehouse_id: decoded.warehouse_id || decoded.warehouseId || null,
       shiftId: decoded.shiftId || decoded.shift_id || null,
       shift_id: decoded.shift_id || decoded.shiftId || null,
+      scannerStaffId: decoded.scannerStaffId || decoded.scanner_staff_id || null,
+      scanner_staff_id: decoded.scanner_staff_id || decoded.scannerStaffId || null,
+      scannerAccountId: decoded.scannerAccountId || decoded.scanner_account_id || null,
+      scanner_account_id: decoded.scanner_account_id || decoded.scannerAccountId || null,
+      identityType: decoded.identityType || decoded.identity_type || "user",
+      identity_type: decoded.identity_type || decoded.identityType || "user",
       sessionId: decoded.sessionId,
       session_id: decoded.session_id || decoded.sessionId,
       mustChangePassword: Boolean(decoded.mustChangePassword ?? decoded.must_change_password),
@@ -1577,6 +1794,7 @@ const refreshToken = async (req, res, next) => {
 };
 
 module.exports = {
+  createScanner,
   createUser,
   deactivateUser,
   deleteUser,

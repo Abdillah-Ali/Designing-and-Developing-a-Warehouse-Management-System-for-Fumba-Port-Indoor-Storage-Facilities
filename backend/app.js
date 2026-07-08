@@ -20,6 +20,7 @@ const supervisorRoutes = require("./routes/supervisorRoutes");
 const dispatchRoutes = require("./routes/dispatchRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 const profileRoutes = require("./routes/profileRoutes");
+const scannerRoutes = require("./routes/scannerRoutes");
 const {
   errorHandler,
   notFoundHandler
@@ -49,10 +50,31 @@ const configuredOrigins = (process.env.CORS_ORIGIN || "")
   .filter(Boolean);
 
 const allowedOrigins = Array.from(new Set([...configuredOrigins, ...localDevOrigins]));
+const localFrontendPorts = new Set(["3000", "3001", "4173", "5173", "5174", "5175"]);
+
+const isPrivateNetworkDevOrigin = (origin) => {
+  if (process.env.NODE_ENV === "production") {
+    return false;
+  }
+
+  try {
+    const { hostname, port, protocol } = new URL(origin);
+    const isPrivateHostname =
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname.startsWith("10.") ||
+      hostname.startsWith("192.168.") ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(hostname);
+
+    return protocol === "http:" && localFrontendPorts.has(port) && isPrivateHostname;
+  } catch {
+    return false;
+  }
+};
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (!origin || allowedOrigins.includes(origin) || isPrivateNetworkDevOrigin(origin)) {
       callback(null, true);
       return;
     }
@@ -85,6 +107,7 @@ app.get("/api/health", async (req, res, next) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/bootstrap", bootstrapRoutes);
 app.use("/api/profile", profileRoutes);
+app.use("/api/scanner", scannerRoutes);
 
 app.use("/api", requirePortalAccess);
 

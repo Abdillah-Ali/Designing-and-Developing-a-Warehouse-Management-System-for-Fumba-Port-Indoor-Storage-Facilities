@@ -58,15 +58,60 @@ ALTER TABLE users
   ADD COLUMN IF NOT EXISTS is_bootstrap_admin BOOLEAN NOT NULL DEFAULT FALSE,
   ADD COLUMN IF NOT EXISTS bootstrap_completed BOOLEAN NOT NULL DEFAULT FALSE;
 
+CREATE TABLE IF NOT EXISTS scanner_accounts (
+  id SERIAL PRIMARY KEY,
+  user_id INTEGER UNIQUE NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  password_hash TEXT NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'active',
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  last_login TIMESTAMP,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CHECK (status IN ('active', 'inactive'))
+);
+
 CREATE TABLE IF NOT EXISTS user_sessions (
   id SERIAL PRIMARY KEY,
   user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  identity_type VARCHAR(20) NOT NULL DEFAULT 'user',
+  scanner_account_id INTEGER REFERENCES scanner_accounts(id) ON DELETE SET NULL,
   login_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   logout_time TIMESTAMP,
   session_status VARCHAR(30) NOT NULL DEFAULT 'active',
   ip_address VARCHAR(80),
+  CHECK (identity_type IN ('user', 'scanner')),
   CHECK (session_status IN ('active', 'closed', 'expired'))
 );
+
+ALTER TABLE user_sessions
+  ADD COLUMN IF NOT EXISTS identity_type VARCHAR(20) NOT NULL DEFAULT 'user',
+  ADD COLUMN IF NOT EXISTS scanner_account_id INTEGER REFERENCES scanner_accounts(id) ON DELETE SET NULL;
+
+CREATE TABLE IF NOT EXISTS scanner_sessions (
+  id SERIAL PRIMARY KEY,
+  staff_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  workflow_type VARCHAR(80) NOT NULL,
+  workflow_name VARCHAR(120) NOT NULL,
+  status VARCHAR(30) NOT NULL DEFAULT 'active',
+  current_step_index INTEGER NOT NULL DEFAULT 0,
+  steps JSONB NOT NULL DEFAULT '[]'::jsonb,
+  context JSONB NOT NULL DEFAULT '{}'::jsonb,
+  last_error TEXT,
+  last_success TEXT,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TIMESTAMP,
+  cancelled_at TIMESTAMP,
+  CHECK (status IN ('active', 'completed', 'cancelled')),
+  CHECK (current_step_index >= 0)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_scanner_sessions_active_staff
+  ON scanner_sessions(staff_user_id)
+  WHERE status = 'active';
+
+CREATE INDEX IF NOT EXISTS idx_scanner_sessions_staff_status
+  ON scanner_sessions(staff_user_id, status, updated_at DESC);
 
 -- Older tokens do not contain the password-change claim. Close those sessions
 -- so affected users sign in again and enter the enforced password-change flow.
@@ -779,6 +824,11 @@ CREATE TRIGGER set_users_updated_at
 BEFORE UPDATE ON users
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+DROP TRIGGER IF EXISTS set_scanner_sessions_updated_at ON scanner_sessions;
+CREATE TRIGGER set_scanner_sessions_updated_at
+BEFORE UPDATE ON scanner_sessions
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
 DROP TRIGGER IF EXISTS set_bin_rules_updated_at ON bin_rules;
 CREATE TRIGGER set_bin_rules_updated_at
 BEFORE UPDATE ON bin_rules
@@ -834,6 +884,8 @@ CREATE INDEX IF NOT EXISTS idx_users_warehouse_id ON users(warehouse_id);
 CREATE INDEX IF NOT EXISTS idx_users_shift_id ON users(shift_id);
 CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
 CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_scanner_accounts_user_id ON scanner_accounts(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_sessions_scanner_account_id ON user_sessions(scanner_account_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_target_user_id ON audit_logs(target_user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_role_snapshot ON audit_logs(role_id_at_action);

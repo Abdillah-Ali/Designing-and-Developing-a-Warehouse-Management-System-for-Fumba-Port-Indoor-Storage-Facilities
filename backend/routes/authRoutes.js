@@ -1,6 +1,6 @@
 const express = require("express");
 const { login, logout, getProfile, updateProfile, changePassword, refreshToken } = require("../controllers/adminController");
-const { optionalAuthContext, requireAuthenticated } = require("../middleware/authMiddleware");
+const { optionalAuthContext, requireAuthenticated, requireNonScanner } = require("../middleware/authMiddleware");
 
 const router = express.Router();
 const loginAttempts = new Map();
@@ -44,11 +44,11 @@ router.post("/login", loginRateLimit, optionalAuthContext, login);
 router.post("/logout", requireAuthenticated, logout);
 
 // Profile endpoints (auth required)
-router.get("/profile", requireAuthenticated, getProfile);
-router.patch("/profile", requireAuthenticated, updateProfile);
-router.put("/profile", requireAuthenticated, updateProfile);
-router.patch("/profile/change-password", requireAuthenticated, changePassword);
-router.post("/change-password", requireAuthenticated, changePassword);
+router.get("/profile", requireAuthenticated, requireNonScanner, getProfile);
+router.patch("/profile", requireAuthenticated, requireNonScanner, updateProfile);
+router.put("/profile", requireAuthenticated, requireNonScanner, updateProfile);
+router.patch("/profile/change-password", requireAuthenticated, requireNonScanner, changePassword);
+router.post("/change-password", requireAuthenticated, requireNonScanner, changePassword);
 
 router.post("/refresh", refreshToken);
 

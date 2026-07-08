@@ -1,6 +1,7 @@
 const dotenv = require("dotenv");
 const { Client } = require("pg");
 const path = require("path");
+const { roleNames } = require("../config/systemConfig");
 
 dotenv.config({ path: path.join(__dirname, "../.env") });
 
@@ -27,9 +28,78 @@ const runUpdates = async () => {
         ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT TRUE,
         ADD COLUMN IF NOT EXISTS is_system_user BOOLEAN NOT NULL DEFAULT FALSE,
         ADD COLUMN IF NOT EXISTS is_bootstrap_admin BOOLEAN NOT NULL DEFAULT FALSE,
-        ADD COLUMN IF NOT EXISTS bootstrap_completed BOOLEAN NOT NULL DEFAULT FALSE;
+        ADD COLUMN IF NOT EXISTS bootstrap_completed BOOLEAN NOT NULL DEFAULT FALSE,
+        ADD COLUMN IF NOT EXISTS scanner_staff_id INTEGER REFERENCES users(id) ON DELETE RESTRICT;
+
+      CREATE INDEX IF NOT EXISTS idx_users_scanner_staff_id
+        ON users(scanner_staff_id);
     `);
     console.log("✔ Bootstrap administrator columns checked/added");
+
+    await client.query(
+      `INSERT INTO roles (role_name, role_description)
+       VALUES ($1, $2)
+       ON CONFLICT (role_name) DO UPDATE
+       SET role_description = EXCLUDED.role_description`,
+      [
+        roleNames.scanner,
+        "Dedicated barcode scanner identity permanently linked to one active user for scan-only workflows."
+      ]
+    );
+    console.log("✔ Scanner role checked/seeded");
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS scanner_accounts (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER UNIQUE NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        password_hash TEXT NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'active',
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        last_login TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CHECK (status IN ('active', 'inactive'))
+      );
+
+      ALTER TABLE user_sessions
+        ADD COLUMN IF NOT EXISTS identity_type VARCHAR(20) NOT NULL DEFAULT 'user',
+        ADD COLUMN IF NOT EXISTS scanner_account_id INTEGER REFERENCES scanner_accounts(id) ON DELETE SET NULL;
+
+      CREATE INDEX IF NOT EXISTS idx_scanner_accounts_user_id
+        ON scanner_accounts(user_id);
+      CREATE INDEX IF NOT EXISTS idx_user_sessions_scanner_account_id
+        ON user_sessions(scanner_account_id);
+    `);
+    await client.query(`
+      INSERT INTO scanner_accounts (user_id, password_hash, status, created_by, created_at, updated_at)
+      SELECT
+        legacy.scanner_staff_id,
+        legacy.password_hash,
+        CASE WHEN legacy.status = 'active' THEN 'active' ELSE 'inactive' END,
+        legacy.id,
+        legacy.created_at,
+        legacy.updated_at
+      FROM users legacy
+      JOIN roles legacy_role ON legacy_role.id = legacy.role_id
+      JOIN users linked_user ON linked_user.id = legacy.scanner_staff_id
+      WHERE legacy_role.role_name = $1
+        AND legacy.scanner_staff_id IS NOT NULL
+      ON CONFLICT (user_id) DO NOTHING
+    `, [roleNames.scanner]);
+    await client.query(`
+      UPDATE users legacy
+      SET status = 'inactive',
+          updated_at = CURRENT_TIMESTAMP
+      FROM roles legacy_role
+      WHERE legacy.role_id = legacy_role.id
+        AND legacy_role.role_name = $1
+        AND legacy.scanner_staff_id IS NOT NULL
+    `, [roleNames.scanner]);
+    await client.query(`
+      DROP INDEX IF EXISTS idx_users_scanner_staff_id;
+      ALTER TABLE users DROP COLUMN IF EXISTS scanner_staff_id;
+    `);
+    console.log("✔ Linked scanner identities checked/created");
 
     await client.query(`
       ALTER TABLE audit_logs
@@ -129,6 +199,32 @@ const runUpdates = async () => {
         printed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         CHECK (print_type IN ('PRINT', 'REPRINT'))
       );
+
+      CREATE TABLE IF NOT EXISTS scanner_sessions (
+        id SERIAL PRIMARY KEY,
+        staff_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        workflow_type VARCHAR(80) NOT NULL,
+        workflow_name VARCHAR(120) NOT NULL,
+        status VARCHAR(30) NOT NULL DEFAULT 'active',
+        current_step_index INTEGER NOT NULL DEFAULT 0,
+        steps JSONB NOT NULL DEFAULT '[]'::jsonb,
+        context JSONB NOT NULL DEFAULT '{}'::jsonb,
+        last_error TEXT,
+        last_success TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        completed_at TIMESTAMP,
+        cancelled_at TIMESTAMP,
+        CHECK (status IN ('active', 'completed', 'cancelled')),
+        CHECK (current_step_index >= 0)
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_scanner_sessions_active_staff
+        ON scanner_sessions(staff_user_id)
+        WHERE status = 'active';
+
+      CREATE INDEX IF NOT EXISTS idx_scanner_sessions_staff_status
+        ON scanner_sessions(staff_user_id, status, updated_at DESC);
     `);
     console.log("✔ Placement settings and trace tables checked/added");
 
@@ -157,6 +253,14 @@ const runUpdates = async () => {
       FOR EACH ROW EXECUTE FUNCTION set_updated_at();
     `);
     console.log("✔ Trigger set_bin_rules_updated_at configured");
+
+    await client.query(`
+      DROP TRIGGER IF EXISTS set_scanner_sessions_updated_at ON scanner_sessions;
+      CREATE TRIGGER set_scanner_sessions_updated_at
+      BEFORE UPDATE ON scanner_sessions
+      FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+    `);
+    console.log("✔ Trigger set_scanner_sessions_updated_at configured");
 
     // 4. Seed default rules
     const defaultRules = [

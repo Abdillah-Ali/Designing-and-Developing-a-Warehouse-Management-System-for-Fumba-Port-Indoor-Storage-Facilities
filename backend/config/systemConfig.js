@@ -17,7 +17,8 @@ const parseJsonSetting = (name, fallback) => {
 const roleNames = Object.freeze({
   systemAdmin: process.env.SYSTEM_ADMIN_ROLE_NAME || "System Admin",
   warehouseStaff: process.env.WAREHOUSE_STAFF_ROLE_NAME || "Warehouse Staff",
-  warehouseSupervisor: process.env.WAREHOUSE_SUPERVISOR_ROLE_NAME || "Supervisor"
+  warehouseSupervisor: process.env.WAREHOUSE_SUPERVISOR_ROLE_NAME || "Supervisor",
+  scanner: process.env.SCANNER_ROLE_NAME || "Scanner"
 });
 
 const defaultRoleDefinitions = Object.freeze(parseJsonSetting("WMS_ROLE_DEFINITIONS_JSON", [
@@ -32,6 +33,10 @@ const defaultRoleDefinitions = Object.freeze(parseJsonSetting("WMS_ROLE_DEFINITI
   {
     name: roleNames.warehouseSupervisor,
     description: "Warehouse Supervisor access for cargo approvals, placement exceptions, dispatch authorization, and operational monitoring."
+  },
+  {
+    name: roleNames.scanner,
+    description: "Dedicated barcode scanner identity permanently linked to one active user for scan-only workflows."
   }
 ]));
 

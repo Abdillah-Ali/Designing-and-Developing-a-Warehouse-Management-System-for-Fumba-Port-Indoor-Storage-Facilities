@@ -1,5 +1,6 @@
 const express = require("express");
 const {
+  createScanner,
   createUser,
   deactivateUser,
   deleteUser,
@@ -16,6 +17,7 @@ const { requireRole } = require("../middleware/authMiddleware");
 const router = express.Router();
 
 router.route("/").get(getUsers).post(requireRole("System Admin"), createUser);
+router.post("/scanners", requireRole("System Admin"), createScanner);
 router.patch("/:id/status", requireRole("System Admin"), updateUserStatus);
 router.patch("/:id/reset-password", requireRole("System Admin"), resetUserPassword);
 router.patch("/:id/deactivate", requireRole("System Admin"), deactivateUser);

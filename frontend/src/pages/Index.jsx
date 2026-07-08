@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, Route, Routes, useSearchParams } from "react-router-dom";
 import {
   Boxes,
@@ -50,6 +50,7 @@ import {
   printCargoBarcode,
   requestDispatchAuthorization
 } from "@/services/api";
+import { createScannerSocket } from "@/services/scannerSocket";
 
 const inputClass =
   "h-9 w-full rounded border border-input bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring";
@@ -364,7 +365,7 @@ function PlacementQueuePanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
@@ -375,11 +376,22 @@ function PlacementQueuePanel() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     load();
-  }, []);
+  }, [load]);
+
+  useEffect(() => {
+    const socket = createScannerSocket();
+    socket.on("scanner:session-completed", load);
+    socket.on("scanner:session-cancelled", load);
+    socket.connect();
+
+    return () => {
+      socket.disconnect();
+    };
+  }, [load]);
 
   useEffect(() => {
     if (!printCargo || !barcodeRef.current) return;

@@ -5,7 +5,8 @@ const { verifyToken } = require("../utils/token");
 const PORTAL_ROLES = Object.freeze({
   SYSTEM_ADMIN: "system-admin",
   WAREHOUSE_STAFF: "warehouse-staff",
-  WAREHOUSE_SUPERVISOR: "warehouse-supervisor"
+  WAREHOUSE_SUPERVISOR: "warehouse-supervisor",
+  SCANNER: "scanner"
 });
 
 const roleAliases = Object.freeze({
@@ -18,9 +19,11 @@ const roleAliases = Object.freeze({
   "warehouse-supervisor": PORTAL_ROLES.WAREHOUSE_SUPERVISOR,
   "warehouse supervisor": PORTAL_ROLES.WAREHOUSE_SUPERVISOR,
   "supervisor": PORTAL_ROLES.WAREHOUSE_SUPERVISOR,
+  "scanner": PORTAL_ROLES.SCANNER,
   [roleNames.systemAdmin.toLowerCase()]: PORTAL_ROLES.SYSTEM_ADMIN,
   [roleNames.warehouseStaff.toLowerCase()]: PORTAL_ROLES.WAREHOUSE_STAFF,
-  [roleNames.warehouseSupervisor.toLowerCase()]: PORTAL_ROLES.WAREHOUSE_SUPERVISOR
+  [roleNames.warehouseSupervisor.toLowerCase()]: PORTAL_ROLES.WAREHOUSE_SUPERVISOR,
+  [roleNames.scanner.toLowerCase()]: PORTAL_ROLES.SCANNER
 });
 
 const portalPermissions = Object.freeze({
@@ -64,6 +67,7 @@ const portalPermissions = Object.freeze({
     { methods: ["GET"], pattern: /^\/supervisor\/placement-summary$/ },
     { methods: ["GET"], pattern: /^\/dispatch\/authorization-requests$/ },
     { methods: ["GET", "POST"], pattern: /^\/users$/ },
+    { methods: ["POST"], pattern: /^\/users\/scanners$/ },
     { methods: ["GET", "PUT", "DELETE"], pattern: /^\/users\/[^/]+$/ },
     { methods: ["GET"], pattern: /^\/users\/[^/]+\/pending-tasks$/ },
     { methods: ["POST"], pattern: /^\/users\/[^/]+\/reassign-tasks$/ },
@@ -181,6 +185,8 @@ const readAuthContext = (req) => {
   const userId = Number(decoded.userId || decoded.user_id || decoded.sub);
   const sessionIdValue = decoded.sessionId || decoded.session_id;
   const sessionId = sessionIdValue ? Number(sessionIdValue) : null;
+  const scannerAccountIdValue = decoded.scannerAccountId || decoded.scanner_account_id;
+  const scannerAccountId = scannerAccountIdValue ? Number(scannerAccountIdValue) : null;
 
   if (
     !role
@@ -199,6 +205,7 @@ const readAuthContext = (req) => {
       role,
       userId,
       sessionId,
+      scannerAccountId,
       username: decoded.username || null,
       roleId: Number(decoded.roleId || decoded.role_id) || null,
       mustChangePassword: Boolean(decoded.mustChangePassword ?? decoded.must_change_password),
@@ -210,23 +217,64 @@ const readAuthContext = (req) => {
   };
 };
 
-const getActiveAccountContext = async ({ sessionId, userId }) => {
+const getActiveAccountContext = async ({ sessionId, userId, role, scannerAccountId }) => {
+  if (role === PORTAL_ROLES.SCANNER) {
+    if (!Number.isInteger(scannerAccountId) || scannerAccountId <= 0) {
+      return null;
+    }
+
+    const scannerResult = await db.query(
+      `SELECT
+         u.status,
+         scanner_role.id AS role_id,
+         u.warehouse_id,
+         u.shift_id,
+         FALSE AS must_change_password,
+         FALSE AS is_system_user,
+         FALSE AS is_bootstrap_admin,
+         FALSE AS bootstrap_completed,
+         u.id AS scanner_staff_id,
+         scanner_account.id AS scanner_account_id,
+         scanner_role.role_name
+       FROM user_sessions us
+       JOIN users u ON u.id = us.user_id
+       JOIN scanner_accounts scanner_account
+         ON scanner_account.id = us.scanner_account_id
+        AND scanner_account.user_id = u.id
+       JOIN roles scanner_role ON scanner_role.role_name = $4
+       WHERE us.id = $1
+         AND us.user_id = $2
+         AND scanner_account.id = $3
+         AND us.identity_type = 'scanner'
+         AND us.session_status = 'active'
+         AND scanner_account.status = 'active'
+         AND u.status = 'active'
+       LIMIT 1`,
+      [sessionId, userId, scannerAccountId, roleNames.scanner]
+    );
+
+    return scannerResult.rows[0] || null;
+  }
+
   const result = await db.query(
     `SELECT
        u.status,
        u.role_id,
        u.warehouse_id,
        u.shift_id,
-       u.must_change_password,
-       u.is_system_user,
-       u.is_bootstrap_admin,
-       u.bootstrap_completed,
-       r.role_name
+      u.must_change_password,
+      u.is_system_user,
+      u.is_bootstrap_admin,
+      u.bootstrap_completed,
+      NULL::integer AS scanner_staff_id,
+      NULL::integer AS scanner_account_id,
+      r.role_name
     FROM user_sessions us
     JOIN users u ON u.id = us.user_id
     JOIN roles r ON r.id = u.role_id
     WHERE us.id = $1
       AND us.user_id = $2
+      AND us.identity_type = 'user'
       AND us.session_status = 'active'
       AND u.status = 'active'
     LIMIT 1`,
@@ -262,6 +310,8 @@ const requireAuthenticated = async (req, res, next) => {
       roleId: account.role_id,
       warehouseId: account.warehouse_id,
       shiftId: account.shift_id,
+      scannerStaffId: account.scanner_staff_id,
+      scannerAccountId: account.scanner_account_id,
       mustChangePassword: account.must_change_password,
       isSystemUser: account.is_system_user,
       isBootstrapAdmin: account.is_bootstrap_admin,
@@ -327,6 +377,8 @@ const requirePortalAccess = async (req, res, next) => {
       roleId: account.role_id,
       warehouseId: account.warehouse_id,
       shiftId: account.shift_id,
+      scannerStaffId: account.scanner_staff_id,
+      scannerAccountId: account.scanner_account_id,
       mustChangePassword: account.must_change_password,
       isSystemUser: account.is_system_user,
       isBootstrapAdmin: account.is_bootstrap_admin,
@@ -363,12 +415,25 @@ const requireRole = (...roles) => {
   };
 };
 
+const requireNonScanner = (req, res, next) => {
+  if (req.auth?.role === PORTAL_ROLES.SCANNER) {
+    res.status(403).json({
+      success: false,
+      message: "Scanner accounts can only access assigned scanning functions."
+    });
+    return;
+  }
+
+  next();
+};
+
 module.exports = {
   PORTAL_ROLES,
   canAccessRoute,
   normalizeRole,
   optionalAuthContext,
   requireAuthenticated,
+  requireNonScanner,
   requirePortalAccess,
   requireRole
 };

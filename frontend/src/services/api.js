@@ -1,6 +1,15 @@
 import { getStoredAuthToken, setStoredAuthToken, clearStoredAuthToken } from "@/lib/portal-access";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:5000/api";
+const getDefaultApiBaseUrl = () => {
+  if (typeof window === "undefined") {
+    return "http://localhost:5000/api";
+  }
+
+  const protocol = window.location.protocol === "https:" ? "https:" : "http:";
+  return `${protocol}//${window.location.hostname}:5000/api`;
+};
+
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || getDefaultApiBaseUrl();
 const SERVER_CONNECTION_ERROR = "Unable to connect to the server. Please try again later.";
 const LOGIN_ERROR_MESSAGES = Object.freeze({
   AUTHENTICATION_UNAVAILABLE: "Authentication service is currently unavailable.",
@@ -230,6 +239,11 @@ export const createUser = (payload) => request("/users", {
   body: payload
 });
 
+export const createScanner = (payload) => request("/users/scanners", {
+  method: "POST",
+  body: payload
+});
+
 export const updateUser = (id, payload) => request(`/users/${encodeURIComponent(id)}`, {
   method: "PUT",
   body: payload
@@ -305,6 +319,18 @@ export const getCargoPlacementActivity = (id, params = {}) => {
 export const requestPlacementOverride = (payload) => request("/placement/request-override", {
   method: "POST",
   body: payload
+});
+
+export const getActiveScanSession = () => request("/scanner/sessions/active");
+export const refreshScanSession = () => request("/scanner/sessions/refresh", {
+  method: "POST"
+});
+export const createPlacementScanSession = (payload) => request("/scanner/sessions/placement", {
+  method: "POST",
+  body: payload
+});
+export const cancelScanSession = (sessionId) => request(`/scanner/sessions/${encodeURIComponent(sessionId)}/cancel`, {
+  method: "POST"
 });
 
 export const getSupervisorDashboard = () => request("/supervisor/dashboard");

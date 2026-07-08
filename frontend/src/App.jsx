@@ -23,6 +23,7 @@ const NotFound = lazy(() => import("./pages/NotFound.jsx"));
 const ChangePassword = lazy(() => import("./pages/ChangePassword.jsx"));
 const BootstrapAdminSetup = lazy(() => import("./pages/BootstrapAdminSetup.jsx"));
 const SupervisorPortal = lazy(() => import("./pages/SupervisorPortal.jsx"));
+const ScannerPortal = lazy(() => import("./pages/ScannerPortal.jsx"));
 
 function PageFallback() {
   return (
@@ -76,6 +77,25 @@ function PasswordChangeGate() {
   return <ChangePassword />;
 }
 
+function ScannerAccessGate() {
+  const activeRole = getStoredAuthRole();
+  const mustChangePassword = mustChangeStoredPassword();
+
+  if (!activeRole) {
+    return <Navigate to="/" replace />;
+  }
+
+  if (activeRole !== PORTAL_ROLES.SCANNER) {
+    return <Navigate to={getPortalDefaultPath(activeRole)} replace />;
+  }
+
+  if (mustChangePassword) {
+    return <Navigate to="/change-password" replace />;
+  }
+
+  return <ScannerPortal />;
+}
+
 function BootstrapSetupGate() {
   const activeRole = getStoredAuthRole();
 
@@ -109,6 +129,8 @@ const App = () => (
         <Suspense fallback={<PageFallback />}>
           <Routes>
             <Route path="/" element={<Landing />} />
+            <Route path="/scanner/login" element={<Navigate to="/" replace />} />
+            <Route path="/scanner" element={<ScannerAccessGate />} />
             <Route path="/bootstrap-admin-setup" element={<BootstrapSetupGate />} />
             <Route path="/change-password" element={<PasswordChangeGate />} />
             <Route

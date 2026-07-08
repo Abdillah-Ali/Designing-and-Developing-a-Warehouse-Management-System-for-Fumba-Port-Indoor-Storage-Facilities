@@ -238,6 +238,9 @@ test("change password updates hash, invalidates other sessions, and audits actio
           }]
         };
       }
+      if (sql.includes("FROM scanner_accounts")) {
+        return { rowCount: 0, rows: [] };
+      }
       if (sql.startsWith("UPDATE users")) {
         updatedPasswordHash = params[0];
         return { rowCount: 1, rows: [] };

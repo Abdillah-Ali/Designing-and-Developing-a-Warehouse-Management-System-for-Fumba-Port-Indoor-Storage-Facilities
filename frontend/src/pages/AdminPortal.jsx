@@ -80,6 +80,7 @@ import {
   createBin,
   createLevel,
   createRack,
+  createScanner,
   createZone,
   createUser,
   deactivateUser,
@@ -847,6 +848,12 @@ function UsersPage() {
     setDrawerMode("create");
   };
 
+  const openCreateScannerDrawer = () => {
+    setSelectedUser(null);
+    setActionError("");
+    setDrawerMode("create-scanner");
+  };
+
   const openEditDrawer = (user) => {
     setSelectedUser(user);
     setActionError("");
@@ -912,6 +919,13 @@ function UsersPage() {
     toast.success("Temporary password set. The user must change it at next sign-in.");
   };
 
+  const saveScanner = async (payload) => {
+    await createScanner(payload);
+    closeDrawer();
+    refreshUsers();
+    toast.success("Scanner account created.");
+  };
+
   return (
     <>
       <PageHeader
@@ -921,6 +935,7 @@ function UsersPage() {
         action={
           <div className="flex flex-wrap gap-2">
             <ToolbarButton icon={RefreshCw} variant="secondary" onClick={refreshUsers}>Refresh</ToolbarButton>
+            <ToolbarButton icon={ScanLine} variant="secondary" onClick={openCreateScannerDrawer}>Create Scanner</ToolbarButton>
             <ToolbarButton icon={UserPlus} onClick={openCreateDrawer}>Create User</ToolbarButton>
           </div>
         }
@@ -987,6 +1002,13 @@ function UsersPage() {
                 { key: "email", label: "Email" },
                 { key: "phone_number", label: "Phone Number" },
                 { key: "role", label: "Role", render: (row) => row.role_name || "No role" },
+                {
+                  key: "scanner_link",
+                  label: "Scanner Account",
+                  render: (row) => row.scanner_account_id
+                    ? <StatusBadge tone="success">Created</StatusBadge>
+                    : <StatusBadge tone="neutral">Not created</StatusBadge>
+                },
                 {
                   key: "assigned_warehouse",
                   label: "Assigned Warehouse",
@@ -1080,7 +1102,157 @@ function UsersPage() {
       <Drawer open={drawerMode === "reset-password"} title="Reset User Password" onClose={closeDrawer}>
         <ResetUserPasswordForm user={selectedUser} onCancel={closeDrawer} onSave={saveResetPassword} />
       </Drawer>
+      <Drawer open={drawerMode === "create-scanner"} title="Create Scanner" onClose={closeDrawer}>
+        <ScannerForm users={users.rows} loading={users.loading} onCancel={closeDrawer} onSave={saveScanner} />
+      </Drawer>
     </>
+  );
+}
+
+function ScannerForm({ users, loading, onCancel, onSave }) {
+  const [department, setDepartment] = useState("");
+  const [userId, setUserId] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState("");
+
+  const eligibleUsers = useMemo(() => users.filter((user) => (
+    user.status === "active"
+    && user.role_name !== "Scanner"
+    && !user.is_bootstrap_admin
+    && !user.scanner_account_id
+  )), [users]);
+  const departments = useMemo(() => (
+    Array.from(new Set(eligibleUsers.map((user) => user.department_name).filter(Boolean)))
+      .sort((left, right) => left.localeCompare(right))
+  ), [eligibleUsers]);
+  const departmentUsers = useMemo(() => eligibleUsers.filter(
+    (user) => user.department_name === department
+  ), [department, eligibleUsers]);
+  const selectedUser = departmentUsers.find((user) => String(user.id) === userId) || null;
+
+  const selectDepartment = (value) => {
+    setDepartment(value);
+    setUserId("");
+    setFormError("");
+  };
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setFormError("");
+
+    if (!selectedUser) {
+      setFormError("Select a department and user.");
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setFormError("Scanner password and confirmation do not match.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      await onSave({ user_id: selectedUser.id, password });
+    } catch (error) {
+      setFormError(getErrorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const readonlyField = (label, value) => (
+    <FormField label={label}>
+      <input className={cn(inputClass, "bg-muted text-muted-foreground")} value={value || ""} readOnly />
+    </FormField>
+  );
+
+  return (
+    <form className="space-y-4" onSubmit={handleSubmit}>
+      {formError && <ErrorState message={formError} />}
+      <div className="grid gap-3 md:grid-cols-2">
+        <FormField label="Department">
+          <SelectField value={department} onChange={selectDepartment} disabled={loading} required>
+            <option value="">Select department</option>
+            {departments.map((name) => <option key={name} value={name}>{name}</option>)}
+          </SelectField>
+        </FormField>
+        <FormField label="User">
+          <SelectField
+            value={userId}
+            onChange={setUserId}
+            disabled={!department || loading}
+            required
+          >
+            <option value="">{department ? "Select active user" : "Select department first"}</option>
+            {departmentUsers.map((user) => (
+              <option key={user.id} value={String(user.id)}>
+                {user.full_name} ({user.username})
+              </option>
+            ))}
+          </SelectField>
+        </FormField>
+      </div>
+
+      {selectedUser && (
+        <div className="grid gap-3 border-t border-border pt-4 md:grid-cols-2">
+          {readonlyField("Full Name", selectedUser.full_name)}
+          {readonlyField("Username", selectedUser.username)}
+          {readonlyField("Email", selectedUser.email)}
+          {readonlyField("Department", selectedUser.department_name)}
+          {readonlyField("Current Role", selectedUser.role_name)}
+          {readonlyField("User ID", selectedUser.id)}
+        </div>
+      )}
+
+      <div className="grid gap-3 border-t border-border pt-4 md:grid-cols-2">
+        <FormField label="Scanner Password">
+          <div className="relative">
+            <input
+              className={cn(inputClass, "pr-9")}
+              type={showPassword ? "text" : "password"}
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="Create scanner password"
+              autoComplete="new-password"
+              minLength={8}
+              required
+            />
+            <button
+              type="button"
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              onClick={() => setShowPassword((current) => !current)}
+              className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              {showPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+            </button>
+          </div>
+        </FormField>
+        <FormField label="Confirm Scanner Password">
+          <input
+            className={inputClass}
+            type={showPassword ? "text" : "password"}
+            value={confirmPassword}
+            onChange={(event) => setConfirmPassword(event.target.value)}
+            placeholder="Repeat scanner password"
+            autoComplete="new-password"
+            minLength={8}
+            required
+          />
+        </FormField>
+      </div>
+      <div className="text-[10px] leading-4 text-muted-foreground">
+        Use at least 8 characters with uppercase, lowercase, a number, and a special character. It must differ from the normal account password.
+      </div>
+      <div className="flex justify-end gap-2 border-t border-border pt-3">
+        <ToolbarButton icon={X} variant="secondary" onClick={onCancel} disabled={saving}>Cancel</ToolbarButton>
+        <ToolbarButton icon={saving ? Loader2 : ScanLine} type="submit" disabled={saving || loading || !selectedUser}>
+          {saving ? "Creating" : "Create Scanner"}
+        </ToolbarButton>
+      </div>
+    </form>
   );
 }
 
@@ -1146,7 +1318,6 @@ function UserForm({ mode, user, roles, warehouses, shifts, users = [], reference
     && candidate.role_name === selectedRole?.role_name
     && (!user?.warehouse_id || String(candidate.warehouse_id || "") === String(user.warehouse_id || ""))
   ));
-
   useEffect(() => {
     if (!warehouseChanged || !canOwnWarehouseTasks || !user?.id) {
       setPendingTasks(null);
@@ -1251,7 +1422,9 @@ function UserForm({ mode, user, roles, warehouses, shifts, users = [], reference
         <FormField label="Role">
           <SelectField value={form.role_id} onChange={(value) => updateField("role_id", value)} required disabled={referenceLoading || protectedRole}>
             <option value="">Select role</option>
-            {roles.map((role) => <option key={role.id} value={String(role.id)}>{role.role_name}</option>)}
+            {roles.filter((role) => role.role_name !== "Scanner").map((role) => (
+              <option key={role.id} value={String(role.id)}>{role.role_name}</option>
+            ))}
           </SelectField>
           {unsupportedRole && (
             <span className="block text-[10px] font-normal leading-4 text-warning">

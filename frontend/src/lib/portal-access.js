@@ -4,7 +4,8 @@ const AUTH_TOKEN_KEY = "fumba-wms-auth-token";
 export const PORTAL_ROLES = Object.freeze({
   SYSTEM_ADMIN: "system-admin",
   WAREHOUSE_STAFF: "warehouse-staff",
-  WAREHOUSE_SUPERVISOR: "warehouse-supervisor"
+  WAREHOUSE_SUPERVISOR: "warehouse-supervisor",
+  SCANNER: "scanner"
 });
 
 export const PORTAL_CONFIG = Object.freeze({
@@ -124,6 +125,19 @@ export const PORTAL_CONFIG = Object.freeze({
       "dispatch-authorization",
       "profile"
     ])
+  },
+  [PORTAL_ROLES.SCANNER]: {
+    label: "Scanner",
+    roleName: "Scanner",
+    displayRoleName: "Scanner",
+    basePath: "/scanner",
+    defaultPath: "/scanner",
+    allowedPaths: Object.freeze([
+      "/scanner"
+    ]),
+    modules: Object.freeze([
+      "barcode-scanner"
+    ])
   }
 });
 
@@ -136,7 +150,8 @@ const roleAliases = Object.freeze({
   "warehouse staff": PORTAL_ROLES.WAREHOUSE_STAFF,
   "warehouse-supervisor": PORTAL_ROLES.WAREHOUSE_SUPERVISOR,
   "warehouse supervisor": PORTAL_ROLES.WAREHOUSE_SUPERVISOR,
-  "supervisor": PORTAL_ROLES.WAREHOUSE_SUPERVISOR
+  "supervisor": PORTAL_ROLES.WAREHOUSE_SUPERVISOR,
+  "scanner": PORTAL_ROLES.SCANNER
 });
 
 function canUseSessionStorage() {
