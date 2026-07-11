@@ -248,13 +248,17 @@ const initSocketServer = (server) => {
         if (result.session) {
           const event = result.completed
             ? "scanner:session-completed"
-            : result.accepted
-              ? "scanner:scan-accepted"
-              : "scanner:scan-error";
+            : result.ignoredDuplicate
+              ? "scanner:scan-ignored"
+              : result.accepted
+                ? "scanner:scan-accepted"
+                : "scanner:scan-error";
           emitSessionUpdated(result.session, event, {
             scan: {
               accepted: result.accepted,
               completed: result.completed,
+              ignored_duplicate: Boolean(result.ignoredDuplicate),
+              attempted_step_index: result.attempted_step_index,
               error: result.error || null,
               validation: result.validation || null,
               result: result.result || null

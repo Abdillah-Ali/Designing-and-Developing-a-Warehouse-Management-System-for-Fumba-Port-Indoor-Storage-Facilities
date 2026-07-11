@@ -67,6 +67,9 @@ const normalizePlacementRequest = (payload = {}) => {
   const manualReason = normalizeManualReason(
     payload.manual_placement_reason || payload.manualPlacementReason
   );
+  const operationType = textValue(
+    payload.operation_type || payload.operationType || payload.placement_intent || payload.placementIntent
+  )?.toLowerCase() || null;
 
   if (!cargoId) {
     throw buildError("Cargo ID is required for placement.", 400);
@@ -83,6 +86,9 @@ const normalizePlacementRequest = (payload = {}) => {
       400
     );
   }
+  if (operationType && !["placement", "relocation"].includes(operationType)) {
+    throw buildError("Operation type must be placement or relocation.", 400);
+  }
 
   return {
     ...payload,
@@ -91,6 +97,7 @@ const normalizePlacementRequest = (payload = {}) => {
     scanned_cargo_barcode: scannedCargoBarcode,
     scanned_bin_barcode: scannedBinBarcode,
     bin_id: binId,
+    operation_type: operationType,
     manual_placement_reason: placementMode === "manual" ? manualReason : null
   };
 };
@@ -398,6 +405,9 @@ const confirmPlacementOperation = async (payload, auth = {}) => {
       (bin) => Number(bin.id) === Number(cargo.current_bin_id)
     ) || null;
     const alreadyPlacedInThisBin = Number(cargo.current_bin_id) === Number(targetBin.id);
+    if (alreadyPlacedInThisBin) {
+      throw buildError("Cargo cannot be relocated to its current bin.", 409);
+    }
     const isRelocation = Boolean(cargo.current_bin_id) && !alreadyPlacedInThisBin;
     const cargoWeight = Number(cargo.weight || 0);
     const cargoVolume = Number(cargo.volume || 0);
@@ -410,7 +420,7 @@ const confirmPlacementOperation = async (payload, auth = {}) => {
          SET current_weight = GREATEST(0, current_weight - $1),
              current_volume = GREATEST(0, current_volume - $2),
              status = CASE
-               WHEN status IN ('Blocked', 'Reserved', 'Maintenance', 'Inactive') THEN status
+               WHEN status IN ('Blocked', 'Reserved', 'Restricted', 'Maintenance', 'Damaged', 'Inactive') THEN status
                WHEN GREATEST(0, current_weight - $1) = 0
                 AND GREATEST(0, current_volume - $2) = 0
                  THEN 'Available'
@@ -428,7 +438,12 @@ const confirmPlacementOperation = async (payload, auth = {}) => {
         `UPDATE bins
          SET current_weight = current_weight + $1,
              current_volume = current_volume + $2,
-             status = 'Occupied',
+             status = CASE
+               WHEN ((current_weight + $1) / NULLIF(max_weight, 0) * 100) >= full_threshold
+                 OR ((current_volume + $2) / NULLIF(max_volume, 0) * 100) >= full_threshold
+                 THEN 'Full'
+               ELSE 'Occupied'
+             END,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = $3
          RETURNING *`,

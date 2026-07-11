@@ -58,6 +58,12 @@ const requestDispatchAuthorization = async (req, res, next) => {
     if (cargo.registration_status !== REGISTRATION_STATUS.APPROVED) {
       throw buildError("Cargo registration must be approved before dispatch processing.", 400);
     }
+    if (
+      String(cargo.customs_status || "").toLowerCase() === "hold"
+      && cargo.emergency_release_approved !== true
+    ) {
+      throw buildError("Cargo under customs hold cannot be dispatched until cleared or emergency release is approved.", 400);
+    }
     if (![PLACEMENT_STATUS.PLACED, PLACEMENT_STATUS.RELOCATED].includes(cargo.placement_status)) {
       throw buildError("Only placed cargo can be submitted for dispatch authorization.", 400);
     }
@@ -216,8 +222,87 @@ const decideDispatchRequest = async (req, res, next, decision) => {
 const approveDispatchRequest = (req, res, next) => decideDispatchRequest(req, res, next, "Approved");
 const rejectDispatchRequest = (req, res, next) => decideDispatchRequest(req, res, next, "Rejected");
 
+const completeDispatch = async (req, res, next) => {
+  const client = await db.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const requestResult = await client.query(
+      `${dispatchSelect} WHERE dr.id=$1 FOR UPDATE OF dr,c`,
+      [req.params.id]
+    );
+    if (!requestResult.rowCount) throw buildError("Dispatch request not found.", 404);
+    const request = requestResult.rows[0];
+    if (request.status !== "Approved") {
+      throw buildError("Dispatch must be approved before gate-out can be completed.", 400);
+    }
+    if (
+      req.auth?.role === "warehouse-staff"
+      && Number(request.warehouse_id) !== Number(req.auth?.warehouseId)
+    ) {
+      throw buildError("Dispatch request not found.", 404);
+    }
+    const cargoResult = await client.query("SELECT * FROM cargo WHERE id=$1 FOR UPDATE", [request.cargo_record_id]);
+    const cargo = cargoResult.rows[0];
+    if (
+      String(cargo?.customs_status || "").toLowerCase() === "hold"
+      && cargo?.emergency_release_approved !== true
+    ) {
+      throw buildError("Cargo under customs hold cannot leave until cleared or emergency release is approved.", 400);
+    }
+    if (!cargo?.current_bin_id || ![PLACEMENT_STATUS.PLACED, PLACEMENT_STATUS.RELOCATED].includes(cargo.placement_status)) {
+      throw buildError("Cargo is not currently stored in a dispatchable bin.", 400);
+    }
+    const binResult = await client.query("SELECT * FROM bins WHERE id=$1 FOR UPDATE", [cargo.current_bin_id]);
+    if (!binResult.rowCount) throw buildError("Cargo bin was not found.", 409);
+    const bin = binResult.rows[0];
+    await client.query(
+      `UPDATE bins SET
+         current_weight=GREATEST(0,current_weight-$1),
+         current_volume=GREATEST(0,current_volume-$2),
+         status=CASE
+           WHEN status IN ('Blocked','Restricted','Maintenance','Damaged','Inactive') THEN status
+           WHEN GREATEST(0,current_weight-$1)=0 AND GREATEST(0,current_volume-$2)=0 THEN 'Available'
+           ELSE 'Occupied'
+         END
+       WHERE id=$3`,
+      [Number(cargo.weight || 0), Number(cargo.volume || 0), bin.id]
+    );
+    const updatedCargo = await client.query(
+      `UPDATE cargo SET placement_status='Dispatched',current_bin_id=NULL,updated_at=CURRENT_TIMESTAMP
+       WHERE id=$1 RETURNING *`,
+      [cargo.id]
+    );
+    await client.query(
+      "UPDATE cargo_locations SET is_current=FALSE,released_at=CURRENT_TIMESTAMP WHERE cargo_id=$1 AND is_current=TRUE",
+      [cargo.id]
+    );
+    await client.query(
+      `INSERT INTO cargo_movements (
+         cargo_id,from_bin_id,to_bin_id,from_location,to_location,moved_by,moved_by_user_id,
+         warehouse_id_at_action,movement_type,action
+       ) VALUES ($1,$2,NULL,$3,'Gate Out',$4,$5,$6,'Dispatched','Dispatched')`,
+      [cargo.id, bin.id, cargo.location, req.auth?.username || "Warehouse Staff", req.auth?.userId || null, cargo.warehouse_id]
+    );
+    await writeAuditLog({
+      user_id: req.auth?.userId,
+      action: "COMPLETE_DISPATCH_GATE_OUT",
+      module: "Dispatch Operations",
+      description: `Completed gate-out for cargo ${cargo.cargo_id} and released bin ${bin.code}.`,
+      metadata: { dispatch_request_id: request.id, cargo_id: cargo.id, bin_id: bin.id }
+    }, client);
+    await client.query("COMMIT");
+    res.json({ success: true, data: updatedCargo.rows[0] });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    next(error);
+  } finally {
+    client.release();
+  }
+};
+
 module.exports = {
   approveDispatchRequest,
+  completeDispatch,
   getDispatchRequests,
   rejectDispatchRequest,
   requestDispatchAuthorization

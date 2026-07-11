@@ -45,7 +45,8 @@ const createPlacementQueryMock = ({
   ownerUserId = 10,
   cargoWarehouseId = 1,
   currentBinId = null,
-  registrationStatus = "Approved"
+  registrationStatus = "Approved",
+  binOverrides = {}
 } = {}) => {
   const queries = [];
   const cargo = {
@@ -96,7 +97,8 @@ const createPlacementQueryMock = ({
     max_volume: 10,
     current_weight: 0,
     current_volume: 0,
-    reserved_for_cargo_type: null
+    reserved_for_cargo_type: null,
+    ...binOverrides
   };
 
   const query = async (sql, params = []) => {
@@ -237,34 +239,19 @@ test("manual placement requires and normalizes an approved fallback reason", () 
   );
 });
 
-test("scan validation stops when scanned cargo differs from selected cargo", async () => {
-  const executor = {
-    query: async (sql) => {
-      if (sql.includes("FROM cargo")) {
-        return {
-          rowCount: 1,
-          rows: [{
-            id: 2,
-            cargo_id: "CARGO-2026-00002",
-            barcode: "CARGO-2026-00002",
-            is_deleted: false
-          }]
-        };
-      }
-      throw new Error(`Unexpected query: ${sql}`);
-    }
-  };
-
+test("scan validation uses the scanned cargo even when another cargo started the session", async () => {
+  const mock = createPlacementQueryMock();
   const validation = await validatePlacement({
-    cargo_id: "CARGO-2026-00001",
+    cargo_id: "CARGO-THAT-STARTED-THE-SESSION",
     placement_mode: "scan",
-    scanned_cargo_barcode: "CARGO-2026-00002",
-    scanned_bin_barcode: "BIN-D01-L1-02"
-  }, executor);
+    operation_type: "placement",
+    scanned_cargo_barcode: "CARGO-2026-OWN",
+    scanned_bin_barcode: "BIN-A01-L1-01"
+  }, { query: mock.query });
 
-  assert.equal(validation.approved, false);
-  assert.equal(validation.reason, "Cargo Scan Mismatch");
-  assert.equal(validation.detail, "Scanned cargo does not match selected cargo.");
+  assert.equal(validation.approved, true);
+  assert.equal(validation.cargo.cargo_id, "CARGO-2026-OWN");
+  assert.equal(validation.operation_type, "placement");
 });
 
 test("placement locations use the complete warehouse hierarchy", () => {
@@ -406,6 +393,80 @@ test("manual placement cannot bypass supervisor approval", async () => {
     validation.detail,
     "Cargo has not yet been approved by the Warehouse Supervisor. Placement cannot begin until registration is approved."
   );
+});
+
+test("placement rejects cargo that has already been placed", async () => {
+  const mock = createPlacementQueryMock({ currentBinId: 999 });
+  const validation = await validatePlacement({
+    ...basePlacementPayload(),
+    operation_type: "placement"
+  }, { query: mock.query });
+
+  assert.equal(validation.approved, false);
+  assert.equal(validation.reason, "Cargo Already Placed");
+  assert.equal(validation.detail, "Cargo has already been placed.");
+});
+
+test("relocation requires placed cargo and a different destination bin", async () => {
+  const unplacedMock = createPlacementQueryMock();
+  const unplacedValidation = await validatePlacement({
+    ...basePlacementPayload(),
+    operation_type: "relocation"
+  }, { query: unplacedMock.query });
+
+  assert.equal(unplacedValidation.approved, false);
+  assert.equal(unplacedValidation.reason, "Cargo Not Placed");
+
+  const sameBinMock = createPlacementQueryMock({ currentBinId: 202 });
+  const sameBinValidation = await validatePlacement({
+    ...basePlacementPayload(),
+    operation_type: "relocation"
+  }, { query: sameBinMock.query });
+
+  assert.equal(sameBinValidation.approved, false);
+  assert.equal(sameBinValidation.reason, "Same Bin Relocation");
+  assert.equal(sameBinValidation.detail, "Cargo cannot be relocated to its current bin.");
+  assert.equal(sameBinValidation.checks.destinationDifferent.passed, false);
+});
+
+test("relocation rejects an unknown destination bin", async () => {
+  const mock = createPlacementQueryMock({ currentBinId: 999 });
+  const validation = await validatePlacement({
+    ...basePlacementPayload(),
+    operation_type: "relocation",
+    scanned_bin_barcode: "BIN-DOES-NOT-EXIST"
+  }, {
+    query: async (sql, params) => {
+      if (sql.includes("FROM bins b")) return { rowCount: 0, rows: [] };
+      return mock.query(sql, params);
+    }
+  });
+
+  assert.equal(validation.approved, false);
+  assert.equal(validation.reason, "Bin Not Found");
+  assert.equal(validation.detail, "Destination bin does not exist.");
+});
+
+test("relocation applies destination compatibility and capacity rules", async () => {
+  const mock = createPlacementQueryMock({
+    currentBinId: 999,
+    binOverrides: {
+      zone_code: "Z-D",
+      zone_allowed_cargo_type: "Food Products",
+      allowed_cargo_type: "Food Products",
+      max_weight: 5,
+      max_volume: 0.5
+    }
+  });
+  const validation = await validatePlacement({
+    ...basePlacementPayload(),
+    operation_type: "relocation"
+  }, { query: mock.query });
+
+  assert.equal(validation.approved, false);
+  assert.equal(validation.checks.cargoCompatibility.passed, false);
+  assert.equal(validation.checks.weightCapacity.passed, false);
+  assert.equal(validation.checks.volumeCapacity.passed, false);
 });
 
 test("repeated confirmations preserve a relocated cargo status", () => {

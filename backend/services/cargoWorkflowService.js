@@ -82,7 +82,11 @@ const canStaffViewSubmission = (cargo, userId) => (
 const canStaffEditCargo = (cargo, userId) => (
   Number(getStaffTaskOwnerId(cargo)) === Number(userId)
   && (
-    cargo?.registration_status === REGISTRATION_STATUS.CORRECTION_REQUIRED
+    (
+      cargo?.registration_status === REGISTRATION_STATUS.APPROVED
+      && cargo?.placement_status !== PLACEMENT_STATUS.DISPATCHED
+    )
+    || cargo?.registration_status === REGISTRATION_STATUS.CORRECTION_REQUIRED
     || cargo?.registration_status === REGISTRATION_STATUS.REJECTED
   )
 );
@@ -308,6 +312,16 @@ const completeCargoResubmission = async (
   const context = await getCorrectionContext(executor, cargo);
 
   if (
+    cargo.registration_status === REGISTRATION_STATUS.APPROVED
+    && (context.correctionFields.length === 0 || context.changedEntries.length === 0)
+  ) {
+    throw buildError(
+      "The approved registration has not been updated. Please change at least one field before resubmitting.",
+      400
+    );
+  }
+
+  if (
     cargo.registration_status === REGISTRATION_STATUS.CORRECTION_REQUIRED
     && (context.correctionFields.length === 0 || context.unchangedEntries.length > 0)
   ) {
@@ -336,6 +350,8 @@ const completeCargoResubmission = async (
       correction_fields: [],
       correction_notes: null,
       correction_last_changes: context.changes,
+      approved_by: null,
+      approved_at: null,
       rejected_by: null,
       rejected_at: null
     }
@@ -363,10 +379,13 @@ const completeCargoResubmission = async (
   await executor.query(
     `INSERT INTO cargo_approval_history
      (cargo_id, action, remarks, metadata, performed_by, warehouse_id_at_action)
-     VALUES ($1, 'CORRECTION_RESUBMITTED', $2, $3, $4, $5)`,
+     VALUES ($1, $2, $3, $4, $5, $6)`,
     [
       cargo.id,
-      String(remarks || "").trim() || "Corrected cargo registration resubmitted for approval.",
+      cargo.registration_status === REGISTRATION_STATUS.APPROVED
+        ? "APPROVED_REGISTRATION_RESUBMITTED"
+        : "CORRECTION_RESUBMITTED",
+      String(remarks || "").trim() || "Updated cargo registration resubmitted for approval.",
       JSON.stringify({
         previous_status: cargo.registration_status,
         correction_fields: context.correctionFields,

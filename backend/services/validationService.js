@@ -58,6 +58,18 @@ const CARGO_ZONE_COMPATIBILITY = Object.freeze({
   "Mixed Cargo": Object.freeze(["Z-H"])
 });
 
+const BIN_PLACEMENT_STATUSES = Object.freeze([
+  "Available",
+  "Occupied",
+  "Blocked",
+  "Reserved",
+  "Restricted",
+  "Maintenance",
+  "Damaged",
+  "Full",
+  "Inactive"
+]);
+
 const packagingTypes = new Set([
   "Boxes",
   "Cartons",
@@ -280,6 +292,9 @@ const validatePlacement = async (payload = {}, executor = db) => {
     "bin_id",
     "binId"
   ]);
+  const requestedOperationType = nullableText(
+    payload.operation_type || payload.operationType || payload.placement_intent || payload.placementIntent
+  )?.toLowerCase() || null;
   const cargoIdentifier = placementMode === "manual"
     ? selectedCargoIdentifier || cargoBarcode
     : cargoBarcode;
@@ -293,6 +308,15 @@ const validatePlacement = async (payload = {}, executor = db) => {
       detail: "Placement mode must be scan or manual.",
       checks: {
         placementMode: { passed: false, message: "Placement mode must be scan or manual." }
+      }
+    });
+  }
+  if (requestedOperationType && !["placement", "relocation"].includes(requestedOperationType)) {
+    return failValidation({
+      reason: "Invalid Operation Type",
+      detail: "Operation type must be placement or relocation.",
+      checks: {
+        operationType: { passed: false, message: "Operation type must be placement or relocation." }
       }
     });
   }
@@ -322,7 +346,7 @@ const validatePlacement = async (payload = {}, executor = db) => {
   if (cargoResult.rowCount === 0) {
     return failValidation({
       reason: "Cargo Not Found",
-      detail: "No registered cargo matches the scanned cargo barcode.",
+      detail: "Cargo does not exist.",
       checks: {
         placementMode: { passed: true, message: `${placementMode} placement mode selected.` },
         cargoFound: { passed: false, message: "Cargo must be registered before placement." }
@@ -331,25 +355,13 @@ const validatePlacement = async (payload = {}, executor = db) => {
   }
 
   const cargo = cargoResult.rows[0];
-  const selectedCargoMatches = !selectedCargoIdentifier || [
-    String(cargo.id),
-    String(cargo.cargo_id).toUpperCase(),
-    String(cargo.barcode).toUpperCase()
-  ].includes(selectedCargoIdentifier);
-
-  if (placementMode === "scan" && !selectedCargoMatches) {
-    return failValidation({
-      reason: "Cargo Scan Mismatch",
-      detail: "Scanned cargo does not match selected cargo.",
-      checks: {
-        placementMode: { passed: true, message: "Scan placement mode selected." },
-        cargoFound: { passed: true, message: "Scanned cargo record found." },
-        cargoScanMatch: { passed: false, message: "Scanned cargo does not match selected cargo." }
-      },
-      cargo,
-      bin: null
-    });
-  }
+  const cargoIsCurrentlyPlaced = (
+    ["Placed", "Relocated"].includes(cargo.placement_status)
+    && Boolean(cargo.current_bin_id)
+  );
+  const operationType = requestedOperationType || (
+    cargoIsCurrentlyPlaced ? "relocation" : "placement"
+  );
 
   const binResult = await executor.query(
     `SELECT
@@ -365,12 +377,14 @@ const validatePlacement = async (payload = {}, executor = db) => {
       z.name AS zone_name,
       z.zone_type,
       z.allowed_cargo_type AS zone_allowed_cargo_type,
+      z.handling_condition,
       COALESCE(b.allowed_cargo_type, z.allowed_cargo_type) AS allowed_cargo_type,
       z.is_hazard_zone,
       z.active AS zone_active,
       z.warehouse_id,
       w.warehouse_name,
-      w.warehouse_code
+      w.warehouse_code,
+      w.status AS warehouse_status
     FROM bins b
     JOIN levels l ON l.id = b.level_id
     JOIN racks r ON r.id = l.rack_id
@@ -384,7 +398,7 @@ const validatePlacement = async (payload = {}, executor = db) => {
   if (binResult.rowCount === 0) {
     return failValidation({
       reason: "Bin Not Found",
-      detail: "No warehouse bin matches the scanned bin barcode.",
+      detail: "Destination bin does not exist.",
       checks: {
         placementMode: { passed: true, message: `${placementMode} placement mode selected.` },
         cargoFound: { passed: true, message: "Cargo record found." },
@@ -447,9 +461,12 @@ const validatePlacement = async (payload = {}, executor = db) => {
     cargoScanMatch: {
       passed: true,
       message: placementMode === "scan"
-        ? "Scanned cargo matches selected cargo."
+        ? "Scanned cargo record loaded for backend validation."
         : "Selected cargo loaded for manual placement."
     },
+    placementQueue: { passed: true, message: "Cargo is in the applicable placement queue." },
+    relocationSource: { passed: true, message: "Cargo has a valid current placement for relocation." },
+    destinationDifferent: { passed: true, message: "Destination bin differs from the current bin." },
     cargoPlacementStatus: { passed: true, message: "Cargo is available for this placement check." },
     binFound: { passed: true, message: "Bin record found." },
     cargoCompatibility: { passed: true, message: "Cargo type matches the selected zone." },
@@ -478,12 +495,34 @@ const validatePlacement = async (payload = {}, executor = db) => {
     );
   }
 
+  if (operationType === "placement") {
+    if (cargoIsCurrentlyPlaced || ["Placed", "Relocated"].includes(cargo.placement_status)) {
+      addIssue("placementQueue", "Cargo Already Placed", "Cargo has already been placed.");
+    } else if (cargo.placement_status !== "Unplaced") {
+      addIssue("placementQueue", "Not In Placement Queue", "Cargo is not in the placement queue.");
+    }
+  } else if (!cargoIsCurrentlyPlaced) {
+    addIssue(
+      "relocationSource",
+      "Cargo Not Placed",
+      "Cargo is not currently placed and cannot be relocated."
+    );
+  }
+
   if (!canCargoBePlaced(cargo)) {
     const block = getCargoPlacementBlock(cargo);
     addIssue("cargoPlacementStatus", block.reason, block.detail);
   }
 
-  if (!bin.active || !bin.level_active || !bin.rack_active || !bin.zone_active || bin.status === "Inactive") {
+  if (operationType === "relocation" && alreadyPlacedInThisBin) {
+    addIssue(
+      "destinationDifferent",
+      "Same Bin Relocation",
+      "Cargo cannot be relocated to its current bin."
+    );
+  }
+
+  if (!bin.active || !bin.level_active || !bin.rack_active || !bin.zone_active || bin.warehouse_status === "inactive" || bin.status === "Inactive") {
     addIssue("activeStorage", "Inactive Storage", "Selected bin or one of its parent storage locations is inactive.");
   }
 
@@ -499,11 +538,19 @@ const validatePlacement = async (payload = {}, executor = db) => {
     addIssue("maintenanceBin", "Bin Under Maintenance", "Selected storage bin is under maintenance.");
   }
 
+  if (bin.status === "Damaged") {
+    addIssue("availableBin", "Damaged Bin", "Selected storage bin is marked damaged.");
+  }
+
+  if (bin.status === "Restricted") {
+    addIssue("availableBin", "Restricted Bin", "Selected storage bin is restricted from normal placement.");
+  }
+
   if (bin.status === "Full" && !alreadyPlacedInThisBin) {
     addIssue("availableBin", "Bin Full", "Selected storage bin has no remaining capacity.");
   }
 
-  if (!alreadyPlacedInThisBin && !["Available", "Occupied", "Blocked", "Reserved", "Maintenance", "Full", "Inactive"].includes(bin.status)) {
+  if (!alreadyPlacedInThisBin && !BIN_PLACEMENT_STATUSES.includes(bin.status)) {
     addIssue("availableBin", "Bin Not Available", `Selected storage bin is ${bin.status} and cannot receive normal placement.`);
   }
 
@@ -515,12 +562,11 @@ const validatePlacement = async (payload = {}, executor = db) => {
     addIssue("hazardRestriction", "Hazard Restriction", "Hazardous cargo must be placed in the Hazardous Cargo Zone.");
   }
 
-  if (!isCargoAllowedInZone(cargo.cargo_type, bin.zone_code)) {
-    const allowedZones = CARGO_ZONE_COMPATIBILITY[cargo.cargo_type] || [];
+  if (!isCargoAllowedByBinCategory(cargo.cargo_type, bin.zone_allowed_cargo_type)) {
     addIssue(
       "cargoCompatibility",
       "Incompatible Cargo",
-      `${cargo.cargo_type} cargo can only be stored in ${allowedZones.join(" or ")}.`
+      `${cargo.cargo_type} is not permitted in zone ${bin.zone_code} (allowed: ${bin.zone_allowed_cargo_type}).`
     );
   } else if (!isCargoAllowedByBinCategory(cargo.cargo_type, bin.allowed_cargo_type)) {
     addIssue(
@@ -528,6 +574,22 @@ const validatePlacement = async (payload = {}, executor = db) => {
       "Incompatible Cargo",
       `${cargo.cargo_type} is not permitted in bin ${bin.barcode} (allowed: ${bin.allowed_cargo_type}).`
     );
+  }
+
+  if (
+    isRuleActive(rules, "fragile_handling")
+    && cargo.cargo_type === "Fragile Goods"
+    && !String(bin.handling_condition || "").toLowerCase().includes("fragile")
+  ) {
+    addIssue("cargoCompatibility", "Fragile Handling Required", "Fragile cargo requires a zone configured for fragile handling.");
+  }
+
+  if (
+    isRuleActive(rules, "customs_hold")
+    && String(cargo.customs_status || "").toLowerCase() === "hold"
+    && !String(bin.cargo_restrictions || "").toLowerCase().includes("customs hold")
+  ) {
+    addIssue("restrictedZone", "Customs Hold Restriction", "Cargo under customs hold requires a bin configured for customs-hold storage.");
   }
 
   if (cargoWeight > remainingWeight) {
@@ -572,6 +634,7 @@ const validatePlacement = async (payload = {}, executor = db) => {
       hazard_class: cargo.hazard_class,
       registration_status: cargo.registration_status,
       placement_status: cargo.placement_status,
+      current_bin_id: cargo.current_bin_id,
       location: cargo.location,
       relocation_required: cargo.relocation_required,
       relocation_reason: cargo.relocation_reason
@@ -607,6 +670,7 @@ const validatePlacement = async (payload = {}, executor = db) => {
       display_location: `${bin.warehouse_name || bin.warehouse_code || "Unknown WH"} → ${bin.zone_code} → ${bin.rack_code} → ${bin.level_code} → ${bin.code}`
     },
     approval: overrideApplied ? approvedOverride : null,
+    operation_type: operationType,
     placement_mode: placementMode,
     manual_reason: payload.manual_placement_reason || payload.manualPlacementReason || null
   };

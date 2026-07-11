@@ -13,6 +13,7 @@ const {
   PLACEMENT_STATUS,
   REGISTRATION_STATUS,
   CORRECTION_FIELDS,
+  buildCorrectionChanges,
   canStaffEditCargo,
   canStaffViewSubmission,
   captureCorrectionValues,
@@ -1021,7 +1022,7 @@ const updateCargo = async (req, res, next) => {
 
     if (isStaff(req) && !canStaffEditCargo(existingCargo, req.auth?.userId)) {
       throw buildError(
-        "Cargo can only be edited by its assigned staff user when correction is required.",
+        "Cargo can only be edited by its assigned staff user after approval or when revision is required.",
         403
       );
     }
@@ -1030,17 +1031,22 @@ const updateCargo = async (req, res, next) => {
       existingCargo.registration_status === REGISTRATION_STATUS.REJECTED
       && Object.keys(existingCargo.correction_original_values || {}).length === 0
     ) {
-      const rejectionSnapshot = captureCorrectionValues(
+      const revisionSnapshot = captureCorrectionValues(
         existingCargo,
         Object.keys(CORRECTION_FIELDS)
       );
       await client.query(
         `UPDATE cargo
-         SET correction_original_values = $1::jsonb
-         WHERE id = $2`,
-        [JSON.stringify(rejectionSnapshot), existingCargo.id]
+         SET correction_original_values = $1::jsonb,
+             correction_fields = $2::jsonb
+         WHERE id = $3`,
+        [
+          JSON.stringify(revisionSnapshot),
+          JSON.stringify(existingCargo.correction_fields || []),
+          existingCargo.id
+        ]
       );
-      existingCargo.correction_original_values = rejectionSnapshot;
+      existingCargo.correction_original_values = revisionSnapshot;
     }
 
     const mergedPayload = { ...existingCargo, ...req.body };
@@ -1050,6 +1056,41 @@ const updateCargo = async (req, res, next) => {
     }
 
     const payload = normalizeCargoPayload(mergedPayload);
+    if (existingCargo.registration_status === REGISTRATION_STATUS.APPROVED) {
+      const revisionCandidates = updates.filter((field) => CORRECTION_FIELDS[field]);
+      const candidateSnapshot = captureCorrectionValues(existingCargo, revisionCandidates);
+      const candidateChanges = buildCorrectionChanges(
+        payload,
+        candidateSnapshot,
+        revisionCandidates
+      );
+      const revisedFields = Object.entries(candidateChanges)
+        .filter(([, change]) => change.changed)
+        .map(([field]) => field);
+
+      if (revisedFields.length === 0) {
+        throw buildError(
+          "The approved registration has not been updated. Please change at least one field before resubmitting.",
+          400
+        );
+      }
+
+      const revisionSnapshot = captureCorrectionValues(existingCargo, revisedFields);
+      await client.query(
+        `UPDATE cargo
+         SET correction_original_values = $1::jsonb,
+             correction_fields = $2::jsonb
+         WHERE id = $3`,
+        [
+          JSON.stringify(revisionSnapshot),
+          JSON.stringify(revisedFields),
+          existingCargo.id
+        ]
+      );
+      existingCargo.correction_original_values = revisionSnapshot;
+      existingCargo.correction_fields = revisedFields;
+    }
+
     const values = updates.map((field) => payload[field]);
 
     const setClause = updates
@@ -1085,9 +1126,9 @@ const updateCargo = async (req, res, next) => {
          SET current_weight = GREATEST(0, current_weight + $1),
              current_volume = GREATEST(0, current_volume + $2),
              status = CASE
-               WHEN status IN ('Blocked', 'Reserved', 'Maintenance', 'Inactive') THEN status
-               WHEN GREATEST(0, current_weight + $1) >= max_weight
-                 OR GREATEST(0, current_volume + $2) >= max_volume
+               WHEN status IN ('Blocked', 'Reserved', 'Restricted', 'Maintenance', 'Damaged', 'Inactive') THEN status
+               WHEN (GREATEST(0, current_weight + $1) / NULLIF(max_weight, 0) * 100) >= full_threshold
+                 OR (GREATEST(0, current_volume + $2) / NULLIF(max_volume, 0) * 100) >= full_threshold
                  THEN 'Full'
                WHEN GREATEST(0, current_weight + $1) = 0
                  AND GREATEST(0, current_volume + $2) = 0
@@ -1160,21 +1201,50 @@ const updateCargo = async (req, res, next) => {
       }
     }
 
-    const isRevision = [
-      REGISTRATION_STATUS.CORRECTION_REQUIRED,
-      REGISTRATION_STATUS.REJECTED
-    ].includes(existingCargo.registration_status);
+    let automaticResubmission = null;
+    if (
+      isStaff(req)
+      && existingCargo.registration_status === REGISTRATION_STATUS.APPROVED
+    ) {
+      automaticResubmission = await completeCargoResubmission(client, {
+        cargo: updatedCargo,
+        userId: req.auth?.userId,
+        remarks: "Approved cargo details updated and resubmitted for supervisor approval.",
+        buildError
+      });
+      updatedCargo = automaticResubmission.cargo;
+      await notifyCargoRegistrationPending(
+        {
+          cargo: updatedCargo,
+          approvalRequestId: null,
+          actorId: req.auth?.userId || null
+        },
+        client
+      );
+    }
+
+    const isRevision = isStaff(req) && [
+        REGISTRATION_STATUS.APPROVED,
+        REGISTRATION_STATUS.CORRECTION_REQUIRED,
+        REGISTRATION_STATUS.REJECTED
+      ].includes(existingCargo.registration_status);
     await writeAuditLog(
       {
         user_id: req.auth?.userId || null,
-        action: isRevision ? "STAFF_CORRECT_CARGO_REGISTRATION" : "UPDATE_CARGO",
+        action: automaticResubmission
+          ? "STAFF_REVISE_APPROVED_CARGO"
+          : isRevision ? "STAFF_CORRECT_CARGO_REGISTRATION" : "UPDATE_CARGO",
         module: "Cargo Management",
-        description: `Updated cargo ${updatedCargo.cargo_id} (ID: ${updatedCargo.id}).`,
+        description: automaticResubmission
+          ? `Updated approved cargo ${updatedCargo.cargo_id} and resubmitted it for supervisor approval.`
+          : `Updated cargo ${updatedCargo.cargo_id} (ID: ${updatedCargo.id}).`,
         metadata: {
           cargo_id: updatedCargo.id,
           cargo_identifier: updatedCargo.cargo_id,
           updated_fields: updates,
           registration_status: existingCargo.registration_status,
+          resubmitted_for_approval: Boolean(automaticResubmission),
+          changed_fields: automaticResubmission?.changedEntries.map((change) => change.label) || [],
           requested_correction_fields: existingCargo.correction_fields || [],
           relocation_required: updatedCargo.relocation_required,
           location_revalidated: Boolean(locationValidation)

@@ -1,22 +1,16 @@
 const db = require("../config/db");
 const { buildError } = require("../utils/apiError");
-
-const ZONE_CODE_PATTERN = /^Z-[A-Z]$/;
-
-const textValue = (value) => {
-  if (value === undefined || value === null) return null;
-  const normalized = String(value).trim();
-  return normalized || null;
-};
-
-const numberValue = (value, fallback = 0) => {
-  if (value === undefined || value === null || value === "") return fallback;
-  const normalized = Number(value);
-  if (!Number.isFinite(normalized) || normalized < 0) {
-    throw buildError("Capacity values must be valid non-negative numbers.", 400);
-  }
-  return normalized;
-};
+const { writeAuditLog } = require("../models/adminModel");
+const {
+  ensureCargoType,
+  getEntityReferenceCount,
+  readConfigurationStatus,
+  readLetter,
+  readPositiveNumber,
+  readThresholds,
+  resolveLifecycleState,
+  textValue
+} = require("../services/warehouseConfigurationService");
 
 const booleanValue = (value, fallback = false) => {
   if (value === undefined || value === null || value === "") return fallback;
@@ -36,6 +30,7 @@ const zoneSelect = (activeOnly) => `
     z.id,
     z.id AS zone_id,
     z.warehouse_id,
+    z.zone_letter,
     w.warehouse_name,
     w.warehouse_code,
     z.code,
@@ -45,6 +40,8 @@ const zoneSelect = (activeOnly) => `
     z.description,
     z.zone_type,
     z.allowed_cargo_type,
+    z.allowed_cargo_type AS cargo_type_allowed,
+    z.handling_condition,
     z.is_hazard_zone,
     z.max_weight,
     z.max_volume,
@@ -152,40 +149,43 @@ const createZone = async (req, res, next) => {
   const client = await db.pool.connect();
 
   try {
-    const code = textValue(req.body.zone_code ?? req.body.code)?.toUpperCase();
-    const name = textValue(req.body.zone_name ?? req.body.name);
-    const allowedCargoType = textValue(req.body.allowed_cargo_type);
+    const letter = readLetter(
+      req.body.zone_letter ?? String(req.body.zone_code ?? req.body.code ?? "").replace(/^Z-/i, ""),
+      "Zone letter"
+    );
+    const code = `Z-${letter}`;
+    const allowedCargoType = ensureCargoType(req.body.cargo_type_allowed ?? req.body.allowed_cargo_type);
     const zoneType = textValue(req.body.zone_type) || "Standard";
-    const status = textValue(req.body.status) || "Active";
+    const status = readConfigurationStatus(req.body.status);
     const warehouseId = req.body.warehouse_id;
     const defaultHazardZone = zoneType.toLowerCase() === "hazardous"
       || allowedCargoType?.toLowerCase() === "hazardous cargo";
     const isHazardZone = booleanValue(req.body.is_hazard_zone, defaultHazardZone);
-    const maxWeight = numberValue(req.body.max_weight);
-    const maxVolume = numberValue(req.body.max_volume);
-
-    if (!code || !ZONE_CODE_PATTERN.test(code)) {
-      throw buildError("Zone code must follow the format Z-A.", 400);
-    }
-    if (!name) throw buildError("Zone name is required.", 400);
-    if (!allowedCargoType) throw buildError("Allowed cargo type is required.", 400);
-    if (!["Active", "Inactive"].includes(status)) {
-      throw buildError("Zone status must be Active or Inactive.", 400);
-    }
     if (!warehouseId) {
       throw buildError("Warehouse ID is required.", 400);
     }
 
     await client.query("BEGIN");
 
-    const warehouseCheck = await client.query("SELECT id FROM warehouses WHERE id = $1", [warehouseId]);
+    const warehouseCheck = await client.query(
+      "SELECT id, warehouse_code, status, total_capacity, max_volume FROM warehouses WHERE id = $1",
+      [warehouseId]
+    );
     if (warehouseCheck.rowCount === 0) {
       throw buildError("Selected warehouse was not found.", 404);
     }
+    const warehouse = warehouseCheck.rows[0];
+    if (status === "Active" && warehouse.status !== "active") {
+      throw buildError("Zone cannot be active while its warehouse is inactive.", 400);
+    }
+    const name = `${warehouse.warehouse_code}-Z-${letter}`;
+    const maxWeight = readPositiveNumber(req.body.max_weight, "Zone maximum weight", Number(warehouse.total_capacity) || 1);
+    const maxVolume = readPositiveNumber(req.body.max_volume, "Zone maximum volume", Number(warehouse.max_volume) || 1);
+    const thresholds = readThresholds(req.body);
 
     const duplicate = await client.query(
-      "SELECT id FROM zones WHERE UPPER(code) = $1 AND warehouse_id = $2",
-      [code, warehouseId]
+      "SELECT id FROM zones WHERE warehouse_id = $1 AND (UPPER(code) = $2 OR UPPER(name) = $3)",
+      [warehouseId, code, name]
     );
     if (duplicate.rowCount > 0) {
       throw buildError(`Zone with code ${code} already exists in this warehouse.`, 409);
@@ -193,15 +193,18 @@ const createZone = async (req, res, next) => {
 
     const result = await client.query(
       `INSERT INTO zones (
-        code, name, description, zone_type, allowed_cargo_type, is_hazard_zone,
-        max_weight, max_volume, rack_count, level_count, bins_per_level, status, active, warehouse_id
+        code, name, zone_letter, description, handling_condition, zone_type, allowed_cargo_type, is_hazard_zone,
+        max_weight, max_volume, rack_count, level_count, bins_per_level, status, active, warehouse_id,
+        occupancy_warning_threshold, full_threshold, created_by, updated_by
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 0, 0, $9, $10, $11)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,0,0,0,$11,$12,$13,$14,$15,$16,$16)
       RETURNING *, id AS zone_id, code AS zone_code, name AS zone_name`,
       [
         code,
         name,
+        letter,
         textValue(req.body.description),
+        textValue(req.body.handling_condition),
         zoneType,
         allowedCargoType,
         isHazardZone,
@@ -209,15 +212,20 @@ const createZone = async (req, res, next) => {
         maxVolume,
         status,
         status === "Active",
-        warehouseId
+        warehouseId,
+        thresholds.warning,
+        thresholds.full,
+        req.auth?.userId || null
       ]
     );
 
-    await client.query(
-      `INSERT INTO audit_logs (user_id, action, module, description)
-       VALUES ($1, 'CREATE_ZONE', 'Warehouse Configuration', $2)`,
-      [req.auth?.userId || null, `Created zone ${code} (${name}) in warehouse.`]
-    );
+    await writeAuditLog({
+      user_id: req.auth?.userId,
+      action: "CREATE_ZONE",
+      module: "Warehouse Configuration",
+      description: `Created zone ${name}.`,
+      metadata: { zone_id: result.rows[0].id, warehouse_id: Number(warehouseId), code, name }
+    }, client);
 
     await client.query("COMMIT");
     res.status(201).json({ success: true, data: result.rows[0] });
@@ -233,19 +241,14 @@ const updateZone = async (req, res, next) => {
   const client = await db.pool.connect();
 
   try {
-    const code = textValue(req.body.zone_code ?? req.body.code)?.toUpperCase();
-    const name = textValue(req.body.zone_name ?? req.body.name);
-    const allowedCargoType = textValue(req.body.allowed_cargo_type);
-
-    if (!code || !ZONE_CODE_PATTERN.test(code)) {
-      throw buildError("Zone code must follow the format Z-A.", 400);
-    }
-    if (!name) throw buildError("Zone name is required.", 400);
-    if (!allowedCargoType) throw buildError("Allowed cargo type is required.", 400);
+    const letter = readLetter(
+      req.body.zone_letter ?? String(req.body.zone_code ?? req.body.code ?? "").replace(/^Z-/i, ""),
+      "Zone letter"
+    );
+    const code = `Z-${letter}`;
+    const allowedCargoType = ensureCargoType(req.body.cargo_type_allowed ?? req.body.allowed_cargo_type);
 
     const zoneType = textValue(req.body.zone_type) || "Standard";
-    const maxWeight = numberValue(req.body.max_weight);
-    const maxVolume = numberValue(req.body.max_volume);
     const isHazardZone = booleanValue(
       req.body.is_hazard_zone,
       zoneType.toLowerCase() === "hazardous" || allowedCargoType.toLowerCase() === "hazardous cargo"
@@ -253,52 +256,95 @@ const updateZone = async (req, res, next) => {
 
     await client.query("BEGIN");
 
-    const existingZoneResult = await client.query("SELECT warehouse_id FROM zones WHERE id = $1", [req.params.id]);
+    const existingZoneResult = await client.query(
+      `SELECT z.*, w.warehouse_code, w.total_capacity, w.max_volume AS warehouse_max_volume
+       FROM zones z JOIN warehouses w ON w.id=z.warehouse_id WHERE z.id=$1`,
+      [req.params.id]
+    );
     if (existingZoneResult.rowCount === 0) {
       throw buildError("Zone not found.", 404);
     }
-    const warehouseId = existingZoneResult.rows[0].warehouse_id;
+    const existing = existingZoneResult.rows[0];
+    const lifecycle = resolveLifecycleState({ status: req.body.status, existingStatus: existing.status });
+    const warehouseId = existing.warehouse_id;
+    const name = `${existing.warehouse_code}-Z-${letter}`;
+    const maxWeight = readPositiveNumber(req.body.max_weight, "Zone maximum weight", Number(existing.max_weight) || Number(existing.total_capacity) || 1);
+    const maxVolume = readPositiveNumber(req.body.max_volume, "Zone maximum volume", Number(existing.max_volume) || Number(existing.warehouse_max_volume) || 1);
+    const thresholds = readThresholds(req.body, existing);
 
     const duplicate = await client.query(
-      "SELECT id FROM zones WHERE UPPER(code) = $1 AND warehouse_id = $2 AND id <> $3",
-      [code, warehouseId, req.params.id]
+      `SELECT id FROM zones WHERE warehouse_id=$1
+       AND (UPPER(code)=$2 OR UPPER(name)=$3) AND id<>$4`,
+      [warehouseId, code, name, req.params.id]
     );
     if (duplicate.rowCount > 0) {
       throw buildError(`Zone with code ${code} already exists in this warehouse.`, 409);
+    }
+
+    if (lifecycle.status === "Inactive") {
+      await client.query("UPDATE racks SET active = FALSE, status = 'Inactive' WHERE zone_id = $1", [req.params.id]);
+      await client.query(
+        "UPDATE levels SET active = FALSE, status = 'Inactive' WHERE rack_id IN (SELECT id FROM racks WHERE zone_id = $1)",
+        [req.params.id]
+      );
+      await client.query(
+        `UPDATE bins
+         SET active = FALSE, status = 'Inactive'
+         WHERE level_id IN (
+           SELECT l.id FROM levels l JOIN racks r ON r.id = l.rack_id WHERE r.zone_id = $1
+         )`,
+        [req.params.id]
+      );
     }
 
     const result = await client.query(
       `UPDATE zones
        SET code = $1,
            name = $2,
-           description = $3,
-           zone_type = $4,
-           allowed_cargo_type = $5,
-           is_hazard_zone = $6,
-           max_weight = $7,
-           max_volume = $8
-       WHERE id = $9
+           zone_letter = $3,
+           description = $4,
+           handling_condition = $5,
+           zone_type = $6,
+           allowed_cargo_type = $7,
+           is_hazard_zone = $8,
+           max_weight = $9,
+           max_volume = $10,
+           occupancy_warning_threshold=$11,
+           full_threshold=$12,
+           active=$13,
+           status=$14,
+           updated_by=$15
+       WHERE id = $16
        RETURNING *, id AS zone_id, code AS zone_code, name AS zone_name`,
       [
         code,
         name,
+        letter,
         textValue(req.body.description),
+        textValue(req.body.handling_condition),
         zoneType,
         allowedCargoType,
         isHazardZone,
         maxWeight,
         maxVolume,
+        thresholds.warning,
+        thresholds.full,
+        lifecycle.active,
+        lifecycle.status,
+        req.auth?.userId || null,
         req.params.id
       ]
     );
 
     if (result.rowCount === 0) throw buildError("Zone not found.", 404);
 
-    await client.query(
-      `INSERT INTO audit_logs (user_id, action, module, description)
-       VALUES ($1, 'UPDATE_ZONE', 'Warehouse Configuration', $2)`,
-      [req.auth?.userId || null, `Updated zone ${code}.`]
-    );
+    await writeAuditLog({
+      user_id: req.auth?.userId,
+      action: "UPDATE_ZONE",
+      module: "Warehouse Configuration",
+      description: `Updated zone ${name}.`,
+      metadata: { zone_id: Number(req.params.id), before: existing, code, name }
+    }, client);
 
     await client.query("COMMIT");
     res.json({ success: true, data: result.rows[0] });
@@ -314,34 +360,23 @@ const updateZoneStatus = async (req, res, next) => {
   const client = await db.pool.connect();
 
   try {
-    const status = textValue(req.body.status);
-    if (!["Active", "Inactive"].includes(status)) {
-      throw buildError("Zone status must be Active or Inactive.", 400);
-    }
+    const status = readConfigurationStatus(req.body.status);
 
     await client.query("BEGIN");
 
-    const zoneResult = await client.query("SELECT * FROM zones WHERE id = $1 FOR UPDATE", [req.params.id]);
+    const zoneResult = await client.query(
+      `SELECT z.*, w.status AS warehouse_status FROM zones z
+       JOIN warehouses w ON w.id=z.warehouse_id WHERE z.id=$1 FOR UPDATE OF z`,
+      [req.params.id]
+    );
     if (zoneResult.rowCount === 0) throw buildError("Zone not found.", 404);
     const zone = zoneResult.rows[0];
 
-    if (status === "Inactive") {
-      const cargoResult = await client.query(
-        `SELECT 1
-         FROM cargo c
-         JOIN bins b ON b.id = c.current_bin_id
-         JOIN levels l ON l.id = b.level_id
-         JOIN racks r ON r.id = l.rack_id
-         WHERE r.zone_id = $1
-           AND c.is_deleted = FALSE
-           AND c.placement_status IN ('Placed', 'Relocated')
-         LIMIT 1`,
-        [req.params.id]
-      );
-      if (cargoResult.rowCount > 0) {
-        throw buildError("Cannot deactivate a zone that contains active stored cargo.", 400);
-      }
+    if (status === "Active" && zone.warehouse_status !== "active") {
+      throw buildError("Cannot activate a zone while its warehouse is inactive.", 400);
+    }
 
+    if (status === "Inactive") {
       await client.query("UPDATE racks SET active = FALSE, status = 'Inactive' WHERE zone_id = $1", [req.params.id]);
       await client.query(
         "UPDATE levels SET active = FALSE, status = 'Inactive' WHERE rack_id IN (SELECT id FROM racks WHERE zone_id = $1)",
@@ -363,11 +398,11 @@ const updateZoneStatus = async (req, res, next) => {
     );
 
     const action = status === "Active" ? "ACTIVATE_ZONE" : "DEACTIVATE_ZONE";
-    await client.query(
-      `INSERT INTO audit_logs (user_id, action, module, description)
-       VALUES ($1, $2, 'Warehouse Configuration', $3)`,
-      [req.auth?.userId || null, action, `${status === "Active" ? "Activated" : "Deactivated"} zone ${zone.code}.`]
-    );
+    await writeAuditLog({
+      user_id: req.auth?.userId, action, module: "Warehouse Configuration",
+      description: `${status === "Active" ? "Activated" : "Deactivated"} zone ${zone.code}.`,
+      metadata: { zone_id: Number(req.params.id), status, reason: textValue(req.body.reason) }
+    }, client);
 
     await client.query("COMMIT");
     res.json({ success: true, data: result.rows[0] });
@@ -379,9 +414,30 @@ const updateZoneStatus = async (req, res, next) => {
   }
 };
 
-const deleteZone = (req, res, next) => {
-  req.body = { ...req.body, status: "Inactive" };
-  return updateZoneStatus(req, res, next);
+const deleteZone = async (req, res, next) => {
+  const client = await db.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const existing = await client.query("SELECT * FROM zones WHERE id=$1 FOR UPDATE", [req.params.id]);
+    if (!existing.rowCount) throw buildError("Zone not found.", 404);
+    if (await getEntityReferenceCount(client, "Zone", req.params.id)) {
+      throw buildError("Zone has racks or historical links and cannot be deleted. Deactivate it instead.", 409);
+    }
+    await client.query("DELETE FROM capacity_configurations WHERE entity_type='Zone' AND entity_id=$1", [req.params.id]);
+    await client.query("DELETE FROM zones WHERE id=$1", [req.params.id]);
+    await writeAuditLog({
+      user_id: req.auth?.userId, action: "DELETE_ZONE", module: "Warehouse Configuration",
+      description: `Deleted unused zone ${existing.rows[0].code}.`,
+      metadata: { deleted_record: existing.rows[0] }
+    }, client);
+    await client.query("COMMIT");
+    res.json({ success: true, message: "Zone deleted." });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    next(error);
+  } finally {
+    client.release();
+  }
 };
 
 module.exports = {

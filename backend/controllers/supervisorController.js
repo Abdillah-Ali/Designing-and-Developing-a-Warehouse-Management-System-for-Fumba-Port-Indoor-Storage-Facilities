@@ -303,7 +303,8 @@ const decideApproval = async (req, res, next, decision, options = {}) => {
             rejection_reason: null,
             corrective_notes: null,
             correction_notes: null,
-            correction_fields: []
+            correction_fields: [],
+            correction_original_values: {}
           }
         );
       } else {

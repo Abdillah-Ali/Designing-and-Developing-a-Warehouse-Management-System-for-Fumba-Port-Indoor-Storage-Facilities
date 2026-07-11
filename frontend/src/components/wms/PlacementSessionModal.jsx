@@ -15,6 +15,7 @@ import {
   getActiveScanSession
 } from "@/services/api";
 import { createScannerSocket } from "@/services/scannerSocket";
+import { readCurrentStepError } from "@/lib/scanner-workflow";
 import { getErrorMessage } from "@/lib/wms-operational";
 
 function readSessionStep(session) {
@@ -44,12 +45,22 @@ function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
   const [connectionStatus, setConnectionStatus] = useState("Connecting");
   const [loading, setLoading] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const [error, setError] = useState("");
+  const [operationError, setOperationError] = useState("");
 
   const step = useMemo(() => readSessionStep(session), [session]);
   const completed = session?.status === "completed";
   const cancelled = session?.status === "cancelled";
   const result = session?.context?.result || null;
+  const sessionCargo = session?.context?.scanned_cargo_barcode
+    ? {
+        cargo_id: session.context.cargo_id,
+        barcode: session.context.cargo_barcode,
+        cargo_type: session.context.cargo_type,
+        placement_status: session.context.placement_status,
+        location: session.context.location
+      }
+    : cargo;
+  const currentStepError = useMemo(() => readCurrentStepError(session), [session]);
 
   useEffect(() => {
     if (!open || !cargo) return undefined;
@@ -57,7 +68,7 @@ function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
     let active = true;
     completionNotifiedRef.current = false;
     setSession(null);
-    setError("");
+    setOperationError("");
     setLoading(true);
 
     const start = async () => {
@@ -72,7 +83,7 @@ function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
           if (active) setSession(response.data || null);
         } catch {
         }
-        if (active) setError(getErrorMessage(startError));
+        if (active) setOperationError(getErrorMessage(startError));
       } finally {
         if (active) setLoading(false);
       }
@@ -97,8 +108,6 @@ function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
     const handleSession = (payload = {}) => {
       if (!payload.session) return;
       setSession(payload.session);
-      if (payload.scan?.error) setError(payload.scan.error);
-      else setError("");
     };
 
     socket.on("scanner:session-started", handleSession);
@@ -107,6 +116,7 @@ function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
     socket.on("scanner:session-completed", handleSession);
     socket.on("scanner:scan-accepted", handleSession);
     socket.on("scanner:scan-error", handleSession);
+    socket.on("scanner:scan-ignored", handleSession);
     socket.on("scanner:scan-cancelled", handleSession);
     socket.connect();
 
@@ -128,14 +138,14 @@ function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
     }
 
     setCancelling(true);
-    setError("");
+    setOperationError("");
 
     try {
       const response = await cancelScanSession(session.id);
       setSession(response.data || null);
       await onCompleted?.();
     } catch (cancelError) {
-      setError(getErrorMessage(cancelError));
+      setOperationError(getErrorMessage(cancelError));
     } finally {
       setCancelling(false);
     }
@@ -146,8 +156,8 @@ function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
   return (
     <EnterpriseModal
       open={open}
-      title="Cargo Placement Scanner"
-      subtitle="A linked Scanner account will scan and validate this placement in real time."
+      title={session?.context?.operation_type === "relocation" ? "Cargo Relocation Scanner" : "Cargo Placement Scanner"}
+      subtitle="The scanned cargo becomes the active cargo and is validated by the backend in real time."
       size="medium"
       onClose={onClose}
       footer={(
@@ -172,14 +182,14 @@ function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
       )}
     >
       <div className="space-y-4">
-        {error && <ErrorState message={error} />}
+        {operationError && <ErrorState message={operationError} />}
 
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          <Detail label="Cargo ID" value={cargo?.cargo_id} />
-          <Detail label="Cargo Barcode" value={cargo?.barcode} />
-          <Detail label="Cargo Type" value={cargo?.cargo_type} />
-          <Detail label="Placement Status" value={cargo?.placement_status} />
-          <Detail label="Current Location" value={cargo?.location || "Not placed"} />
+          <Detail label="Cargo Reference" value={sessionCargo?.cargo_id} />
+          <Detail label="Cargo Barcode" value={sessionCargo?.barcode} />
+          <Detail label="Cargo Type" value={sessionCargo?.cargo_type} />
+          <Detail label="Placement Status" value={sessionCargo?.placement_status} />
+          <Detail label="Current Location" value={sessionCargo?.location || cargo?.location || "Not placed"} />
           <Detail label="Scanner Connection" value={connectionStatus} />
         </div>
 
@@ -227,10 +237,10 @@ function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
           </div>
         )}
 
-        {session?.last_error && (
+        {currentStepError && (
           <div className="flex items-center gap-2 rounded border border-warning/35 bg-warning/10 px-3 py-3 text-xs font-semibold text-warning">
             <AlertTriangle className="h-4 w-4" />
-            {session.last_error}
+            {currentStepError}
           </div>
         )}
 

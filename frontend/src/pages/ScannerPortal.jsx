@@ -2,10 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LogOut, XCircle } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { clearStoredAuthToken } from "@/lib/portal-access";
+import {
+  SCAN_COOLDOWN_MS,
+  getSessionStepKey,
+  shouldSuppressDuplicate
+} from "@/lib/scanner-workflow";
 import { getActiveScanSession, logout, refreshScanSession } from "@/services/api";
 import { createScannerSocket } from "@/services/scannerSocket";
 
-const SCAN_COOLDOWN_MS = 1600;
+const CAMERA_RELEASE_MS = 450;
+const SCAN_RESUME_DELAY_MS = 250;
 
 const sendWithAck = (socket, event, payload) => new Promise((resolve, reject) => {
   if (!socket?.connected) {
@@ -33,6 +39,11 @@ function ScannerPortal() {
   const detectorRef = useRef(null);
   const scanLockedRef = useRef(false);
   const lastScanRef = useRef({ value: "", at: 0 });
+  const lastScannedCodeRef = useRef("");
+  const cameraDetectionRef = useRef({ value: "", lastSeenAt: 0 });
+  const currentStepKeyRef = useRef("");
+  const unlockTimerRef = useRef(0);
+  const audioContextRef = useRef(null);
 
   const [session, setSession] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState("Connecting");
@@ -84,6 +95,60 @@ function ScannerPortal() {
 
   const completedResult = completedSession?.context?.result || null;
 
+  const clearScannerInput = useCallback(() => {
+    lastScannedCodeRef.current = "";
+    setKeyboardValue("");
+    if (keyboardInputRef.current) {
+      keyboardInputRef.current.value = "";
+    }
+  }, []);
+
+  const releaseScanLock = useCallback((delay = SCAN_RESUME_DELAY_MS) => {
+    if (unlockTimerRef.current) {
+      window.clearTimeout(unlockTimerRef.current);
+    }
+    unlockTimerRef.current = window.setTimeout(() => {
+      scanLockedRef.current = false;
+      unlockTimerRef.current = 0;
+    }, delay);
+  }, []);
+
+  const unlockAudio = useCallback(async () => {
+    if (typeof window === "undefined") return null;
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) return null;
+
+    if (!audioContextRef.current) {
+      audioContextRef.current = new AudioContext();
+    }
+
+    if (audioContextRef.current.state === "suspended") {
+      await audioContextRef.current.resume().catch(() => {});
+    }
+
+    return audioContextRef.current;
+  }, []);
+
+  const playScanTone = useCallback((tone = "success") => {
+    const context = audioContextRef.current;
+    if (!context || context.state !== "running") return;
+
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const startAt = context.currentTime;
+    const duration = tone === "success" ? 0.09 : 0.14;
+
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(tone === "success" ? 880 : 220, startAt);
+    gain.gain.setValueAtTime(0.0001, startAt);
+    gain.gain.exponentialRampToValueAtTime(tone === "success" ? 0.2 : 0.12, startAt + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(startAt);
+    oscillator.stop(startAt + duration);
+  }, []);
+
   const loadActiveSession = useCallback(async () => {
     try {
       const response = await getActiveScanSession();
@@ -95,22 +160,19 @@ function ScannerPortal() {
   }, []);
 
   const submitBarcode = useCallback(async (value) => {
-    const barcode = String(value || "").trim();
-    if (!barcode || !activeSession?.id) return;
+    const barcode = String(value || "").trim().toUpperCase();
+    if (!barcode || !activeSession?.id) return false;
 
     const now = Date.now();
-    if (
-      scanLockedRef.current
-      || (
-        lastScanRef.current.value === barcode
-        && now - lastScanRef.current.at < SCAN_COOLDOWN_MS
-      )
-    ) {
-      return;
+    if (scanLockedRef.current || shouldSuppressDuplicate(barcode, lastScanRef.current, now)) {
+      clearScannerInput();
+      return false;
     }
 
     scanLockedRef.current = true;
     lastScanRef.current = { value: barcode, at: now };
+    lastScannedCodeRef.current = barcode;
+    clearScannerInput();
     setActionError("");
 
     try {
@@ -118,20 +180,60 @@ function ScannerPortal() {
         sessionId: activeSession.id,
         barcode
       });
+
       if (result?.session) setSession(result.session);
-      if (result?.error) setActionError(result.error);
+
+      if (result?.ignoredDuplicate) {
+        setActionError("");
+        releaseScanLock();
+        return false;
+      }
+
+      if (result?.accepted) {
+        playScanTone("success");
+        setActionError("");
+
+        if (!result.completed && getSessionStepKey(result.session) === getSessionStepKey(activeSession)) {
+          releaseScanLock(SCAN_COOLDOWN_MS);
+        }
+        return true;
+      }
+
+      if (result?.error) {
+        setActionError(result.error);
+        playScanTone("error");
+      }
+      releaseScanLock();
+      return false;
     } catch (error) {
       setActionError(error.message || "Scan could not be submitted.");
-    } finally {
-      window.setTimeout(() => {
-        scanLockedRef.current = false;
-      }, 900);
+      releaseScanLock();
+      return false;
     }
-  }, [activeSession]);
+  }, [activeSession, clearScannerInput, playScanTone, releaseScanLock]);
 
   useEffect(() => {
     loadActiveSession();
   }, [loadActiveSession]);
+
+  useEffect(() => {
+    const handleInteraction = () => {
+      unlockAudio();
+    };
+
+    window.addEventListener("pointerdown", handleInteraction, { capture: true });
+    window.addEventListener("keydown", handleInteraction, { capture: true });
+    window.addEventListener("touchstart", handleInteraction, { capture: true });
+
+    return () => {
+      window.removeEventListener("pointerdown", handleInteraction, { capture: true });
+      window.removeEventListener("keydown", handleInteraction, { capture: true });
+      window.removeEventListener("touchstart", handleInteraction, { capture: true });
+      if (unlockTimerRef.current) window.clearTimeout(unlockTimerRef.current);
+      audioContextRef.current?.close().catch(() => {});
+      audioContextRef.current = null;
+    };
+  }, [unlockAudio]);
 
   useEffect(() => {
     const socket = createScannerSocket();
@@ -143,9 +245,12 @@ function ScannerPortal() {
     socket.on("reconnect_attempt", () => setConnectionStatus("Reconnecting"));
 
     const handleSessionEvent = (payload = {}) => {
-      setSession(payload.session || null);
+      const nextSession = payload.session || null;
+      setSession(nextSession);
       if (payload.scan?.error) setActionError(payload.scan.error);
-      else setActionError("");
+      else if (payload.scan || getSessionStepKey(nextSession) !== currentStepKeyRef.current) {
+        setActionError("");
+      }
     };
 
     socket.on("scanner:session-started", handleSessionEvent);
@@ -154,6 +259,7 @@ function ScannerPortal() {
     socket.on("scanner:session-completed", handleSessionEvent);
     socket.on("scanner:scan-accepted", handleSessionEvent);
     socket.on("scanner:scan-error", handleSessionEvent);
+    socket.on("scanner:scan-ignored", handleSessionEvent);
     socket.on("scanner:scan-cancelled", handleSessionEvent);
 
     socket.connect();
@@ -163,6 +269,23 @@ function ScannerPortal() {
       socketRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    const nextStepKey = getSessionStepKey(activeSession);
+    const previousStepKey = currentStepKeyRef.current;
+
+    if (nextStepKey !== previousStepKey) {
+      currentStepKeyRef.current = nextStepKey;
+      clearScannerInput();
+      setActionError("");
+
+      if (previousStepKey && nextStepKey) {
+        releaseScanLock();
+      } else if (!nextStepKey) {
+        scanLockedRef.current = false;
+      }
+    }
+  }, [activeSession, clearScannerInput, releaseScanLock]);
 
   useEffect(() => {
     if (!completedSession) return undefined;
@@ -246,10 +369,30 @@ function ScannerPortal() {
       ) {
         try {
           const barcodes = await detector.detect(video);
-          const rawValue = barcodes?.[0]?.rawValue;
-          if (rawValue) submitBarcode(rawValue);
+          const rawValue = String(barcodes?.[0]?.rawValue || "").trim().toUpperCase();
+          const now = Date.now();
+          const previousDetection = cameraDetectionRef.current;
+
+          if (rawValue) {
+            if (previousDetection.value !== rawValue) {
+              cameraDetectionRef.current = { value: rawValue, lastSeenAt: now };
+              submitBarcode(rawValue);
+            } else {
+              cameraDetectionRef.current = {
+                value: previousDetection.value,
+                lastSeenAt: now
+              };
+            }
+          } else if (
+            previousDetection.value
+            && now - previousDetection.lastSeenAt >= CAMERA_RELEASE_MS
+          ) {
+            cameraDetectionRef.current = { value: "", lastSeenAt: 0 };
+          }
         } catch {
         }
+      } else if (!activeSession) {
+        cameraDetectionRef.current = { value: "", lastSeenAt: 0 };
       }
 
       animationRef.current = window.requestAnimationFrame(scanFrame);
@@ -271,8 +414,14 @@ function ScannerPortal() {
   }, [activeSession]);
 
   const cancelScan = async () => {
+    clearScannerInput();
+    cameraDetectionRef.current = { value: "", lastSeenAt: 0 };
+    lastScanRef.current = { value: "", at: 0 };
+    scanLockedRef.current = true;
+
     if (!activeSession?.id) {
       await loadActiveSession();
+      scanLockedRef.current = false;
       return;
     }
 
@@ -287,6 +436,8 @@ function ScannerPortal() {
     } catch (error) {
       setActionError(error.message || "Cancel scan failed.");
       await loadActiveSession();
+    } finally {
+      releaseScanLock();
     }
   };
 
@@ -299,8 +450,10 @@ function ScannerPortal() {
   const handleKeyboardSubmit = (event) => {
     if (event.key !== "Enter") return;
     event.preventDefault();
-    submitBarcode(keyboardValue);
-    setKeyboardValue("");
+    const barcode = event.currentTarget.value || keyboardValue;
+    event.currentTarget.value = "";
+    clearScannerInput();
+    submitBarcode(barcode);
   };
 
   return (
@@ -317,7 +470,10 @@ function ScannerPortal() {
       <input
         ref={keyboardInputRef}
         value={keyboardValue}
-        onChange={(event) => setKeyboardValue(event.target.value)}
+        onChange={(event) => {
+          lastScannedCodeRef.current = event.target.value;
+          setKeyboardValue(event.target.value);
+        }}
         onKeyDown={handleKeyboardSubmit}
         className="absolute left-0 top-0 h-px w-px opacity-0"
         autoComplete="off"

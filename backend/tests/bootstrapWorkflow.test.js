@@ -51,5 +51,7 @@ test("database initialization reads bootstrap identity only from environment var
 
   assert.match(source, /BOOTSTRAP_ADMIN_FULL_NAME/);
   assert.match(source, /BOOTSTRAP_ADMIN_PASSWORD/);
+  assert.match(source, /connectWithRetry/);
   assert.doesNotMatch(source, /DEFAULT_ADMIN_PASSWORD|SEED_DEFAULT_ADMIN|admin@fumbaport\.tz|Admin@123/);
+  assert.doesNotMatch(source, /warehouse_configuration_srs\.sql/);
 });

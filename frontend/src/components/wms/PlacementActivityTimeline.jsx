@@ -102,7 +102,7 @@ function PlacementActivityFilters({ filters, onChange, onApply, onReset, adminFi
       >
         <label className="space-y-1.5">
           <span className="text-[11px] font-semibold">Cargo</span>
-          <input className="h-9 w-full rounded border border-input bg-background px-2 text-xs" value={filters.cargo_id} onChange={(event) => update("cargo_id", event.target.value)} placeholder="Cargo ID or barcode" />
+          <input className="h-9 w-full rounded border border-input bg-background px-2 text-xs" value={filters.cargo_id} onChange={(event) => update("cargo_id", event.target.value)} placeholder="Cargo reference or barcode" />
         </label>
         <label className="space-y-1.5">
           <span className="text-[11px] font-semibold">Activity</span>
@@ -131,12 +131,12 @@ function PlacementActivityFilters({ filters, onChange, onApply, onReset, adminFi
         {adminFilters && (
           <>
             <label className="space-y-1.5">
-              <span className="text-[11px] font-semibold">Staff ID</span>
-              <input className="h-9 w-full rounded border border-input bg-background px-2 text-xs" value={filters.staff_id} onChange={(event) => update("staff_id", event.target.value)} placeholder="User ID" />
+              <span className="text-[11px] font-semibold">Staff</span>
+              <input className="h-9 w-full rounded border border-input bg-background px-2 text-xs" value={filters.staff_id} onChange={(event) => update("staff_id", event.target.value)} placeholder="Full name or username" />
             </label>
             <label className="space-y-1.5">
-              <span className="text-[11px] font-semibold">Warehouse ID</span>
-              <input className="h-9 w-full rounded border border-input bg-background px-2 text-xs" value={filters.warehouse_id} onChange={(event) => update("warehouse_id", event.target.value)} placeholder="Warehouse ID" />
+              <span className="text-[11px] font-semibold">Warehouse</span>
+              <input className="h-9 w-full rounded border border-input bg-background px-2 text-xs" value={filters.warehouse_id} onChange={(event) => update("warehouse_id", event.target.value)} placeholder="WH-A, WH-B, etc." />
             </label>
           </>
         )}

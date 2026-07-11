@@ -34,14 +34,17 @@ function CargoCorrectionModal({ open, cargo, onClose, onCompleted }) {
   );
   const originalValues = cargo?.correction_original_values || {};
   const isRejected = cargo?.registration_status === "Rejected";
-  const baselineValues = Object.keys(originalValues).length > 0
+  const isApproved = cargo?.registration_status === "Approved";
+  const baselineValues = isApproved
+    ? buildForm(cargo)
+    : Object.keys(originalValues).length > 0
     ? originalValues
     : isRejected
       ? buildForm(cargo)
       : {};
   const comparisonFields = selectedFields.length > 0
     ? selectedFields
-    : isRejected
+    : isRejected || isApproved
       ? Object.keys(baselineValues).filter((field) => cargoCorrectionFieldMap[field])
       : [];
 
@@ -70,11 +73,11 @@ function CargoCorrectionModal({ open, cargo, onClose, onCompleted }) {
   };
 
   const submit = async () => {
-    if (!isCorrectionRequired && !isRejected) {
+    if (!isCorrectionRequired && !isRejected && !isApproved) {
       setError("This correction request is no longer active.");
       return;
     }
-    if (!isRejected && unchanged.length > 0) {
+    if (isCorrectionRequired && unchanged.length > 0) {
       setError(unchangedMessage);
       return;
     }
@@ -82,11 +85,17 @@ function CargoCorrectionModal({ open, cargo, onClose, onCompleted }) {
       setError("The rejected registration has not been updated. Please modify the form before resubmitting.");
       return;
     }
+    if (isApproved && changed.length === 0) {
+      setError("Change at least one cargo field before resubmitting the approved registration.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
       await updateCargo(cargo.id, form);
-      await resubmitCargo(cargo.id, "Registration details corrected and resubmitted.");
+      if (!isApproved) {
+        await resubmitCargo(cargo.id, "Registration details corrected and resubmitted.");
+      }
       await onCompleted?.();
       onClose?.();
     } catch (submitError) {
@@ -99,8 +108,10 @@ function CargoCorrectionModal({ open, cargo, onClose, onCompleted }) {
   return (
     <EnterpriseModal
       open={open}
-      title={`${isRejected ? "Revise" : "Correct"} Cargo Registration${cargo?.cargo_id ? `: ${cargo.cargo_id}` : ""}`}
-      subtitle={isRejected
+      title={`${isApproved ? "Edit and Resubmit" : isRejected ? "Revise" : "Correct"} Cargo Registration${cargo?.cargo_id ? `: ${cargo.cargo_id}` : ""}`}
+      subtitle={isApproved
+        ? "Update the approved cargo details. Saving will return the registration to the supervisor for approval."
+        : isRejected
         ? "Update the original registration using the supervisor's rejection notes, then resubmit it for review."
         : "Requested fields are highlighted. Every highlighted field must be changed before resubmission."}
       onClose={onClose}
@@ -120,9 +131,13 @@ function CargoCorrectionModal({ open, cargo, onClose, onCompleted }) {
             <div className="flex items-start gap-3">
               <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
               <div>
-                <div className="text-xs font-semibold">{isRejected ? "Supervisor Rejection Notes" : "Supervisor Instructions"}</div>
+                <div className="text-xs font-semibold">
+                  {isApproved ? "Approved Registration Revision" : isRejected ? "Supervisor Rejection Notes" : "Supervisor Instructions"}
+                </div>
                 <p className="mt-1 text-xs">
-                  {cargo.correction_notes || cargo.corrective_notes || cargo.rejection_reason || (isRejected
+                  {isApproved
+                    ? "Any saved change will require fresh supervisor approval before the cargo can continue through approval-gated operations."
+                    : cargo.correction_notes || cargo.corrective_notes || cargo.rejection_reason || (isRejected
                     ? "Revise the registration details before resubmitting."
                     : "Update every highlighted field.")}
                 </p>
@@ -173,7 +188,7 @@ function CargoCorrectionModal({ open, cargo, onClose, onCompleted }) {
 
           <section className="overflow-hidden rounded-md border border-border bg-card">
             <h3 className="border-b border-border bg-panel-header px-4 py-2.5 text-xs font-semibold">
-              {isRejected ? "Revision Comparison" : "Correction Comparison"}
+              {isApproved ? "Edit Summary" : isRejected ? "Revision Comparison" : "Correction Comparison"}
             </h3>
             <div className="overflow-auto">
               <table className="w-full min-w-[720px] text-left text-xs">
@@ -181,7 +196,7 @@ function CargoCorrectionModal({ open, cargo, onClose, onCompleted }) {
                   <tr><th className="px-4 py-2">Requested Field</th><th className="px-4 py-2">Original Value</th><th className="px-4 py-2">Updated Value</th><th className="px-4 py-2">Status</th></tr>
                 </thead>
                 <tbody>
-                  {comparisons.map((item) => (
+                  {(isApproved ? changed : comparisons).map((item) => (
                     <tr key={item.field} className="border-t border-border">
                       <td className="px-4 py-2.5 font-semibold">{item.label}</td>
                       <td className="px-4 py-2.5 text-muted-foreground">{normalizeCorrectionDisplayValue(item.original)}</td>
@@ -194,6 +209,13 @@ function CargoCorrectionModal({ open, cargo, onClose, onCompleted }) {
                       </td>
                     </tr>
                   ))}
+                  {isApproved && changed.length === 0 && (
+                    <tr className="border-t border-border">
+                      <td colSpan={4} className="px-4 py-5 text-center text-muted-foreground">
+                        No fields changed yet.
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>

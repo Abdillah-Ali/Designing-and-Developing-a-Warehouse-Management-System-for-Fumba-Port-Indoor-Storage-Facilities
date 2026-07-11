@@ -317,7 +317,7 @@ function DashboardPage() {
               rows={recentlyStored}
               emptyTitle="No recently stored cargo"
               columns={[
-                { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
+                { key: "cargo_id", label: "Cargo Reference", className: "font-mono font-semibold" },
                 { key: "barcode", label: "Barcode", className: "font-mono text-muted-foreground" },
                 { key: "location", label: "Location", render: (row) => row.location || "Not recorded" },
                 { key: "status", label: "Placement", render: (row) => <StatusBadge tone={statusTone(row.placement_status)}>{row.placement_status}</StatusBadge> }
@@ -466,7 +466,7 @@ function PlacementQueuePanel() {
             tableClassName="!min-w-0 table-fixed"
             containerClassName="overflow-hidden"
             columns={[
-              { key: "cargo_id", label: "Cargo ID", headerClassName: "w-[15%] whitespace-nowrap", className: "truncate whitespace-nowrap font-mono font-semibold" },
+              { key: "cargo_id", label: "Cargo Reference", headerClassName: "w-[15%] whitespace-nowrap", className: "truncate whitespace-nowrap font-mono font-semibold" },
               { key: "cargo_type", label: "Cargo Type", headerClassName: "w-[14%] whitespace-nowrap", className: "truncate whitespace-nowrap" },
               {
                 key: "placement_status",
@@ -562,7 +562,7 @@ function PlacementQueuePanel() {
           <div className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {[
-                ["Cargo ID", selected.cargo_id],
+                ["Cargo Reference", selected.cargo_id],
                 ["Barcode", selected.barcode],
                 ["Cargo Type", selected.cargo_type],
                 ["Consignee", selected.consignee_name],
@@ -666,7 +666,7 @@ function RegistrationReviewsPanel() {
               tableClassName="!min-w-0 table-fixed"
               containerClassName="overflow-hidden"
               columns={[
-                { key: "cargo_id", label: "Cargo ID", headerClassName: "w-[14%]", className: "truncate font-mono font-semibold" },
+                { key: "cargo_id", label: "Cargo Reference", headerClassName: "w-[14%]", className: "truncate font-mono font-semibold" },
                 { key: "consignee_name", label: "Consignee", headerClassName: "w-[17%]", className: "truncate" },
                 { key: "cargo_type", label: "Cargo Type", headerClassName: "w-[16%]", className: "truncate" },
                 {
@@ -694,7 +694,7 @@ function RegistrationReviewsPanel() {
                     ) === Number(currentUserId);
                     const canEdit = row.staff_can_edit !== false
                       && assignedToCurrentUser
-                      && ["Correction Required", "Rejected"].includes(row.registration_status);
+                      && ["Approved", "Correction Required", "Rejected"].includes(row.registration_status);
 
                     return canEdit ? (
                     <button
@@ -702,7 +702,9 @@ function RegistrationReviewsPanel() {
                       onClick={() => setSelectedId(String(row.id))}
                       className="max-w-full truncate whitespace-nowrap rounded bg-info px-1.5 py-1 text-[9px] font-semibold text-info-foreground"
                     >
-                      {row.registration_status === "Rejected" ? "Revise" : "Correct"}
+                      {row.registration_status === "Approved"
+                        ? "Edit & Resubmit"
+                        : row.registration_status === "Rejected" ? "Revise" : "Correct"}
                     </button>
                     ) : <span className="whitespace-nowrap text-[10px] text-muted-foreground">Read only</span>;
                   }
@@ -1389,7 +1391,7 @@ function DispatchOperationPage({ mode }) {
             rows={visibleRecords}
             emptyTitle={config.emptyTitle}
             columns={[
-              { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
+              { key: "cargo_id", label: "Cargo Reference", className: "font-mono font-semibold" },
               { key: "barcode", label: "Barcode", className: "font-mono text-muted-foreground" },
               { key: "consignee_name", label: "Consignee", render: (row) => row.consignee_name || "Not recorded" },
               { key: "location", label: "Storage Location", render: (row) => row.location || "Not assigned" },

@@ -19,15 +19,53 @@ const connectionConfig = {
   password: process.env.DB_PASSWORD
 };
 
+const DB_CONNECTION_RETRY_LIMIT = 30;
+const DB_CONNECTION_RETRY_DELAY_MS = 2000;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const connectWithRetry = async (createClient, label) => {
+  let lastError;
+
+  for (let attempt = 1; attempt <= DB_CONNECTION_RETRY_LIMIT; attempt += 1) {
+    const client = createClient();
+
+    try {
+      await client.connect();
+
+      if (attempt > 1) {
+        console.log(`Connected to PostgreSQL for ${label} after ${attempt} attempts`);
+      }
+
+      return client;
+    } catch (error) {
+      lastError = error;
+      await client.end().catch(() => {});
+
+      if (attempt === DB_CONNECTION_RETRY_LIMIT) {
+        break;
+      }
+
+      console.log(
+        `PostgreSQL not ready for ${label} (attempt ${attempt}/${DB_CONNECTION_RETRY_LIMIT}): ${error.message}`
+      );
+      await sleep(DB_CONNECTION_RETRY_DELAY_MS);
+    }
+  }
+
+  throw lastError;
+};
+
 const quoteIdentifier = (value) => `"${String(value).replace(/"/g, '""')}"`;
 
 const createDatabaseIfMissing = async () => {
-  const client = new Client({
-    ...connectionConfig,
-    database: "postgres"
-  });
-
-  await client.connect();
+  const client = await connectWithRetry(
+    () => new Client({
+      ...connectionConfig,
+      database: "postgres"
+    }),
+    `database ${dbName} creation`
+  );
 
   try {
     const result = await client.query("SELECT 1 FROM pg_database WHERE datname = $1", [dbName]);
@@ -45,21 +83,21 @@ const createDatabaseIfMissing = async () => {
 };
 
 const applySchema = async () => {
-  const client = new Client({
-    ...connectionConfig,
-    database: dbName
-  });
+  const client = await connectWithRetry(
+    () => new Client({
+      ...connectionConfig,
+      database: dbName
+    }),
+    `schema application for ${dbName}`
+  );
   const schemaPath = path.join(__dirname, "schema.sql");
   const schema = await fs.readFile(schemaPath, "utf8");
-
-  await client.connect();
 
   try {
     await moveIncompatibleTables(client);
     await client.query(schema);
     await seedOperationalConfiguration(client);
     console.log("✔ Roles seeded");
-    console.log("✔ Warehouses seeded");
     console.log("✔ Shifts seeded");
     await seedBootstrapAdmin(client);
     console.log("Database schema applied successfully");

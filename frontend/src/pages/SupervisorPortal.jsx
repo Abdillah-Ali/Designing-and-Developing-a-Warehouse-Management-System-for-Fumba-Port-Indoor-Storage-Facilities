@@ -304,7 +304,7 @@ function ApprovalsPage({ exceptionsOnly = false }) {
               : "Pending cargo registrations for your assigned warehouse will appear here."
             }
             columns={[
-              { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
+              { key: "cargo_id", label: "Cargo Reference", className: "font-mono font-semibold" },
               { key: "cargo_barcode", label: "Barcode", className: "font-mono" },
               { key: "consignee_name", label: "Consignee" },
               { key: "cargo_type", label: "Cargo Type" },
@@ -437,7 +437,7 @@ function ReviewHistoryPage() {
             emptyTitle="No review history recorded"
             columns={[
               { key: "created_at", label: "Time", render: (row) => formatDateTime(row.created_at || row.performed_at) },
-              { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
+              { key: "cargo_id", label: "Cargo Reference", className: "font-mono font-semibold" },
               { key: "cargo_type", label: "Cargo Type" },
               { key: "warehouse", label: "Warehouse", render: (row) => row.warehouse_code || row.warehouse_name || "Previous warehouse" },
               { key: "action", label: "Action", className: "font-mono font-semibold" },
@@ -479,7 +479,7 @@ function CargoRecordsPage() {
               rows={cargo.rows}
               emptyTitle="No cargo records available"
               columns={[
-                { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
+                { key: "cargo_id", label: "Cargo Reference", className: "font-mono font-semibold" },
                 { key: "consignee_name", label: "Consignee" },
                 { key: "cargo_type", label: "Cargo Type" },
                 { key: "registration_status", label: "Registration", render: (row) => <StatusBadge tone={statusTone(row.registration_status)}>{row.registration_status}</StatusBadge> },

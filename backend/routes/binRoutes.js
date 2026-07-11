@@ -7,19 +7,22 @@ const {
   createBin,
   updateBin,
   updateBinStatus,
-  deleteBin
+  deleteBin,
+  recommendBin
 } = require("../controllers/binController");
 const { requireRole } = require("../middleware/authMiddleware");
+const { auditConfigurationAttempt } = require("../services/warehouseConfigurationService");
 
 const router = express.Router();
 
 router.get("/", getBins);
-router.post("/", requireRole("System Admin"), createBin);
+router.post("/", requireRole("System Admin"), auditConfigurationAttempt, createBin);
 router.get("/by-level/:levelId", getBinsByLevel);
-router.patch("/:id/status", requireRole("System Admin"), updateBinStatus);
+router.get("/recommend/:cargoId", recommendBin);
+router.patch("/:id/status", requireRole("System Admin"), auditConfigurationAttempt, updateBinStatus);
 router.post("/:id/print-barcode", printBinBarcode);
 router.get("/:id", getBinById);
-router.put("/:id", requireRole("System Admin"), updateBin);
-router.delete("/:id", requireRole("System Admin"), deleteBin);
+router.put("/:id", requireRole("System Admin"), auditConfigurationAttempt, updateBin);
+router.delete("/:id", requireRole("System Admin"), auditConfigurationAttempt, deleteBin);
 
 module.exports = router;

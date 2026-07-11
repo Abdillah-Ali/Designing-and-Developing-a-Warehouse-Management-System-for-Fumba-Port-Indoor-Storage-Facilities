@@ -310,7 +310,7 @@ function CargoReviewModal({
                   </div>
                   <div className="text-[11px] text-muted-foreground">
                     {entry.performed_by_name || entry.performed_by_username || "System"}
-                    {entry.performed_by ? ` · User ID ${entry.performed_by}` : ""}
+                    {entry.performed_by ? " · Linked user record" : ""}
                   </div>
                 </div>
               ))}

@@ -83,7 +83,7 @@ function PageHeader({ eyebrow, title, description, action }) {
 }
 
 function DataTable({ columns, rows, loading, error, emptyTitle, emptyBody, tableClassName, containerClassName }) {
-  if (loading) return <LoadingState />;
+  if (loading && !rows.length) return <LoadingState />;
   if (error) return <ErrorState message={error} />;
 
   return (

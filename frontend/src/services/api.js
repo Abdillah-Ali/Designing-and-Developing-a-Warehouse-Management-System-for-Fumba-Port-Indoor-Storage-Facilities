@@ -518,11 +518,13 @@ export const deleteBin = (id) => request(`/bins/${encodeURIComponent(id)}`, {
   method: "DELETE"
 });
 
-export const updateBinStatus = (id, status, reservedForCargoType = "") => request(`/bins/${encodeURIComponent(id)}/status`, {
+export const updateBinStatus = (id, status, options = {}) => request(`/bins/${encodeURIComponent(id)}/status`, {
   method: "PATCH",
   body: {
     status,
-    reserved_for_cargo_type: reservedForCargoType
+    reserved_for_cargo_type: options.reserved_for_cargo_type || "",
+    reason: options.reason || "",
+    override_with_cargo: options.override_with_cargo === true
   }
 });
 
@@ -540,6 +542,21 @@ export const updateWarehouseStatus = (id, status) => request(`/warehouses/${enco
   method: "PATCH",
   body: { status }
 });
+
+export const deleteWarehouse = (id) => request(`/warehouses/${encodeURIComponent(id)}`, { method: "DELETE" });
+
+export const getCapacityConfigurations = (params = {}) => {
+  const search = new URLSearchParams(params);
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  return request(`/capacity-configurations${suffix}`);
+};
+
+export const updateCapacityConfiguration = (entityType, entityId, payload) => request(
+  `/capacity-configurations/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}`,
+  { method: "PUT", body: payload }
+);
+
+export const recommendBin = (cargoId) => request(`/bins/recommend/${encodeURIComponent(cargoId)}`);
 
 // Bin Rules
 export const getBinRules = () => request("/bin-rules");

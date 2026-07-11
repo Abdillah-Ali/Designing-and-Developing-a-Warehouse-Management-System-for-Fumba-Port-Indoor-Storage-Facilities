@@ -1449,7 +1449,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
                   {cargoBarcode.trim() ? (
                     scannedCargo ? (
                       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                        <Field label="Cargo ID">
+                        <Field label="Cargo Reference">
                           <Input value={scannedCargo.cargo_id || cargoBarcode.trim().toUpperCase()} readOnly />
                         </Field>
                         <Field label="Cargo Type">
@@ -1712,7 +1712,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
           <div className="space-y-3 p-4">
             <CollapsibleCard title={<SectionTitle icon={Search}>Cargo Search</SectionTitle>} defaultOpen>
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-                <Field label="Cargo ID">
+                <Field label="Cargo Reference">
                   <Input value={trackingFilters.cargoId} onChange={(event) => handleTrackingFilterChange("cargoId", event.target.value)} placeholder="CARGO-2026-00001" />
                 </Field>
                 <Field label="Barcode">
@@ -1750,7 +1750,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
                 <table className="w-full min-w-[780px] text-xs">
                   <thead className="bg-panel-header text-panel-header-foreground">
                     <tr>
-                      <th className="px-2 py-2 text-left font-semibold">Cargo ID</th>
+                      <th className="px-2 py-2 text-left font-semibold">Cargo Reference</th>
                       <th className="px-2 py-2 text-left font-semibold">Consignee</th>
                       <th className="px-2 py-2 text-left font-semibold">Cargo Type</th>
                       <th className="px-2 py-2 text-left font-semibold">Barcode</th>

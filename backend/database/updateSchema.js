@@ -1,4 +1,5 @@
 const dotenv = require("dotenv");
+const fs = require("fs");
 const { Client } = require("pg");
 const path = require("path");
 const { roleNames } = require("../config/systemConfig");
@@ -593,6 +594,13 @@ const runUpdates = async () => {
       CREATE INDEX IF NOT EXISTS idx_notifications_archived ON notifications(archived_at);
     `);
     console.log("✔ Notifications table checked/added");
+
+    const warehouseConfigurationMigration = fs.readFileSync(
+      path.join(__dirname, "migrations", "warehouse_configuration_srs.sql"),
+      "utf8"
+    );
+    await client.query(warehouseConfigurationMigration);
+    console.log("✔ SRS warehouse configuration schema checked/applied");
 
     await client.query("COMMIT");
     console.log("All database updates applied successfully!");

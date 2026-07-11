@@ -46,7 +46,7 @@ test("staff visibility remains broad but placement waits for supervisor approval
   }), false);
 });
 
-test("only the registering staff user can view and edit correction submissions", () => {
+test("only the registering staff user can edit approved or revision submissions", () => {
   const cargo = {
     received_by_user_id: 42,
     registration_status: REGISTRATION_STATUS.CORRECTION_REQUIRED
@@ -60,6 +60,19 @@ test("only the registering staff user can view and edit correction submissions",
     received_by_user_id: 42,
     registration_status: REGISTRATION_STATUS.REJECTED
   }, 42), true);
+  assert.equal(canStaffEditCargo({
+    received_by_user_id: 42,
+    registration_status: REGISTRATION_STATUS.APPROVED
+  }, 42), true);
+  assert.equal(canStaffEditCargo({
+    received_by_user_id: 7,
+    registration_status: REGISTRATION_STATUS.APPROVED
+  }, 42), false);
+  assert.equal(canStaffEditCargo({
+    received_by_user_id: 42,
+    registration_status: REGISTRATION_STATUS.APPROVED,
+    placement_status: PLACEMENT_STATUS.DISPATCHED
+  }, 42), false);
   assert.equal(CARGO_NOT_OPERATIONAL_MESSAGE, "Only approved cargo can enter the warehouse placement workflow.");
   assert.equal(
     PLACEMENT_APPROVAL_REQUIRED_MESSAGE,
@@ -191,6 +204,59 @@ test("resubmission clears active correction markers and records submitted change
     call.sql.includes("UPDATE cargo")
     && call.values.includes("[]")
     && call.values.includes(null)
+  )));
+});
+
+test("an edited approved registration returns to pending supervisor review", async () => {
+  const calls = [];
+  const executor = {
+    query: async (sql, values) => {
+      calls.push({ sql, values });
+      if (sql.includes("UPDATE cargo")) {
+        return {
+          rows: [{
+            id: 15,
+            registration_status: REGISTRATION_STATUS.PENDING_REVIEW,
+            approved_by: null,
+            approved_at: null
+          }]
+        };
+      }
+      return { rows: [] };
+    }
+  };
+
+  const result = await completeCargoResubmission(executor, {
+    cargo: {
+      id: 15,
+      cargo_id: "CG-15",
+      registration_status: REGISTRATION_STATUS.APPROVED,
+      correction_fields: ["weight", "inspection_notes"],
+      correction_original_values: {
+        weight: 500,
+        inspection_notes: "Original"
+      },
+      weight: 525,
+      inspection_notes: "Original"
+    },
+    userId: 7,
+    remarks: "Approved cargo updated",
+    buildError: (message, statusCode, errors) => Object.assign(
+      new Error(message),
+      { statusCode, errors }
+    )
+  });
+
+  assert.equal(result.cargo.registration_status, REGISTRATION_STATUS.PENDING_REVIEW);
+  assert.equal(result.changes.weight.changed, true);
+  assert.ok(calls.some((call) => (
+    call.sql.includes("UPDATE cargo")
+    && call.values.includes(REGISTRATION_STATUS.PENDING_REVIEW)
+    && call.values.includes(null)
+  )));
+  assert.ok(calls.some((call) => (
+    call.sql.includes("APPROVED_REGISTRATION_RESUBMITTED")
+    || call.values?.includes("APPROVED_REGISTRATION_RESUBMITTED")
   )));
 });
 

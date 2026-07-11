@@ -1,22 +1,16 @@
 const db = require("../config/db");
 const { buildError } = require("../utils/apiError");
-
-const RACK_CODE_PATTERN = /^R-[A-Z]\d{2}$/;
-
-const textValue = (value) => {
-  if (value === undefined || value === null) return null;
-  const normalized = String(value).trim();
-  return normalized || null;
-};
-
-const capacityValue = (value, fallback) => {
-  if (value === undefined || value === null || value === "") return fallback;
-  const normalized = Number(value);
-  if (!Number.isFinite(normalized) || normalized < 0) {
-    throw buildError("Capacity values must be valid non-negative numbers.", 400);
-  }
-  return normalized;
-};
+const { writeAuditLog } = require("../models/adminModel");
+const {
+  ensureCapacityFitsParent,
+  getEntityReferenceCount,
+  readConfigurationStatus,
+  readLetter,
+  readPositiveNumber,
+  readThresholds,
+  resolveLifecycleState,
+  textValue
+} = require("../services/warehouseConfigurationService");
 
 const isAdmin = (req) => req.auth?.role === "system-admin";
 
@@ -25,6 +19,7 @@ const rackSelect = (activeOnly) => `
     r.id,
     r.id AS rack_id,
     r.zone_id,
+    r.rack_letter,
     r.code,
     r.code AS rack_code,
     r.name,
@@ -135,54 +130,73 @@ const getRackById = async (req, res, next) => {
   }
 };
 
-const validateRackHierarchy = (rackCode, zoneCode) => {
-  if (!rackCode || !RACK_CODE_PATTERN.test(rackCode)) {
-    throw buildError("Rack code must follow the format R-A01.", 400);
-  }
-  if (rackCode.charAt(2) !== zoneCode.charAt(2)) {
-    throw buildError(`Rack code ${rackCode} does not match parent zone ${zoneCode}.`, 400);
-  }
-};
-
 const createRack = async (req, res, next) => {
   const client = await db.pool.connect();
   try {
     const zoneId = req.body.zone_id;
-    const code = textValue(req.body.rack_code ?? req.body.code)?.toUpperCase();
+    const letter = readLetter(
+      req.body.rack_letter ?? String(req.body.rack_code ?? req.body.code ?? "").replace(/^R-/i, ""),
+      "Rack letter"
+    );
+    const code = `R-${letter}`;
+    const status = readConfigurationStatus(req.body.status);
     if (!zoneId) throw buildError("Zone ID is required.", 400);
 
     await client.query("BEGIN");
-    const zoneResult = await client.query("SELECT code FROM zones WHERE id = $1 AND active = TRUE", [zoneId]);
-    if (zoneResult.rowCount === 0) throw buildError("Zone not found or inactive.", 404);
-
-    validateRackHierarchy(code, zoneResult.rows[0].code);
+    const zoneResult = await client.query(
+      `SELECT z.*, w.warehouse_code, w.status AS warehouse_status
+       FROM zones z JOIN warehouses w ON w.id=z.warehouse_id WHERE z.id=$1`,
+      [zoneId]
+    );
+    if (!zoneResult.rowCount) throw buildError("Zone not found.", 404);
+    const zone = zoneResult.rows[0];
+    if (status === "Active" && (!zone.active || zone.warehouse_status !== "active")) {
+      throw buildError("Rack cannot be active while its zone or warehouse is inactive.", 400);
+    }
+    const name = `${zone.warehouse_code}-${zone.code}-${code}`;
+    const maxWeight = readPositiveNumber(req.body.max_weight_capacity ?? req.body.max_weight, "Rack maximum weight");
+    const maxVolume = readPositiveNumber(req.body.max_volume, "Rack maximum volume", Number(zone.max_volume) || 1);
+    ensureCapacityFitsParent({
+      childWeight: maxWeight, childVolume: maxVolume,
+      parentWeight: Number(zone.max_weight), parentVolume: Number(zone.max_volume),
+      allowOverride: Boolean(req.body.allow_capacity_override), childLabel: "Rack"
+    });
+    const thresholds = readThresholds(req.body);
 
     const duplicate = await client.query(
-      "SELECT id FROM racks WHERE zone_id = $1 AND UPPER(code) = $2",
-      [zoneId, code]
+      "SELECT id FROM racks WHERE zone_id=$1 AND (UPPER(code)=$2 OR UPPER(name)=$3)",
+      [zoneId, code, name]
     );
     if (duplicate.rowCount > 0) {
       throw buildError(`Rack ${code} already exists in the selected zone.`, 409);
     }
 
     const result = await client.query(
-      `INSERT INTO racks (zone_id, code, name, max_weight, max_volume, status, active)
-       VALUES ($1, $2, $3, $4, $5, 'Active', TRUE)
+      `INSERT INTO racks (
+         zone_id, rack_letter, code, name, max_weight, max_volume, status, active,
+         occupancy_warning_threshold, full_threshold, created_by, updated_by
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)
        RETURNING *, id AS rack_id, code AS rack_code`,
       [
         zoneId,
+        letter,
         code,
-        textValue(req.body.name) || `Rack ${code}`,
-        capacityValue(req.body.max_weight, 10000),
-        capacityValue(req.body.max_volume, 80)
+        name,
+        maxWeight,
+        maxVolume,
+        status,
+        status === "Active",
+        thresholds.warning,
+        thresholds.full,
+        req.auth?.userId || null
       ]
     );
 
-    await client.query(
-      `INSERT INTO audit_logs (user_id, action, module, description)
-       VALUES ($1, 'CREATE_RACK', 'Warehouse Configuration', $2)`,
-      [req.auth?.userId || null, `Created rack ${code} in zone ${zoneResult.rows[0].code}.`]
-    );
+    await writeAuditLog({
+      user_id: req.auth?.userId, action: "CREATE_RACK", module: "Warehouse Configuration",
+      description: `Created rack ${name}.`, metadata: { rack_id: result.rows[0].id, zone_id: Number(zoneId), code, name }
+    }, client);
     await client.query("COMMIT");
     res.status(201).json({ success: true, data: result.rows[0] });
   } catch (error) {
@@ -197,43 +211,81 @@ const updateRack = async (req, res, next) => {
   const client = await db.pool.connect();
   try {
     const zoneId = req.body.zone_id;
-    const code = textValue(req.body.rack_code ?? req.body.code)?.toUpperCase();
+    const letter = readLetter(
+      req.body.rack_letter ?? String(req.body.rack_code ?? req.body.code ?? "").replace(/^R-/i, ""),
+      "Rack letter"
+    );
+    const code = `R-${letter}`;
     if (!zoneId) throw buildError("Zone ID is required.", 400);
 
     await client.query("BEGIN");
-    const zoneResult = await client.query("SELECT code FROM zones WHERE id = $1 AND active = TRUE", [zoneId]);
-    if (zoneResult.rowCount === 0) throw buildError("Zone not found or inactive.", 404);
-    validateRackHierarchy(code, zoneResult.rows[0].code);
+    const existingResult = await client.query("SELECT * FROM racks WHERE id=$1 FOR UPDATE", [req.params.id]);
+    if (!existingResult.rowCount) throw buildError("Rack not found.", 404);
+    const existing = existingResult.rows[0];
+    const lifecycle = resolveLifecycleState({ status: req.body.status, existingStatus: existing.status });
+    const zoneResult = await client.query(
+      `SELECT z.*, w.warehouse_code, w.status AS warehouse_status
+       FROM zones z JOIN warehouses w ON w.id=z.warehouse_id WHERE z.id=$1`,
+      [zoneId]
+    );
+    if (!zoneResult.rowCount) throw buildError("Zone not found.", 404);
+    const zone = zoneResult.rows[0];
+    if (existing.active && (!zone.active || zone.warehouse_status !== "active")) {
+      throw buildError("An active rack cannot be moved beneath an inactive parent.", 400);
+    }
+    const name = `${zone.warehouse_code}-${zone.code}-${code}`;
+    const maxWeight = readPositiveNumber(req.body.max_weight_capacity ?? req.body.max_weight, "Rack maximum weight");
+    const maxVolume = readPositiveNumber(req.body.max_volume, "Rack maximum volume", Number(zone.max_volume) || 1);
+    ensureCapacityFitsParent({
+      childWeight: maxWeight, childVolume: maxVolume,
+      parentWeight: Number(zone.max_weight), parentVolume: Number(zone.max_volume),
+      allowOverride: Boolean(req.body.allow_capacity_override), childLabel: "Rack"
+    });
+    const thresholds = readThresholds(req.body);
 
     const duplicate = await client.query(
-      "SELECT id FROM racks WHERE zone_id = $1 AND UPPER(code) = $2 AND id <> $3",
-      [zoneId, code, req.params.id]
+      "SELECT id FROM racks WHERE zone_id=$1 AND (UPPER(code)=$2 OR UPPER(name)=$3) AND id<>$4",
+      [zoneId, code, name, req.params.id]
     );
     if (duplicate.rowCount > 0) {
       throw buildError(`Rack ${code} already exists in the selected zone.`, 409);
     }
 
+    if (lifecycle.status === "Inactive") {
+      await client.query("UPDATE levels SET active = FALSE, status = 'Inactive' WHERE rack_id = $1", [req.params.id]);
+      await client.query(
+        "UPDATE bins SET active = FALSE, status = 'Inactive' WHERE level_id IN (SELECT id FROM levels WHERE rack_id = $1)",
+        [req.params.id]
+      );
+    }
+
     const result = await client.query(
       `UPDATE racks
-       SET zone_id = $1, code = $2, name = $3, max_weight = $4, max_volume = $5
-       WHERE id = $6
+       SET zone_id=$1,rack_letter=$2,code=$3,name=$4,max_weight=$5,max_volume=$6,
+           occupancy_warning_threshold=$7,full_threshold=$8,active=$9,status=$10,updated_by=$11
+       WHERE id=$12
        RETURNING *, id AS rack_id, code AS rack_code`,
       [
         zoneId,
+        letter,
         code,
-        textValue(req.body.name) || `Rack ${code}`,
-        capacityValue(req.body.max_weight, 10000),
-        capacityValue(req.body.max_volume, 80),
+        name,
+        maxWeight,
+        maxVolume,
+        thresholds.warning,
+        thresholds.full,
+        lifecycle.active,
+        lifecycle.status,
+        req.auth?.userId || null,
         req.params.id
       ]
     );
     if (result.rowCount === 0) throw buildError("Rack not found.", 404);
 
-    await client.query(
-      `INSERT INTO audit_logs (user_id, action, module, description)
-       VALUES ($1, 'UPDATE_RACK', 'Warehouse Configuration', $2)`,
-      [req.auth?.userId || null, `Updated rack ${code}.`]
-    );
+    await writeAuditLog({
+      user_id: req.auth?.userId, action: "UPDATE_RACK", module: "Warehouse Configuration",
+      description: `Updated rack ${name}.`, metadata: { rack_id: Number(req.params.id), code, name }
+    }, client);
     await client.query("COMMIT");
     res.json({ success: true, data: result.rows[0] });
   } catch (error) {
@@ -247,39 +299,22 @@ const updateRack = async (req, res, next) => {
 const updateRackStatus = async (req, res, next) => {
   const client = await db.pool.connect();
   try {
-    const status = textValue(req.body.status);
-    if (!["Active", "Inactive"].includes(status)) {
-      throw buildError("Rack status must be Active or Inactive.", 400);
-    }
+    const status = readConfigurationStatus(req.body.status);
 
     await client.query("BEGIN");
     const rackResult = await client.query(
-      `SELECT r.*, z.active AS zone_active
-       FROM racks r JOIN zones z ON z.id = r.zone_id
+      `SELECT r.*, z.active AS zone_active, w.status AS warehouse_status
+       FROM racks r JOIN zones z ON z.id = r.zone_id JOIN warehouses w ON w.id=z.warehouse_id
        WHERE r.id = $1 FOR UPDATE OF r`,
       [req.params.id]
     );
     if (rackResult.rowCount === 0) throw buildError("Rack not found.", 404);
     const rack = rackResult.rows[0];
-    if (status === "Active" && !rack.zone_active) {
-      throw buildError("Cannot activate a rack inside an inactive zone.", 400);
+    if (status === "Active" && (!rack.zone_active || rack.warehouse_status !== "active")) {
+      throw buildError("Cannot activate a rack inside an inactive zone or warehouse.", 400);
     }
 
     if (status === "Inactive") {
-      const cargoResult = await client.query(
-        `SELECT 1
-         FROM cargo c
-         JOIN bins b ON b.id = c.current_bin_id
-         JOIN levels l ON l.id = b.level_id
-         WHERE l.rack_id = $1
-           AND c.is_deleted = FALSE
-           AND c.placement_status IN ('Placed', 'Relocated')
-         LIMIT 1`,
-        [req.params.id]
-      );
-      if (cargoResult.rowCount > 0) {
-        throw buildError("Cannot deactivate a rack that contains active stored cargo.", 400);
-      }
       await client.query("UPDATE levels SET active = FALSE, status = 'Inactive' WHERE rack_id = $1", [req.params.id]);
       await client.query(
         "UPDATE bins SET active = FALSE, status = 'Inactive' WHERE level_id IN (SELECT id FROM levels WHERE rack_id = $1)",
@@ -292,11 +327,11 @@ const updateRackStatus = async (req, res, next) => {
       [status === "Active", status, req.params.id]
     );
     const action = status === "Active" ? "ACTIVATE_RACK" : "DEACTIVATE_RACK";
-    await client.query(
-      `INSERT INTO audit_logs (user_id, action, module, description)
-       VALUES ($1, $2, 'Warehouse Configuration', $3)`,
-      [req.auth?.userId || null, action, `${status === "Active" ? "Activated" : "Deactivated"} rack ${rack.code}.`]
-    );
+    await writeAuditLog({
+      user_id: req.auth?.userId, action, module: "Warehouse Configuration",
+      description: `${status === "Active" ? "Activated" : "Deactivated"} rack ${rack.code}.`,
+      metadata: { rack_id: Number(req.params.id), status, reason: textValue(req.body.reason) }
+    }, client);
     await client.query("COMMIT");
     res.json({ success: true, data: result.rows[0] });
   } catch (error) {
@@ -307,9 +342,29 @@ const updateRackStatus = async (req, res, next) => {
   }
 };
 
-const deleteRack = (req, res, next) => {
-  req.body = { ...req.body, status: "Inactive" };
-  return updateRackStatus(req, res, next);
+const deleteRack = async (req, res, next) => {
+  const client = await db.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const existing = await client.query("SELECT * FROM racks WHERE id=$1 FOR UPDATE", [req.params.id]);
+    if (!existing.rowCount) throw buildError("Rack not found.", 404);
+    if (await getEntityReferenceCount(client, "Rack", req.params.id)) {
+      throw buildError("Rack has levels or historical links and cannot be deleted. Deactivate it instead.", 409);
+    }
+    await client.query("DELETE FROM capacity_configurations WHERE entity_type='Rack' AND entity_id=$1", [req.params.id]);
+    await client.query("DELETE FROM racks WHERE id=$1", [req.params.id]);
+    await writeAuditLog({
+      user_id: req.auth?.userId, action: "DELETE_RACK", module: "Warehouse Configuration",
+      description: `Deleted unused rack ${existing.rows[0].code}.`, metadata: { deleted_record: existing.rows[0] }
+    }, client);
+    await client.query("COMMIT");
+    res.json({ success: true, message: "Rack deleted." });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    next(error);
+  } finally {
+    client.release();
+  }
 };
 
 module.exports = {

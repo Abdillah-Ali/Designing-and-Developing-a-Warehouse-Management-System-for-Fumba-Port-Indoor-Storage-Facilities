@@ -4,7 +4,7 @@ const { writeAuditLog } = require("../models/adminModel");
 const { buildError } = require("../utils/apiError");
 const {
   canCargoBePlaced,
-  getCargoPlacementBlock
+  PLACEMENT_STATUS
 } = require("./cargoWorkflowService");
 const {
   confirmPlacementOperation,
@@ -14,6 +14,11 @@ const {
 const STAFF_ROLE = "warehouse-staff";
 const SCANNER_ROLE = "scanner";
 const PLACEMENT_WORKFLOW = "cargo_placement";
+const STEP_TRANSITION_DUPLICATE_MS = 3000;
+const PLACEMENT_OPERATION = Object.freeze({
+  PLACEMENT: "placement",
+  RELOCATION: "relocation"
+});
 
 const placementSteps = Object.freeze([
   Object.freeze({
@@ -43,6 +48,15 @@ const parseJson = (value, fallback) => {
 };
 
 const normalizeBarcode = (value) => String(value || "").trim().toUpperCase();
+
+const isStepTransitionDuplicate = (session, barcode, now = Date.now()) => {
+  const cargoAcceptedAt = Date.parse(session?.context?.cargo_scan_accepted_at || "");
+  return (
+    normalizeBarcode(barcode) === normalizeBarcode(session?.context?.scanned_cargo_barcode)
+    && Number.isFinite(cargoAcceptedAt)
+    && now - cargoAcceptedAt < STEP_TRANSITION_DUPLICATE_MS
+  );
+};
 
 const serializeSession = (row) => {
   if (!row) return null;
@@ -205,23 +219,59 @@ const findPlacementCargo = async (identifier, executor = db) => {
   return result.rows[0] || null;
 };
 
-const assertPlacementCargoAvailable = (cargo, auth) => {
+const getPlacementOperation = (cargo) => (
+  [PLACEMENT_STATUS.PLACED, PLACEMENT_STATUS.RELOCATED].includes(cargo?.placement_status)
+  && cargo?.current_bin_id
+    ? PLACEMENT_OPERATION.RELOCATION
+    : PLACEMENT_OPERATION.PLACEMENT
+);
+
+const getPlacementCargoValidationError = (cargo, auth, operationType) => {
   if (!cargo) {
-    throw buildError("Cargo not found.", 404);
+    return "Cargo does not exist.";
   }
 
   if (auth?.warehouseId && Number(cargo.warehouse_id) !== Number(auth.warehouseId)) {
-    throw buildError("Cargo record not found.", 404);
+    return "Cargo is not in the placement queue.";
   }
 
   const ownerUserId = cargo.assigned_staff_id || cargo.created_by || cargo.received_by_user_id;
   if (Number(ownerUserId) !== Number(auth.userId)) {
-    throw buildError("Cargo record not found.", 404);
+    return "Cargo is not in the placement queue.";
   }
 
+  const isCurrentlyPlaced = (
+    [PLACEMENT_STATUS.PLACED, PLACEMENT_STATUS.RELOCATED].includes(cargo.placement_status)
+    && Boolean(cargo.current_bin_id)
+  );
+
+  if (operationType === PLACEMENT_OPERATION.RELOCATION) {
+    if (!isCurrentlyPlaced) {
+      return "Cargo is not currently placed and cannot be relocated.";
+    }
+    if (!canCargoBePlaced(cargo)) {
+      return "Cargo is not eligible for relocation.";
+    }
+    return null;
+  }
+
+  if (isCurrentlyPlaced || [PLACEMENT_STATUS.PLACED, PLACEMENT_STATUS.RELOCATED].includes(cargo.placement_status)) {
+    return "Cargo has already been placed.";
+  }
+  if (cargo.placement_status !== PLACEMENT_STATUS.UNPLACED) {
+    return "Cargo is not in the placement queue.";
+  }
   if (!canCargoBePlaced(cargo)) {
-    const block = getCargoPlacementBlock(cargo);
-    throw buildError(block.detail, 409, [block.reason]);
+    return "Cargo is not eligible for placement.";
+  }
+
+  return null;
+};
+
+const assertPlacementCargoAvailable = (cargo, auth, operationType) => {
+  const message = getPlacementCargoValidationError(cargo, auth, operationType);
+  if (message) {
+    throw buildError(message, cargo ? 409 : 404);
   }
 };
 
@@ -239,7 +289,15 @@ const createPlacementScanSession = async (payload, auth) => {
 
     const cargoIdentifier = payload?.cargo_id || payload?.cargoId || payload?.id;
     const cargo = await findPlacementCargo(cargoIdentifier, client);
-    assertPlacementCargoAvailable(cargo, auth);
+    const operationType = getPlacementOperation(cargo);
+    assertPlacementCargoAvailable(cargo, auth, operationType);
+    const workflowName = operationType === PLACEMENT_OPERATION.RELOCATION
+      ? "Cargo Relocation"
+      : "Cargo Placement";
+    const sessionSteps = placementSteps.map((step) => ({
+      ...step,
+      workflow_name: workflowName
+    }));
 
     const result = await client.query(
       `INSERT INTO scanner_sessions
@@ -249,14 +307,20 @@ const createPlacementScanSession = async (payload, auth) => {
       [
         auth.userId,
         PLACEMENT_WORKFLOW,
-        "Cargo Placement",
-        JSON.stringify(placementSteps),
+        workflowName,
+        JSON.stringify(sessionSteps),
         JSON.stringify({
+          operation_type: operationType,
+          requested_cargo_db_id: cargo.id,
+          requested_cargo_id: cargo.cargo_id,
+          requested_cargo_barcode: cargo.barcode,
           cargo_db_id: cargo.id,
           cargo_id: cargo.cargo_id,
           cargo_barcode: cargo.barcode,
           cargo_type: cargo.cargo_type,
-          placement_status: cargo.placement_status
+          placement_status: cargo.placement_status,
+          current_bin_id: cargo.current_bin_id || null,
+          location: cargo.location || null
         }),
         "Placement scan session started."
       ]
@@ -360,7 +424,9 @@ const abandonSessionByScanner = async (sessionId, auth) => {
     ...session.context,
     scanned_cargo_barcode: null,
     scanned_bin_barcode: null,
-    validation: null
+    validation: null,
+    cargo_scan_accepted_at: null,
+    last_scan_attempt: null
   };
   const reset = await updateSessionState(session.id, {
     current_step_index: 0,
@@ -393,7 +459,12 @@ const rejectScan = async (session, message, scannerAuth, extraContext = {}) => {
     last_success: null,
     context: {
       ...session.context,
-      ...extraContext
+      ...extraContext,
+      last_scan_attempt: {
+        step_index: session.current_step_index,
+        attempted_at: new Date().toISOString(),
+        accepted: false
+      }
     }
   });
 
@@ -423,23 +494,33 @@ const rejectScan = async (session, message, scannerAuth, extraContext = {}) => {
 const submitPlacementCargoScan = async (session, barcode, scannerAuth) => {
   const cargo = await findPlacementCargo(barcode);
   if (!cargo) {
-    return rejectScan(session, "Cargo not found.", scannerAuth);
-  }
-
-  if (Number(cargo.id) !== Number(session.context.cargo_db_id)) {
-    return rejectScan(session, "Scanned cargo does not match the active placement session.", scannerAuth);
+    return rejectScan(session, "Cargo does not exist.", scannerAuth);
   }
 
   const staffAuth = await buildStaffAuth(session.staff_user_id);
+  const operationType = session.context.operation_type || PLACEMENT_OPERATION.PLACEMENT;
   try {
-    assertPlacementCargoAvailable(cargo, staffAuth);
+    assertPlacementCargoAvailable(cargo, staffAuth, operationType);
   } catch (error) {
     return rejectScan(session, error.message, scannerAuth);
   }
 
   const context = {
     ...session.context,
+    cargo_db_id: cargo.id,
+    cargo_id: cargo.cargo_id,
+    cargo_barcode: cargo.barcode,
+    cargo_type: cargo.cargo_type,
+    placement_status: cargo.placement_status,
+    current_bin_id: cargo.current_bin_id || null,
+    location: cargo.location || null,
     scanned_cargo_barcode: normalizeBarcode(barcode),
+    cargo_scan_accepted_at: new Date().toISOString(),
+    last_scan_attempt: {
+      step_index: session.current_step_index,
+      attempted_at: new Date().toISOString(),
+      accepted: true
+    },
     validation: null
   };
   const updated = await updateSessionState(session.id, {
@@ -476,6 +557,7 @@ const submitPlacementBinScan = async (session, barcode, scannerAuth) => {
   const payload = {
     cargo_id: session.context.cargo_id || session.context.cargo_barcode,
     placement_mode: "scan",
+    operation_type: session.context.operation_type || PLACEMENT_OPERATION.PLACEMENT,
     scanned_cargo_barcode: session.context.scanned_cargo_barcode || session.context.cargo_barcode,
     scanned_bin_barcode: normalizeBarcode(barcode)
   };
@@ -496,6 +578,11 @@ const submitPlacementBinScan = async (session, barcode, scannerAuth) => {
       context: {
         ...session.context,
         scanned_bin_barcode: normalizeBarcode(barcode),
+        last_scan_attempt: {
+          step_index: session.current_step_index,
+          attempted_at: new Date().toISOString(),
+          accepted: false
+        },
         validation: result.validation
       },
       last_error: result.validation.detail,
@@ -517,6 +604,11 @@ const submitPlacementBinScan = async (session, barcode, scannerAuth) => {
     context: {
       ...session.context,
       scanned_bin_barcode: normalizeBarcode(barcode),
+      last_scan_attempt: {
+        step_index: session.current_step_index,
+        attempted_at: new Date().toISOString(),
+        accepted: true
+      },
       validation: result.validation,
       result: {
         cargo: result.cargo,
@@ -576,23 +668,38 @@ const submitScan = async ({ sessionId, barcode }, auth) => {
     };
   }
 
+  const attemptedStepIndex = session.current_step_index;
+
   if (session.workflow_type !== PLACEMENT_WORKFLOW) {
     throw buildError("This scanner workflow is not supported yet.", 400);
   }
 
   const step = session.current_step;
   if (step?.scan_type === "cargo") {
-    return submitPlacementCargoScan(session, normalizedBarcode, auth);
+    const result = await submitPlacementCargoScan(session, normalizedBarcode, auth);
+    return { ...result, attempted_step_index: attemptedStepIndex };
   }
 
   if (step?.scan_type === "bin") {
-    return submitPlacementBinScan(session, normalizedBarcode, auth);
+    if (isStepTransitionDuplicate(session, normalizedBarcode)) {
+      return {
+        session,
+        accepted: false,
+        completed: false,
+        ignoredDuplicate: true,
+        attempted_step_index: attemptedStepIndex
+      };
+    }
+
+    const result = await submitPlacementBinScan(session, normalizedBarcode, auth);
+    return { ...result, attempted_step_index: attemptedStepIndex };
   }
 
   throw buildError("The active scan session has no scannable step.", 400);
 };
 
 module.exports = {
+  PLACEMENT_OPERATION,
   PLACEMENT_WORKFLOW,
   abandonSessionByScanner,
   cancelSessionByStaff,
@@ -600,6 +707,9 @@ module.exports = {
   fetchSessionById,
   getActiveSessionForAuth,
   getActiveSessionForStaff,
+  getPlacementCargoValidationError,
+  getPlacementOperation,
+  isStepTransitionDuplicate,
   serializeSession,
   submitScan
 };

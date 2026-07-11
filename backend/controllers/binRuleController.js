@@ -5,7 +5,11 @@ const MANDATORY_PLACEMENT_RULES = new Set([
   "compatibility",
   "hazardous",
   "volume",
-  "weight"
+  "weight",
+  "zone_restriction",
+  "customs_hold",
+  "fragile_handling",
+  "avoid_unavailable"
 ]);
 
 const getRules = async (req, res, next) => {

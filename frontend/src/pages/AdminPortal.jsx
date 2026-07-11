@@ -74,6 +74,7 @@ import {
   getErrorMessage,
   statusTone
 } from "@/lib/wms-operational";
+import { getDetailViewFields } from "@/lib/warehouse-detail-fields";
 
 import {
   approveSupervisorApproval,
@@ -84,8 +85,15 @@ import {
   createZone,
   createUser,
   deactivateUser,
+  deleteBin,
+  deleteLevel,
+  deleteRack,
+  deleteWarehouse,
+  deleteZone,
   getAuditLogs,
   getBins,
+  getBinRules,
+  getCapacityConfigurations,
   getCargo,
   getCargoById,
   getLevels,
@@ -106,7 +114,9 @@ import {
   rejectSupervisorApproval,
   resetUserPassword,
   updateBin,
+  updateBinRule,
   updateBinStatus,
+  updateCapacityConfiguration,
   updateLevel,
   updateLevelStatus,
   updateRack,
@@ -145,6 +155,17 @@ const cargoStatuses = [
   "Relocated",
   "Dispatched",
   "Archived"
+];
+
+const warehouseCargoTypes = [
+  "General Goods",
+  "Electronics",
+  "Machinery",
+  "Food Products",
+  "Construction Materials",
+  "Fragile Goods",
+  "Hazardous Cargo",
+  "Mixed Cargo"
 ];
 
 const adminNavigation = [
@@ -919,11 +940,13 @@ function UsersPage() {
     toast.success("Temporary password set. The user must change it at next sign-in.");
   };
 
-  const saveScanner = async (payload) => {
+  const saveScanner = async (payload, scannerUser) => {
     await createScanner(payload);
     closeDrawer();
     refreshUsers();
-    toast.success("Scanner account created.");
+    toast.success("Scanner credentials created successfully.", {
+      description: `Linked to ${scannerUser?.role_name || "the selected user"} ${scannerUser?.full_name || ""}`.trim()
+    });
   };
 
   return (
@@ -1102,7 +1125,7 @@ function UsersPage() {
       <Drawer open={drawerMode === "reset-password"} title="Reset User Password" onClose={closeDrawer}>
         <ResetUserPasswordForm user={selectedUser} onCancel={closeDrawer} onSave={saveResetPassword} />
       </Drawer>
-      <Drawer open={drawerMode === "create-scanner"} title="Create Scanner" onClose={closeDrawer}>
+      <Drawer open={drawerMode === "create-scanner"} title="Create Scanner Credentials" onClose={closeDrawer}>
         <ScannerForm users={users.rows} loading={users.loading} onCancel={closeDrawer} onSave={saveScanner} />
       </Drawer>
     </>
@@ -1122,7 +1145,6 @@ function ScannerForm({ users, loading, onCancel, onSave }) {
     user.status === "active"
     && user.role_name !== "Scanner"
     && !user.is_bootstrap_admin
-    && !user.scanner_account_id
   )), [users]);
   const departments = useMemo(() => (
     Array.from(new Set(eligibleUsers.map((user) => user.department_name).filter(Boolean)))
@@ -1132,12 +1154,57 @@ function ScannerForm({ users, loading, onCancel, onSave }) {
     (user) => user.department_name === department
   ), [department, eligibleUsers]);
   const selectedUser = departmentUsers.find((user) => String(user.id) === userId) || null;
+  const passwordChecks = useMemo(() => {
+    const hasPassword = Boolean(password);
+    return [
+      {
+        label: "Minimum 8 characters",
+        pass: password.length >= 8
+      },
+      {
+        label: "Uppercase letter",
+        pass: /[A-Z]/.test(password)
+      },
+      {
+        label: "Lowercase letter",
+        pass: /[a-z]/.test(password)
+      },
+      {
+        label: "Number",
+        pass: /\d/.test(password)
+      },
+      {
+        label: "Special character",
+        pass: /[^A-Za-z0-9]/.test(password)
+      }
+    ].map((check) => ({ ...check, pass: hasPassword && check.pass }));
+  }, [password]);
+  const passwordStrengthValid = passwordChecks.every((check) => check.pass);
+  const passwordsMatch = Boolean(password) && password === confirmPassword;
+  const selectedUserHasScannerAccount = Boolean(selectedUser?.scanner_account_id);
+  const canSubmit = Boolean(selectedUser) && !selectedUserHasScannerAccount && passwordStrengthValid && passwordsMatch;
 
   const selectDepartment = (value) => {
     setDepartment(value);
     setUserId("");
     setFormError("");
+    setPassword("");
+    setConfirmPassword("");
   };
+
+  useEffect(() => {
+    setPassword("");
+    setConfirmPassword("");
+    setFormError("");
+  }, [selectedUser?.id]);
+
+  useEffect(() => {
+    if (selectedUserHasScannerAccount) {
+      setFormError("This user already has scanner credentials. Select another user.");
+    } else if (formError === "This user already has scanner credentials. Select another user.") {
+      setFormError("");
+    }
+  }, [formError, selectedUserHasScannerAccount]);
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -1148,14 +1215,19 @@ function ScannerForm({ users, loading, onCancel, onSave }) {
       return;
     }
 
-    if (password !== confirmPassword) {
+    if (!passwordStrengthValid) {
+      setFormError("Complete all scanner password requirements.");
+      return;
+    }
+
+    if (!passwordsMatch) {
       setFormError("Scanner password and confirmation do not match.");
       return;
     }
 
     setSaving(true);
     try {
-      await onSave({ user_id: selectedUser.id, password });
+      await onSave({ user_id: selectedUser.id, password }, selectedUser);
     } catch (error) {
       setFormError(getErrorMessage(error));
     } finally {
@@ -1163,92 +1235,138 @@ function ScannerForm({ users, loading, onCancel, onSave }) {
     }
   };
 
-  const readonlyField = (label, value) => (
-    <FormField label={label}>
-      <input className={cn(inputClass, "bg-muted text-muted-foreground")} value={value || ""} readOnly />
-    </FormField>
-  );
+  const selectedUserSummary = selectedUser ? [
+    { label: "Full Name", value: selectedUser.full_name },
+    { label: "Username", value: selectedUser.username },
+    { label: "Email", value: selectedUser.email },
+    { label: "Current Role", value: selectedUser.role_name || "No role" }
+  ] : [];
 
   return (
-    <form className="space-y-4" onSubmit={handleSubmit}>
+    <form className="space-y-3 max-h-[calc(100vh-9rem)] overflow-y-auto pr-1" onSubmit={handleSubmit}>
       {formError && <ErrorState message={formError} />}
-      <div className="grid gap-3 md:grid-cols-2">
-        <FormField label="Department">
-          <SelectField value={department} onChange={selectDepartment} disabled={loading} required>
-            <option value="">Select department</option>
-            {departments.map((name) => <option key={name} value={name}>{name}</option>)}
-          </SelectField>
-        </FormField>
-        <FormField label="User">
-          <SelectField
-            value={userId}
-            onChange={setUserId}
-            disabled={!department || loading}
-            required
-          >
-            <option value="">{department ? "Select active user" : "Select department first"}</option>
-            {departmentUsers.map((user) => (
-              <option key={user.id} value={String(user.id)}>
-                {user.full_name} ({user.username})
-              </option>
-            ))}
-          </SelectField>
-        </FormField>
-      </div>
 
-      {selectedUser && (
-        <div className="grid gap-3 border-t border-border pt-4 md:grid-cols-2">
-          {readonlyField("Full Name", selectedUser.full_name)}
-          {readonlyField("Username", selectedUser.username)}
-          {readonlyField("Email", selectedUser.email)}
-          {readonlyField("Department", selectedUser.department_name)}
-          {readonlyField("Current Role", selectedUser.role_name)}
-          {readonlyField("User ID", selectedUser.id)}
+      <section className="space-y-2 rounded-md border border-border bg-card/70 p-3">
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Select User</div>
+          <p className="mt-1 text-[11px] text-muted-foreground">Choose the department first, then select the user who will receive scanner credentials.</p>
         </div>
-      )}
+        <div className="grid gap-3 md:grid-cols-2">
+          <FormField label="Department">
+            <SelectField value={department} onChange={selectDepartment} disabled={loading} required>
+              <option value="">Select department</option>
+              {departments.map((name) => <option key={name} value={name}>{name}</option>)}
+            </SelectField>
+          </FormField>
+          <FormField label="User">
+            <SelectField
+              value={userId}
+              onChange={setUserId}
+              disabled={!department || loading}
+              required
+            >
+              <option value="">{department ? "Select user" : "Select department first"}</option>
+              {departmentUsers.map((user) => (
+                <option key={user.id} value={String(user.id)}>
+                  {user.full_name} ({user.username})
+                </option>
+              ))}
+            </SelectField>
+          </FormField>
+        </div>
+      </section>
 
-      <div className="grid gap-3 border-t border-border pt-4 md:grid-cols-2">
-        <FormField label="Scanner Password">
-          <div className="relative">
+      <section className="space-y-2 rounded-md border border-border bg-card/70 p-3">
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">User Information</div>
+          <p className="mt-1 text-[11px] text-muted-foreground">Review the selected user before creating scanner credentials.</p>
+        </div>
+
+        {selectedUser ? (
+          <div className="rounded-md border border-border bg-muted/20 p-3">
+            <div className="mb-2 text-xs font-semibold text-foreground">Selected User</div>
+            <dl className="grid gap-x-4 gap-y-2 text-xs sm:grid-cols-2">
+              {selectedUserSummary.map((item) => (
+                <div key={item.label} className="flex gap-2">
+                  <dt className="w-24 shrink-0 text-muted-foreground">{item.label}</dt>
+                  <dd className="min-w-0 font-medium text-foreground">{item.value || "Not recorded"}</dd>
+                </div>
+              ))}
+            </dl>
+            {selectedUserHasScannerAccount && (
+              <div className="mt-3 rounded border border-warning/30 bg-warning/10 px-3 py-2 text-xs font-medium text-warning">
+                This user already has scanner credentials. Choose a different user.
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="rounded-md border border-dashed border-border bg-muted/10 px-3 py-4 text-xs text-muted-foreground">
+            Select a department and user to review their account summary.
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-2 rounded-md border border-border bg-card/70 p-3">
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Scanner Credentials</div>
+          <p className="mt-1 text-[11px] text-muted-foreground">Create a unique scanner password for the selected user. The backend also enforces that it differs from the user’s normal login password.</p>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <FormField label="Scanner Password">
+            <div className="relative">
+              <input
+                className={cn(inputClass, "pr-9")}
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder="Create scanner password"
+                autoComplete="new-password"
+                required
+              />
+              <button
+                type="button"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                onClick={() => setShowPassword((current) => !current)}
+                className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                {showPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+              </button>
+            </div>
+          </FormField>
+          <FormField label="Confirm Scanner Password">
             <input
-              className={cn(inputClass, "pr-9")}
+              className={inputClass}
               type={showPassword ? "text" : "password"}
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="Create scanner password"
+              value={confirmPassword}
+              onChange={(event) => setConfirmPassword(event.target.value)}
+              placeholder="Repeat scanner password"
               autoComplete="new-password"
-              minLength={8}
               required
             />
-            <button
-              type="button"
-              aria-label={showPassword ? "Hide password" : "Show password"}
-              onClick={() => setShowPassword((current) => !current)}
-              className="absolute right-1 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition hover:bg-muted hover:text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-            >
-              {showPassword ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-            </button>
-          </div>
-        </FormField>
-        <FormField label="Confirm Scanner Password">
-          <input
-            className={inputClass}
-            type={showPassword ? "text" : "password"}
-            value={confirmPassword}
-            onChange={(event) => setConfirmPassword(event.target.value)}
-            placeholder="Repeat scanner password"
-            autoComplete="new-password"
-            minLength={8}
-            required
-          />
-        </FormField>
-      </div>
-      <div className="text-[10px] leading-4 text-muted-foreground">
-        Use at least 8 characters with uppercase, lowercase, a number, and a special character. It must differ from the normal account password.
-      </div>
+          </FormField>
+        </div>
+
+        <div className="rounded-md border border-border bg-muted/20 p-3">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Password Rules</div>
+          <ul className="mt-2 space-y-1.5 text-xs">
+            {passwordChecks.map((check) => (
+              <li key={check.label} className={cn("flex items-center gap-2", check.pass ? "text-success" : "text-muted-foreground") }>
+                {check.pass ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <span className="h-3.5 w-3.5 shrink-0 rounded-full border border-current/40" />}
+                <span>{check.label}</span>
+              </li>
+            ))}
+            <li className={cn("flex items-center gap-2", passwordsMatch ? "text-success" : "text-muted-foreground") }>
+              {passwordsMatch ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : <span className="h-3.5 w-3.5 shrink-0 rounded-full border border-current/40" />}
+              <span>Passwords match</span>
+            </li>
+          </ul>
+        </div>
+      </section>
+
       <div className="flex justify-end gap-2 border-t border-border pt-3">
         <ToolbarButton icon={X} variant="secondary" onClick={onCancel} disabled={saving}>Cancel</ToolbarButton>
-        <ToolbarButton icon={saving ? Loader2 : ScanLine} type="submit" disabled={saving || loading || !selectedUser}>
+        <ToolbarButton icon={saving ? Loader2 : ScanLine} type="submit" disabled={saving || loading || !canSubmit}>
           {saving ? "Creating" : "Create Scanner"}
         </ToolbarButton>
       </div>
@@ -1862,11 +1980,6 @@ function useWarehouseHierarchy() {
         if (active) {
           const list = response.data || [];
           setWarehouses(list);
-          setSelectedWarehouse((current) => {
-            if (current || list.length === 0) return current;
-            const firstActive = list.find(w => w.status === 'Active') || list[0];
-            return String(firstActive.id);
-          });
         }
       } catch (err) {
         if (active) setError(getErrorMessage(err));
@@ -2023,20 +2136,32 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
       zone_id: String(row.zone_id || hierarchy.selectedZone || ""),
       rack_id: String(row.rack_id || hierarchy.selectedRack || ""),
       level_id: String(row.level_id || hierarchy.selectedLevel || ""),
+      zone_letter: row.zone_letter || String(row.zone_code || "").replace(/^Z-/i, ""),
       zone_code: row.zone_code || row.code || "",
       zone_name: row.zone_name || row.name || "",
       zone_type: row.zone_type || "Standard",
       allowed_cargo_type: row.allowed_cargo_type || "",
       description: row.description || "",
+      handling_condition: row.handling_condition || "",
+      status: row.creation_status || row.status || "Active",
+      rack_letter: row.rack_letter || String(row.rack_code || "").replace(/^R-/i, ""),
       rack_code: row.rack_code || row.code || "",
       name: row.rack_name || row.name || "",
       level_code: row.level_code || row.code || "",
       level_number: row.level_number || "",
+      bin_identifier: row.bin_identifier || String(row.bin_code || "").replace(/^B-/i, ""),
       bin_code: row.bin_code || row.code || "",
       barcode: row.barcode || "",
       max_weight: row.max_weight ?? "",
       max_volume: row.max_volume ?? "",
-      reserved_for_cargo_type: row.reserved_for_cargo_type || ""
+      bin_type: row.bin_type || "Standard",
+      length: row.length ?? "",
+      width: row.width ?? "",
+      height: row.height ?? "",
+      cargo_restrictions: row.cargo_restrictions || "",
+      reserved_for_cargo_type: row.reserved_for_cargo_type || "",
+      reason: "",
+      override_with_cargo: false
     });
   }, [action, hierarchy.selectedLevel, hierarchy.selectedRack, hierarchy.selectedZone, hierarchy.selectedWarehouse]);
 
@@ -2047,10 +2172,16 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
   };
 
   const isStatusAction = action.kind === "status";
+  const isDeleteAction = action.kind === "delete";
+  const isViewAction = action.kind === "view";
   const actionLabel = action.kind === "create"
     ? `Add ${scope.slice(0, -1).replace(/^./, (character) => character.toUpperCase())}`
-    : action.kind === "edit"
+      : action.kind === "edit"
       ? `Edit ${scope.slice(0, -1).replace(/^./, (character) => character.toUpperCase())}`
+      : action.kind === "delete"
+        ? `Delete ${scope === "bins" ? "Bin" : scope.slice(0, -1).replace(/^./, (character) => character.toUpperCase())}`
+        : action.kind === "view"
+          ? `View ${scope === "bins" ? "Bin" : scope.slice(0, -1).replace(/^./, (character) => character.toUpperCase())}`
       : `${action.status} ${scope === "bins" ? "Bin" : scope.slice(0, -1).replace(/^./, (character) => character.toUpperCase())}`;
 
   const submit = async (event) => {
@@ -2061,21 +2192,31 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
     try {
       const id = getRecordId(action.row, `${scope.slice(0, -1)}_id`);
 
-      if (isStatusAction) {
+      if (isDeleteAction) {
+        if (scope === "zones") await deleteZone(id);
+        if (scope === "racks") await deleteRack(id);
+        if (scope === "levels") await deleteLevel(id);
+        if (scope === "bins") await deleteBin(id);
+      } else if (isStatusAction) {
         if (scope === "zones") await updateZoneStatus(id, action.status);
         if (scope === "racks") await updateRackStatus(id, action.status);
         if (scope === "levels") await updateLevelStatus(id, action.status);
         if (scope === "bins") {
-          await updateBinStatus(id, action.status, form.reserved_for_cargo_type);
+          await updateBinStatus(id, action.status, {
+            reserved_for_cargo_type: form.reserved_for_cargo_type,
+            reason: form.reason,
+            override_with_cargo: form.override_with_cargo
+          });
         }
       } else if (scope === "zones") {
         const payload = {
           warehouse_id: Number(form.warehouse_id),
-          zone_code: form.zone_code,
-          zone_name: form.zone_name,
+          zone_letter: form.zone_letter,
           zone_type: form.zone_type,
           allowed_cargo_type: form.allowed_cargo_type,
           description: form.description,
+          handling_condition: form.handling_condition,
+          status: form.status,
           max_weight: form.max_weight,
           max_volume: form.max_volume,
           is_hazard_zone: form.zone_type === "Hazardous"
@@ -2085,32 +2226,36 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
       } else if (scope === "racks") {
         const payload = {
           zone_id: form.zone_id,
-          rack_code: form.rack_code,
-          name: form.name,
+          rack_letter: form.rack_letter,
           max_weight: form.max_weight,
-          max_volume: form.max_volume
+          max_volume: form.max_volume,
+          status: form.status
         };
         if (action.kind === "create") await createRack(payload);
         else await updateRack(id, payload);
       } else if (scope === "levels") {
         const payload = {
           rack_id: form.rack_id,
-          level_code: form.level_code,
           level_number: form.level_number,
           max_weight: form.max_weight,
-          max_volume: form.max_volume
+          max_volume: form.max_volume,
+          status: form.status
         };
         if (action.kind === "create") await createLevel(payload);
         else await updateLevel(id, payload);
       } else if (scope === "bins") {
         const payload = {
           level_id: form.level_id,
-          bin_code: form.bin_code,
-          barcode: form.barcode,
-          capacity_weight: form.max_weight,
-          capacity_volume: form.max_volume,
+          bin_identifier: form.bin_identifier,
+          bin_type: form.bin_type,
+          length: form.length,
+          width: form.width,
+          height: form.height,
+          weight_capacity: form.max_weight,
+          volume_capacity: form.max_volume,
           allowed_cargo_type: form.allowed_cargo_type,
-          reserved_for_cargo_type: form.reserved_for_cargo_type
+          cargo_restrictions: form.cargo_restrictions,
+          creation_status: form.status
         };
         if (action.kind === "create") await createBin(payload);
         else await updateBin(id, payload);
@@ -2125,7 +2270,7 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
   };
 
   const statusDescription = action.status === "Inactive"
-    ? "This is a soft deactivation. The record remains in PostgreSQL and cannot be deactivated while it contains active stored cargo."
+    ? "This is a soft deactivation. The record and any existing cargo history remain traceable, while the location stops accepting new placements."
     : action.status === "Blocked"
       ? "Blocked bins remain visible but cannot receive cargo placement."
       : action.status === "Reserved"
@@ -2134,18 +2279,40 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
           ? "Bins under maintenance remain visible but reject all normal placement operations."
         : "The record will become active and available only when its parent storage locations are active.";
 
+    const viewContent = (
+      <div className="grid gap-3 md:grid-cols-2">
+        {getDetailViewFields(scope, action.row).map(([label, value]) => (
+          <ReadonlyValue key={label} label={label} value={value} />
+        ))}
+      </div>
+    );
+
+    if (isViewAction) {
+      return (
+        <EnterpriseModal
+          open
+          title={actionLabel}
+          subtitle="Review warehouse configuration details"
+          onClose={onClose}
+          size="review"
+        >
+          {viewContent}
+        </EnterpriseModal>
+      );
+    }
+
   return (
     <Drawer open title={actionLabel} onClose={onClose}>
       <form className="space-y-3" onSubmit={submit}>
         {error && <ErrorState message={error} />}
 
-        {isStatusAction ? (
+          {isStatusAction || isDeleteAction ? (
           <>
             <div className="rounded border border-border bg-muted/20 p-3 text-xs text-muted-foreground">
               <div className="font-semibold text-foreground">
                 {scope === "bins" ? getBinCode(action.row) : readValue(action.row, [`${scope.slice(0, -1)}_code`, "code"])}
               </div>
-              <div className="mt-1">{statusDescription}</div>
+              <div className="mt-1">{isDeleteAction ? "Deletion succeeds only when this record has no children, cargo, placement, billing, report, barcode, or audit history. Otherwise deactivate it." : statusDescription}</div>
             </div>
             {scope === "bins" && action.status === "Reserved" && (
               <FormField label="Reservation note / cargo type">
@@ -2156,6 +2323,19 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
                   placeholder="Optional administrative note"
                 />
               </FormField>
+            )}
+            {isStatusAction && scope === "bins" && !["Available", "Occupied", "Full"].includes(action.status) && (
+              <>
+                <FormField label="Reason / Justification">
+                  <input className={inputClass} value={form.reason || ""} onChange={(event) => setField("reason", event.target.value)} required />
+                </FormField>
+                {action.status === "Inactive" && (
+                  <label className="flex items-center gap-2 text-xs">
+                    <input type="checkbox" checked={Boolean(form.override_with_cargo)} onChange={(event) => setField("override_with_cargo", event.target.checked)} />
+                    Admin override if cargo is still inside
+                  </label>
+                )}
+              </>
             )}
           </>
         ) : (
@@ -2170,11 +2350,11 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
                     ))}
                   </SelectField>
                 </FormField>
-                <FormField label="Zone Code">
-                  <input className={inputClass} value={form.zone_code || ""} onChange={(event) => setField("zone_code", event.target.value)} placeholder="Z-A" required />
+                <FormField label="Zone Letter">
+                  <input className={inputClass} maxLength={1} value={form.zone_letter || ""} onChange={(event) => setField("zone_letter", event.target.value.toUpperCase())} placeholder="A" required />
                 </FormField>
-                <FormField label="Zone Name">
-                  <input className={inputClass} value={form.zone_name || ""} onChange={(event) => setField("zone_name", event.target.value)} required />
+                <FormField label="Generated Name & Code">
+                  <input className={inputClass} value={`${hierarchy.warehouses.find((item) => String(item.id) === String(form.warehouse_id))?.warehouse_code || "WH-?"}-Z-${String(form.zone_letter || "?").toUpperCase()} · Z-${String(form.zone_letter || "?").toUpperCase()}`} readOnly />
                 </FormField>
                 <FormField label="Zone Type">
                   <SelectField value={form.zone_type || "Standard"} onChange={(value) => setField("zone_type", value)}>
@@ -2184,10 +2364,13 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
                   </SelectField>
                 </FormField>
                 <FormField label="Allowed Cargo Type">
-                  <input className={inputClass} value={form.allowed_cargo_type || ""} onChange={(event) => setField("allowed_cargo_type", event.target.value)} required />
+                  <SelectField value={form.allowed_cargo_type || ""} onChange={(value) => setField("allowed_cargo_type", value)} required>
+                    <option value="">Select cargo type</option>
+                    {warehouseCargoTypes.map((type) => <option key={type} value={type}>{type}</option>)}
+                  </SelectField>
                 </FormField>
-                <FormField label="Description">
-                  <input className={inputClass} value={form.description || ""} onChange={(event) => setField("description", event.target.value)} />
+                <FormField label="Handling Condition (optional)">
+                  <input className={inputClass} value={form.handling_condition || ""} onChange={(event) => setField("handling_condition", event.target.value)} />
                 </FormField>
               </>
             )}
@@ -2202,11 +2385,11 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
                     ))}
                   </SelectField>
                 </FormField>
-                <FormField label="Rack Code">
-                  <input className={inputClass} value={form.rack_code || ""} onChange={(event) => setField("rack_code", event.target.value)} placeholder="R-A01" required />
+                <FormField label="Rack Letter">
+                  <input className={inputClass} maxLength={1} value={form.rack_letter || ""} onChange={(event) => setField("rack_letter", event.target.value.toUpperCase())} placeholder="A" required />
                 </FormField>
-                <FormField label="Rack Name">
-                  <input className={inputClass} value={form.name || ""} onChange={(event) => setField("name", event.target.value)} />
+                <FormField label="Generated Name & Code">
+                  <input className={inputClass} value={`${hierarchy.zones.find((item) => String(getRecordId(item, "zone_id")) === String(form.zone_id))?.zone_name || "WH-?-Z-?"}-R-${String(form.rack_letter || "?").toUpperCase()} · R-${String(form.rack_letter || "?").toUpperCase()}`} readOnly />
                 </FormField>
               </>
             )}
@@ -2221,11 +2404,11 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
                     ))}
                   </SelectField>
                 </FormField>
-                <FormField label="Level Code">
-                  <input className={inputClass} value={form.level_code || ""} onChange={(event) => setField("level_code", event.target.value)} placeholder="L1" required />
-                </FormField>
                 <FormField label="Level Number">
                   <input className={inputClass} type="number" min="1" step="1" value={form.level_number || ""} onChange={(event) => setField("level_number", event.target.value)} required />
+                </FormField>
+                <FormField label="Generated Name & Code">
+                  <input className={inputClass} value={`${hierarchy.racks.find((item) => String(getRecordId(item, "rack_id")) === String(form.rack_id))?.rack_name || "WH-?-Z-?-R-?"}-L-${form.level_number || "?"} · L-${form.level_number || "?"}`} readOnly />
                 </FormField>
               </>
             )}
@@ -2240,35 +2423,59 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
                     ))}
                   </SelectField>
                 </FormField>
-                <FormField label="Bin Code">
-                  <input className={inputClass} value={form.bin_code || ""} onChange={(event) => setField("bin_code", event.target.value)} placeholder="BIN-A01-L2-03" required />
+                <FormField label="Bin Number / Letter">
+                  <input className={inputClass} value={form.bin_identifier || ""} onChange={(event) => setField("bin_identifier", event.target.value.toUpperCase())} placeholder="1 or A" required />
                 </FormField>
-                <FormField label="Barcode (optional)">
-                  <input className={inputClass} value={form.barcode || ""} onChange={(event) => setField("barcode", event.target.value)} placeholder="Defaults to the bin code" />
+                <FormField label="Generated Name & Code">
+                  <input className={inputClass} value={`${hierarchy.levels.find((item) => String(getRecordId(item, "level_id")) === String(form.level_id))?.level_name || "WH-?-Z-?-R-?-L-?"}-B-${form.bin_identifier || "?"} · B-${form.bin_identifier || "?"}`} readOnly />
                 </FormField>
-                <FormField label="Allowed Cargo Category">
-                  <input className={inputClass} value={form.allowed_cargo_type || ""} onChange={(event) => setField("allowed_cargo_type", event.target.value)} placeholder="Defaults to zone category" />
+                <FormField label="Bin Type">
+                  <SelectField value={form.bin_type || "Standard"} onChange={(value) => setField("bin_type", value)}>
+                    <option value="Standard">Standard</option>
+                    <option value="Fragile">Fragile</option>
+                    <option value="Customs Hold">Customs Hold</option>
+                    <option value="Restricted">Restricted</option>
+                  </SelectField>
                 </FormField>
-                <FormField label="Reservation Note">
-                  <input className={inputClass} value={form.reserved_for_cargo_type || ""} onChange={(event) => setField("reserved_for_cargo_type", event.target.value)} placeholder="Optional" />
+                {["length", "width", "height"].map((dimension) => (
+                  <FormField key={dimension} label={`${dimension.charAt(0).toUpperCase() + dimension.slice(1)} (m)`}>
+                    <input className={inputClass} type="number" min="0.001" step="0.001" value={form[dimension] ?? ""} onChange={(event) => setField(dimension, event.target.value)} required />
+                  </FormField>
+                ))}
+                <FormField label="Cargo Restrictions (optional)">
+                  <input className={inputClass} value={form.cargo_restrictions || ""} onChange={(event) => setField("cargo_restrictions", event.target.value)} placeholder="e.g. Customs hold" />
                 </FormField>
               </>
             )}
 
-            <FormField label="Max Weight (kg)">
-              <input className={inputClass} type="number" min="0" step="0.01" value={form.max_weight ?? ""} onChange={(event) => setField("max_weight", event.target.value)} required />
-            </FormField>
-            <FormField label="Max Volume (m3)">
-              <input className={inputClass} type="number" min="0" step="0.01" value={form.max_volume ?? ""} onChange={(event) => setField("max_volume", event.target.value)} required />
-            </FormField>
+            {scope !== "zones" && (
+              <FormField label="Maximum Weight (kg)">
+                <input className={inputClass} type="number" min="0.01" step="0.01" value={form.max_weight ?? ""} onChange={(event) => setField("max_weight", event.target.value)} required />
+              </FormField>
+            )}
+            {scope === "bins" && (
+              <FormField label="Volume Capacity (m3, optional override)">
+                <input className={inputClass} type="number" min="0.001" step="0.001" value={form.max_volume ?? ""} onChange={(event) => setField("max_volume", event.target.value)} />
+              </FormField>
+            )}
+            {action.kind === "create" && (
+              <FormField label="Status">
+                <SelectField value={form.status || "Active"} onChange={(value) => setField("status", value)}>
+                  <option value="Active">Active</option>
+                  <option value="Inactive">Inactive</option>
+                </SelectField>
+              </FormField>
+            )}
           </div>
         )}
 
         <div className="flex justify-end gap-2 border-t border-border pt-3">
           <ToolbarButton variant="secondary" onClick={onClose} disabled={saving}>Cancel</ToolbarButton>
-          <ToolbarButton icon={saving ? Loader2 : CheckCircle2} type="submit" disabled={saving}>
-            {saving ? "Saving..." : actionLabel}
-          </ToolbarButton>
+          {!isViewAction && (
+            <ToolbarButton icon={saving ? Loader2 : CheckCircle2} type="submit" disabled={saving}>
+              {saving ? "Saving..." : actionLabel}
+            </ToolbarButton>
+          )}
         </div>
       </form>
     </Drawer>
@@ -2277,8 +2484,9 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
 
 function WarehouseFormDrawer({ mode, warehouse, onClose, onSave }) {
   const [form, setForm] = useState({
-    warehouse_name: "",
-    warehouse_code: "",
+    warehouse_letter: "",
+    total_capacity: "",
+    description: "",
     status: "Active"
   });
   const [saving, setSaving] = useState(false);
@@ -2287,8 +2495,9 @@ function WarehouseFormDrawer({ mode, warehouse, onClose, onSave }) {
   useEffect(() => {
     if (warehouse) {
       setForm({
-        warehouse_name: warehouse.warehouse_name || "",
-        warehouse_code: warehouse.warehouse_code || "",
+        warehouse_letter: warehouse.warehouse_letter || String(warehouse.warehouse_code || "").replace(/^WH-/i, ""),
+        total_capacity: warehouse.total_capacity || "",
+        description: warehouse.description || "",
         status: warehouse.status || "Active"
       });
     }
@@ -2317,24 +2526,39 @@ function WarehouseFormDrawer({ mode, warehouse, onClose, onSave }) {
       <form className="space-y-3" onSubmit={handleSubmit}>
         {error && <ErrorState message={error} />}
 
-        <FormField label="Warehouse Code">
+        <FormField label="Warehouse Letter">
           <input
             className={inputClass}
-            value={form.warehouse_code}
-            onChange={(e) => setField("warehouse_code", e.target.value)}
-            placeholder="e.g. WH-B"
+            maxLength={1}
+            value={form.warehouse_letter}
+            onChange={(e) => setField("warehouse_letter", e.target.value.toUpperCase())}
+            placeholder="A"
             required
           />
         </FormField>
 
-        <FormField label="Warehouse Name">
+        <FormField label="Generated Name & Code">
           <input
             className={inputClass}
-            value={form.warehouse_name}
-            onChange={(e) => setField("warehouse_name", e.target.value)}
-            placeholder="e.g. Warehouse B"
+            value={`Warehouse ${form.warehouse_letter || "?"} · WH-${form.warehouse_letter || "?"}`}
+            readOnly
+          />
+        </FormField>
+
+        <FormField label="Total Capacity (kg)">
+          <input
+            className={inputClass}
+            type="number"
+            min="0.01"
+            step="0.01"
+            value={form.total_capacity}
+            onChange={(e) => setField("total_capacity", e.target.value)}
             required
           />
+        </FormField>
+
+        <FormField label="Location / Description (optional)">
+          <input className={inputClass} value={form.description} onChange={(e) => setField("description", e.target.value)} />
         </FormField>
 
         <FormField label="Status">
@@ -2363,6 +2587,7 @@ function WarehousesPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [actionError, setActionError] = useState("");
   const [busyWarehouseId, setBusyWarehouseId] = useState("");
+  const [detailsWarehouse, setDetailsWarehouse] = useState(null);
   const warehouses = useApiCollection(() => getWarehouses(), `warehouses-${refreshKey}`);
 
   const filteredWarehouses = useMemo(() => {
@@ -2404,6 +2629,7 @@ function WarehousesPage() {
 
   const toggleStatus = async (wh) => {
     const nextStatus = wh.status === "Active" ? "Inactive" : "Active";
+    if (nextStatus === "Inactive" && !window.confirm(`Deactivate ${wh.warehouse_name}? Child locations will stop accepting new placements.`)) return;
     setBusyWarehouseId(`status-${wh.id}`);
     setActionError("");
 
@@ -2414,6 +2640,21 @@ function WarehousesPage() {
     } catch (error) {
       setActionError(getErrorMessage(error));
       toast.error("Failed to update status", { description: getErrorMessage(error) });
+    } finally {
+      setBusyWarehouseId("");
+    }
+  };
+
+  const removeWarehouse = async (wh) => {
+    if (!window.confirm(`Permanently delete ${wh.warehouse_name}? This succeeds only when it has never been used.`)) return;
+    setBusyWarehouseId(`delete-${wh.id}`);
+    try {
+      await deleteWarehouse(wh.id);
+      refreshWarehouses();
+      toast.success("Warehouse deleted.");
+    } catch (error) {
+      setActionError(getErrorMessage(error));
+      toast.error("Warehouse could not be deleted", { description: getErrorMessage(error) });
     } finally {
       setBusyWarehouseId("");
     }
@@ -2484,6 +2725,9 @@ function WarehousesPage() {
                       const isBusy = busyWarehouseId === `status-${row.id}`;
                       return (
                         <div className="flex gap-2">
+                          <button className="rounded border border-border bg-background px-2 py-1 text-[10px] font-semibold hover:bg-muted" onClick={() => setDetailsWarehouse(row)}>
+                            View
+                          </button>
                           <button
                             className="rounded border border-border bg-background px-2 py-1 text-[10px] font-semibold hover:bg-muted"
                             onClick={() => openEditDrawer(row)}
@@ -2496,6 +2740,13 @@ function WarehousesPage() {
                             disabled={isBusy}
                           >
                             {isBusy ? "Updating..." : row.status === "Active" ? "Deactivate" : "Activate"}
+                          </button>
+                          <button
+                            className="rounded border border-destructive/40 bg-background px-2 py-1 text-[10px] font-semibold text-destructive hover:bg-muted disabled:opacity-50"
+                            onClick={() => removeWarehouse(row)}
+                            disabled={busyWarehouseId === `delete-${row.id}`}
+                          >
+                            Delete
                           </button>
                         </div>
                       );
@@ -2516,6 +2767,20 @@ function WarehousesPage() {
           onSave={saveWarehouse}
         />
       )}
+      <EnterpriseModal
+        open={Boolean(detailsWarehouse)}
+        title={detailsWarehouse?.warehouse_name || "Warehouse details"}
+        subtitle={detailsWarehouse?.warehouse_code}
+        onClose={() => setDetailsWarehouse(null)}
+      >
+        {detailsWarehouse && (
+          <div className="grid gap-3 text-xs md:grid-cols-2">
+            {getDetailViewFields("warehouses", detailsWarehouse).map(([label, value]) => (
+              <ReadonlyValue key={label} label={label} value={value} />
+            ))}
+          </div>
+        )}
+      </EnterpriseModal>
     </>
   );
 }
@@ -2524,7 +2789,8 @@ function WarehouseConfigPage({ scope }) {
   const hierarchy = useWarehouseHierarchy();
   const [action, setAction] = useState(null);
   const [labelBin, setLabelBin] = useState(null);
-  const [binStatusFilter, setBinStatusFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
   const [generating, setGenerating] = useState(false);
   const binLabelRef = useRef(null);
   const config = {
@@ -2574,6 +2840,7 @@ function WarehouseConfigPage({ scope }) {
 
   const hierarchyActions = (row) => (
     <div className="flex flex-wrap gap-1">
+      <button className={actionButtonClass} type="button" onClick={() => setAction({ kind: "view", row })}>View</button>
       <button className={actionButtonClass} type="button" onClick={() => setAction({ kind: "edit", row })}>Edit</button>
       <button
         className={actionButtonClass}
@@ -2582,6 +2849,7 @@ function WarehouseConfigPage({ scope }) {
       >
         {row.active === false ? "Activate" : "Deactivate"}
       </button>
+      <button className={actionButtonClass} type="button" onClick={() => setAction({ kind: "delete", row })}>Delete</button>
     </div>
   );
 
@@ -2637,12 +2905,16 @@ function WarehouseConfigPage({ scope }) {
         render: (row) => (
           <div className="flex min-w-[180px] flex-wrap gap-1">
             <button className={actionButtonClass} type="button" onClick={() => setAction({ kind: "edit", row })}>Edit</button>
+            <button className={actionButtonClass} type="button" onClick={() => setAction({ kind: "view", row })}>View</button>
             <button className={actionButtonClass} type="button" disabled={!row.active || row.status === "Blocked"} onClick={() => setAction({ kind: "status", row, status: "Blocked" })}>Block</button>
             <button className={actionButtonClass} type="button" disabled={!row.active || row.status === "Reserved"} onClick={() => setAction({ kind: "status", row, status: "Reserved" })}>Reserve</button>
             <button className={actionButtonClass} type="button" disabled={!row.active || row.status === "Maintenance"} onClick={() => setAction({ kind: "status", row, status: "Maintenance" })}>Maintenance</button>
+            <button className={actionButtonClass} type="button" disabled={!row.active || row.status === "Damaged"} onClick={() => setAction({ kind: "status", row, status: "Damaged" })}>Damaged</button>
+            <button className={actionButtonClass} type="button" disabled={!row.active || row.status === "Restricted"} onClick={() => setAction({ kind: "status", row, status: "Restricted" })}>Restrict</button>
             <button className={actionButtonClass} type="button" disabled={row.active && row.status === "Available"} onClick={() => setAction({ kind: "status", row, status: "Available" })}>Activate</button>
             <button className={actionButtonClass} type="button" disabled={!row.active} onClick={() => setAction({ kind: "status", row, status: "Inactive" })}>Deactivate</button>
             <button className={actionButtonClass} type="button" onClick={() => setLabelBin(row)}>View Label</button>
+            <button className={actionButtonClass} type="button" onClick={() => setAction({ kind: "delete", row })}>Delete</button>
           </div>
         )
       }
@@ -2656,9 +2928,15 @@ function WarehouseConfigPage({ scope }) {
     bins: hierarchy.selectedLevel ? "No bins loaded" : "Select a level to load bins"
   }[scope];
 
-  const visibleRows = scope === "bins" && binStatusFilter
-    ? config.rows.filter((row) => row.status === binStatusFilter)
-    : config.rows;
+  const visibleRows = config.rows.filter((row) => {
+    const rowStatus = row.creation_status || row.status || (row.active ? "Active" : "Inactive");
+    const statusMatches = !statusFilter || rowStatus === statusFilter || (statusFilter === "Active" && row.active === true);
+    const searchable = [
+      row.code, row.name, row.zone_code, row.zone_name, row.rack_code,
+      row.level_code, row.barcode, row.bin_identifier
+    ].filter(Boolean).join(" ").toLowerCase();
+    return statusMatches && (!searchTerm || searchable.includes(searchTerm.toLowerCase()));
+  });
 
   return (
     <>
@@ -2704,21 +2982,26 @@ function WarehouseConfigPage({ scope }) {
               needLevel={config.needLevel}
               loading={hierarchy.loading}
             />
-            {scope === "bins" && (
-              <div className="mt-3 max-w-xs">
-                <FormField label="Bin Status">
-                  <SelectField value={binStatusFilter} onChange={setBinStatusFilter}>
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <FormField label="Search">
+                <input className={inputClass} value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search name, code, barcode..." />
+              </FormField>
+              <FormField label="Status">
+                  <SelectField value={statusFilter} onChange={setStatusFilter}>
                     <option value="">All statuses</option>
+                    <option value="Active">Active</option>
                     <option value="Available">Available</option>
                     <option value="Occupied">Occupied</option>
+                    <option value="Full">Full</option>
                     <option value="Reserved">Reserved</option>
+                    <option value="Restricted">Restricted</option>
                     <option value="Blocked">Blocked</option>
                     <option value="Maintenance">Maintenance</option>
+                    <option value="Damaged">Damaged</option>
                     <option value="Inactive">Inactive</option>
                   </SelectField>
-                </FormField>
-              </div>
-            )}
+              </FormField>
+            </div>
           </SectionCard>
           <SectionCard title={`${config.title} Structure`} icon={config.icon}>
             <DataTable
@@ -2783,6 +3066,38 @@ function WarehouseConfigPage({ scope }) {
 }
 
 function BinRulesPage() {
+  const [refreshKey, setRefreshKey] = useState(0);
+  const rules = useApiCollection(() => getBinRules(), `bin-rules-${refreshKey}`);
+  const [viewing, setViewing] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [priority, setPriority] = useState("100");
+  const [saving, setSaving] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const visibleRules = rules.rows.filter((rule) => (
+    (!statusFilter || (statusFilter === "Active") === rule.is_active)
+    && (!searchTerm || `${rule.rule_name} ${rule.description} ${rule.rule_key}`.toLowerCase().includes(searchTerm.toLowerCase()))
+  ));
+
+  const saveRule = async (rule, active = rule.is_active) => {
+    setSaving(true);
+    try {
+      await updateBinRule(rule.id, {
+        is_active: active,
+        parameters: rule.rule_key === "priority"
+          ? { ...(rule.parameters || {}), priority: Number(priority) || 100 }
+          : rule.parameters || {}
+      });
+      toast.success("Bin assignment rule updated.");
+      setEditing(null);
+      setRefreshKey((value) => value + 1);
+    } catch (error) {
+      toast.error("Rule could not be updated", { description: getErrorMessage(error) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <>
       <PageHeader
@@ -2791,24 +3106,150 @@ function BinRulesPage() {
         description="Operational rule configuration for cargo compatibility and storage validation."
       />
       <div className="flex-1 overflow-auto p-4">
-        <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3">
-          {binRuleCards.map((rule) => (
-            <SectionCard key={rule.title} title={rule.title} icon={ListChecks}>
-              <div className="space-y-3 text-xs">
-                <p className="text-muted-foreground">{rule.body}</p>
-                <EmptyState title="No rule records loaded" body="Rule values will appear when warehouse rules are configured." />
-                <ToolbarButton icon={SlidersHorizontal} variant="secondary" disabled>Configure Rule</ToolbarButton>
-              </div>
+        <SectionCard title="Search & Filter" icon={Filter}>
+          <div className="grid gap-3 md:grid-cols-2">
+            <FormField label="Search">
+              <input className={inputClass} value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search assignment rules..." />
+            </FormField>
+            <FormField label="Status">
+              <SelectField value={statusFilter} onChange={setStatusFilter}>
+                <option value="">All statuses</option>
+                <option value="Active">Active</option>
+                <option value="Inactive">Inactive</option>
+              </SelectField>
+            </FormField>
+          </div>
+        </SectionCard>
+        <div className="mt-3">
+          {rules.loading && rules.rows.length === 0 ? (
+            <LoadingState />
+          ) : (
+            <SectionCard title="Bin Rules List" icon={ListChecks}>
+              {visibleRules.length > 0 ? (
+                <div className="divide-y divide-border">
+                  {visibleRules.map((rule) => (
+                    <div key={rule.id} className="flex flex-col gap-3 py-3 md:flex-row md:items-center md:justify-between">
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="font-semibold text-foreground">{rule.rule_name}</div>
+                          <StatusBadge tone={rule.is_active ? "success" : "destructive"}>
+                            {rule.is_active ? "Active" : "Inactive"}
+                          </StatusBadge>
+                        </div>
+                        <div className="text-xs text-muted-foreground">{rule.description}</div>
+                        <div className="text-[11px] text-muted-foreground">
+                          Rule key: <span className="font-mono text-foreground">{rule.rule_key || "Not specified"}</span>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-2 md:justify-end">
+                        <ToolbarButton
+                          icon={Power}
+                          variant="secondary"
+                          onClick={() => saveRule(rule, !rule.is_active)}
+                          disabled={saving}
+                        >
+                          {rule.is_active ? "Deactivate" : "Activate"}
+                        </ToolbarButton>
+                        <ToolbarButton
+                          icon={Eye}
+                          variant="secondary"
+                          onClick={() => setViewing(rule)}
+                        >
+                          View
+                        </ToolbarButton>
+                        <ToolbarButton
+                          icon={SlidersHorizontal}
+                          variant="secondary"
+                          onClick={() => {
+                            setPriority(String(rule.parameters?.priority || 100));
+                            setEditing(rule);
+                          }}
+                        >
+                          Edit Rule
+                        </ToolbarButton>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <EmptyState title="No bin rules configured" body="Run the warehouse configuration migration to seed assignment rules." />
+              )}
             </SectionCard>
-          ))}
+          )}
         </div>
       </div>
+      <EnterpriseModal open={Boolean(viewing)} title={viewing?.rule_name || "Bin Rule Details"} subtitle="Review rule configuration and parameters" onClose={() => setViewing(null)}>
+        {viewing && (
+          <div className="grid gap-3 md:grid-cols-2">
+            {getDetailViewFields("bin-rules", viewing).map(([label, value]) => (
+              <ReadonlyValue key={label} label={label} value={value} />
+            ))}
+          </div>
+        )}
+      </EnterpriseModal>
+      <EnterpriseModal open={Boolean(editing)} title={editing?.rule_name || "Edit rule"} onClose={() => setEditing(null)}>
+        <div className="space-y-3 text-xs">
+          <p className="text-muted-foreground">{editing?.description}</p>
+          {editing?.rule_key === "priority" && (
+            <FormField label="Priority (lower runs first)">
+              <input className={inputClass} type="number" min="1" value={priority} onChange={(event) => setPriority(event.target.value)} />
+            </FormField>
+          )}
+          <div className="flex justify-end gap-2">
+            <ToolbarButton variant="secondary" onClick={() => setEditing(null)}>Cancel</ToolbarButton>
+            <ToolbarButton onClick={() => saveRule(editing)} disabled={saving}>{saving ? "Saving..." : "Save Rule"}</ToolbarButton>
+          </div>
+        </div>
+      </EnterpriseModal>
     </>
   );
 }
 
 function CapacityConfigurationPage() {
   const hierarchy = useWarehouseHierarchy();
+  const [refreshKey, setRefreshKey] = useState(0);
+  const capacity = useApiCollection(() => getCapacityConfigurations(), `capacity-${refreshKey}`);
+  const [viewing, setViewing] = useState(null);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+
+  const rowsFor = (type, selectedId = "", matchParent = false) => capacity.rows.filter((row) => {
+    const normalizedStatus = String(row.status || "").toLowerCase();
+    return row.entity_type === type
+      && (!selectedId || String(row[matchParent ? "parent_id" : "entity_id"]) === String(selectedId))
+      && (!statusFilter || normalizedStatus === statusFilter.toLowerCase())
+      && (!searchTerm || String(row.entity_name || "").toLowerCase().includes(searchTerm.toLowerCase()));
+  });
+
+  const openCapacity = (row) => {
+    setEditing(row);
+    setForm({
+      max_weight: row.max_weight || "",
+      max_volume: row.max_volume || "",
+      occupancy_warning_threshold: row.occupancy_warning_threshold || 80,
+      full_threshold: row.full_threshold || 100,
+      allow_child_capacity_override: Boolean(row.allow_child_capacity_override),
+      status: row.status === "Inactive" || row.status === "inactive" ? "Inactive" : "Active"
+    });
+  };
+
+  const saveCapacity = async () => {
+    setSaving(true);
+    try {
+      await updateCapacityConfiguration(editing.entity_type, editing.entity_id, form);
+      toast.success("Capacity configuration updated.");
+      setEditing(null);
+      setRefreshKey((value) => value + 1);
+      hierarchy.refresh();
+    } catch (error) {
+      toast.error("Capacity could not be updated", { description: getErrorMessage(error) });
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <>
@@ -2838,20 +3279,66 @@ function CapacityConfigurationPage() {
               needLevel
               loading={hierarchy.loading}
             />
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <FormField label="Search">
+                <input className={inputClass} value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Search capacity records..." />
+              </FormField>
+              <FormField label="Status">
+                <SelectField value={statusFilter} onChange={setStatusFilter}>
+                  <option value="">All statuses</option>
+                  <option value="Active">Active</option>
+                  <option value="Inactive">Inactive</option>
+                </SelectField>
+              </FormField>
+            </div>
           </SectionCard>
           <div className="grid gap-3 xl:grid-cols-2">
-            <CapacityTable title="Zone Capacity" icon={Boxes} rows={hierarchy.zones} loading={hierarchy.loading.zones} error={hierarchy.error} label="Zone" labelRenderer={getZoneLabel} emptyTitle={hierarchy.selectedWarehouse ? "No zones loaded" : "Select a warehouse to load zone capacity"} />
-            <CapacityTable title="Rack Capacity" icon={Rows3} rows={hierarchy.racks} loading={hierarchy.loading.racks} error={hierarchy.error} label="Rack" labelRenderer={getRackCode} emptyTitle={hierarchy.selectedZone ? "No racks loaded" : "Select a warehouse and zone to load rack capacity"} />
-            <CapacityTable title="Level Capacity" icon={SquareStack} rows={hierarchy.levels} loading={hierarchy.loading.levels} error={hierarchy.error} label="Level" labelRenderer={getLevelCode} emptyTitle={hierarchy.selectedRack ? "No levels loaded" : "Select a warehouse, zone, and rack to load level capacity"} />
-            <CapacityTable title="Bin Capacity" icon={Box} rows={hierarchy.bins} loading={hierarchy.loading.bins} error={hierarchy.error} label="Bin" labelRenderer={getBinCode} emptyTitle={hierarchy.selectedLevel ? "No bins loaded" : "Select a warehouse, zone, rack, and level to load bin capacity"} />
+            <CapacityTable title="Warehouse Capacity" icon={Warehouse} rows={rowsFor("Warehouse", hierarchy.selectedWarehouse)} loading={capacity.loading} error={capacity.error} label="Warehouse" labelRenderer={(row) => row.entity_name} onView={setViewing} onEdit={openCapacity} />
+            <CapacityTable title="Zone Capacity" icon={Boxes} rows={rowsFor("Zone", hierarchy.selectedWarehouse, true)} loading={capacity.loading} error={capacity.error} label="Zone" labelRenderer={(row) => row.entity_name} onView={setViewing} onEdit={openCapacity} />
+            <CapacityTable title="Rack Capacity" icon={Rows3} rows={rowsFor("Rack", hierarchy.selectedZone, true)} loading={capacity.loading} error={capacity.error} label="Rack" labelRenderer={(row) => row.entity_name} onView={setViewing} onEdit={openCapacity} />
+            <CapacityTable title="Level Capacity" icon={SquareStack} rows={rowsFor("Level", hierarchy.selectedRack, true)} loading={capacity.loading} error={capacity.error} label="Level" labelRenderer={(row) => row.entity_name} onView={setViewing} onEdit={openCapacity} />
+            <CapacityTable title="Bin Capacity" icon={Box} rows={rowsFor("Bin", hierarchy.selectedLevel, true)} loading={capacity.loading} error={capacity.error} label="Bin" labelRenderer={(row) => row.entity_name} onView={setViewing} onEdit={openCapacity} />
           </div>
         </div>
       </div>
+      <EnterpriseModal open={Boolean(viewing)} title={`${viewing?.entity_name || "Capacity Configuration"} - Details`} subtitle={`${viewing?.entity_type || "Entity"} capacity configuration`} onClose={() => setViewing(null)}>
+        {viewing && (
+          <div className="grid gap-3 md:grid-cols-2">
+            {getDetailViewFields("capacity-config", viewing).map(([label, value]) => (
+              <ReadonlyValue key={label} label={label} value={value} />
+            ))}
+          </div>
+        )}
+      </EnterpriseModal>
+      <EnterpriseModal open={Boolean(editing)} title={`Configure ${editing?.entity_name || "capacity"}`} onClose={() => setEditing(null)}>
+        <div className="grid gap-3 md:grid-cols-2">
+          <FormField label="Maximum Weight (kg)">
+            <input className={inputClass} type="number" min="0.01" value={form.max_weight || ""} onChange={(event) => setForm((value) => ({ ...value, max_weight: event.target.value }))} />
+          </FormField>
+          <FormField label="Maximum Volume (m3)">
+            <input className={inputClass} type="number" min="0.001" value={form.max_volume || ""} onChange={(event) => setForm((value) => ({ ...value, max_volume: event.target.value }))} />
+          </FormField>
+          <FormField label="Warning Threshold (%)">
+            <input className={inputClass} type="number" min="1" max="99" value={form.occupancy_warning_threshold || ""} onChange={(event) => setForm((value) => ({ ...value, occupancy_warning_threshold: event.target.value }))} />
+          </FormField>
+          <FormField label="Full Threshold (%)">
+            <input className={inputClass} type="number" min="2" max="100" value={form.full_threshold || ""} onChange={(event) => setForm((value) => ({ ...value, full_threshold: event.target.value }))} />
+          </FormField>
+          <label className="flex items-center gap-2 text-xs">
+            <input type="checkbox" checked={Boolean(form.allow_child_capacity_override)} onChange={(event) => setForm((value) => ({ ...value, allow_child_capacity_override: event.target.checked }))} />
+            Allow child capacity override
+          </label>
+          <div className="flex justify-end gap-2 md:col-span-2">
+            <ToolbarButton variant="secondary" onClick={() => setEditing(null)}>Cancel</ToolbarButton>
+            <ToolbarButton onClick={saveCapacity} disabled={saving}>{saving ? "Saving..." : "Save Capacity"}</ToolbarButton>
+          </div>
+        </div>
+      </EnterpriseModal>
     </>
   );
 }
 
-function CapacityTable({ title, icon, rows, loading, error, label, labelRenderer, emptyTitle = "No capacity records loaded" }) {
+function CapacityTable({ title, icon, rows, loading, error, label, labelRenderer, onView, onEdit, emptyTitle = "No capacity records loaded" }) {
   return (
     <SectionCard title={title} icon={icon}>
       <DataTable
@@ -2864,6 +3351,7 @@ function CapacityTable({ title, icon, rows, loading, error, label, labelRenderer
           { key: "max_weight", label: "Max Weight", render: (row) => formatMeasure(readValue(row, ["max_weight_capacity", "max_weight"]), "kg") },
           { key: "max_volume", label: "Max Volume", render: (row) => formatMeasure(readValue(row, ["max_volume_capacity", "max_volume"]), "m3") },
           { key: "current_usage", label: "Current Usage", render: (row) => formatCapacity(row) },
+          { key: "usage", label: "Usage", render: (row) => `${Math.max(Number(row.weight_usage_percent || 0), Number(row.volume_usage_percent || 0)).toFixed(1)}%` },
           { key: "remaining_capacity", label: "Remaining Capacity", render: (row) => {
             const maxWeight = readNumber(row, ["max_weight_capacity", "max_weight"]);
             const currentWeight = readNumber(row, ["current_weight_capacity", "current_weight"]);
@@ -2877,7 +3365,13 @@ function CapacityTable({ title, icon, rows, loading, error, label, labelRenderer
                 <div className="text-muted-foreground">{remainingVolume !== null ? formatMeasure(remainingVolume, "m3") : "No data"}</div>
               </div>
             );
-          } }
+          } },
+          { key: "actions", label: "Actions", render: (row) => (
+            <div className="flex gap-1">
+              <ToolbarButton icon={Eye} variant="secondary" onClick={() => onView(row)} />
+              <ToolbarButton icon={Edit} variant="secondary" onClick={() => onEdit(row)} />
+            </div>
+          ) }
         ]}
       />
     </SectionCard>
@@ -2968,7 +3462,7 @@ function CargoApprovalOverridesPage() {
             rows={approvals.rows}
             emptyTitle="No cargo registrations require an override"
             columns={[
-              { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
+              { key: "cargo_id", label: "Cargo Reference", className: "font-mono font-semibold" },
               { key: "cargo_barcode", label: "Barcode", className: "font-mono" },
               { key: "consignee_name", label: "Consignee" },
               { key: "cargo_type", label: "Cargo Type" },
@@ -3099,7 +3593,7 @@ function CargoRecordsPage({ mode = "records" }) {
               emptyTitle={config.emptyTitle}
               emptyBody="Cargo supervision data will appear when cargo records are available."
               columns={[
-                { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
+                { key: "cargo_id", label: "Cargo Reference", className: "font-mono font-semibold" },
                 { key: "barcode", label: "Barcode", className: "font-mono text-muted-foreground" },
                 { key: "cargo_type", label: "Cargo Type", render: (row) => row.cargo_type || "No data" },
                 { key: "warehouse", label: "Warehouse", render: (row) => row.warehouse_code ? `${row.warehouse_code} - ${row.warehouse_name}` : "Not assigned" },
@@ -3228,7 +3722,7 @@ function DispatchOversightPage({ mode }) {
             emptyTitle={config.emptyTitle}
             emptyBody="Dispatch supervision records will appear when dispatch data is available."
             columns={[
-              { key: "cargo_id", label: "Cargo ID", className: "font-mono font-semibold" },
+              { key: "cargo_id", label: "Cargo Reference", className: "font-mono font-semibold" },
               { key: "barcode", label: "Barcode", className: "font-mono text-muted-foreground" },
               { key: "location", label: "Storage Location", render: (row) => row.location || "Not assigned" },
               { key: "status", label: "Placement", render: (row) => <StatusBadge tone={statusTone(row.placement_status)}>{row.placement_status || "No status"}</StatusBadge> },
@@ -3368,7 +3862,7 @@ function AuditPage({ mode }) {
               }}
             >
               <FormField label="User">
-                <input className={inputClass} value={filters.user} onChange={(event) => setFilters((current) => ({ ...current, user: event.target.value }))} placeholder="Name, username, or ID" />
+                <input className={inputClass} value={filters.user} onChange={(event) => setFilters((current) => ({ ...current, user: event.target.value }))} placeholder="Name or username" />
               </FormField>
               <FormField label="Role">
                 <SelectField value={filters.role} onChange={(value) => setFilters((current) => ({ ...current, role: value }))}>
@@ -3385,8 +3879,8 @@ function AuditPage({ mode }) {
               <FormField label="Status">
                 <input className={inputClass} value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))} placeholder="Status or result" />
               </FormField>
-              <FormField label="Cargo ID">
-                <input className={inputClass} value={filters.cargo_id} onChange={(event) => setFilters((current) => ({ ...current, cargo_id: event.target.value }))} placeholder="Cargo identifier" />
+              <FormField label="Cargo Reference">
+                <input className={inputClass} value={filters.cargo_id} onChange={(event) => setFilters((current) => ({ ...current, cargo_id: event.target.value }))} placeholder="Cargo reference" />
               </FormField>
               <FormField label="Warehouse">
                 <input className={inputClass} value={filters.warehouse} onChange={(event) => setFilters((current) => ({ ...current, warehouse: event.target.value }))} placeholder="Name or code" />
@@ -3440,10 +3934,12 @@ function ProfilePage() {
 }
 
 function ReadonlyValue({ label, value }) {
+  const displayValue = value === null || value === undefined || value === "" ? "Not specified" : value;
+
   return (
     <div className="rounded border border-border bg-muted/20 p-3">
-      <div className="text-[11px] font-semibold text-muted-foreground">{label}</div>
-      <div className="mt-1 font-semibold">{value}</div>
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-1 break-words font-medium text-foreground">{displayValue}</div>
     </div>
   );
 }

@@ -56,8 +56,17 @@ const successfulZoneHandler = (sql, params) => {
   if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
     return { rowCount: 0, rows: [] };
   }
-  if (sql.includes("SELECT id FROM warehouses")) {
-    return { rowCount: 1, rows: [{ id: params[0] }] };
+  if (sql.includes("FROM warehouses WHERE id")) {
+    return {
+      rowCount: 1,
+      rows: [{
+        id: params[0],
+        warehouse_code: "WH-A",
+        status: "active",
+        total_capacity: 10000,
+        max_volume: 100
+      }]
+    };
   }
   if (sql.includes("SELECT id FROM zones")) {
     return { rowCount: 0, rows: [] };
@@ -72,12 +81,13 @@ const successfulZoneHandler = (sql, params) => {
         zone_code: params[0],
         name: params[1],
         zone_name: params[1],
-        is_hazard_zone: params[5],
-        max_weight: params[6],
-        max_volume: params[7],
-        status: params[8],
-        active: params[9],
-        warehouse_id: params[10]
+        zone_letter: params[2],
+        is_hazard_zone: params[7],
+        max_weight: params[8],
+        max_volume: params[9],
+        status: params[10],
+        active: params[11],
+        warehouse_id: params[12]
       }]
     };
   }
@@ -87,11 +97,10 @@ const successfulZoneHandler = (sql, params) => {
   throw new Error(`Unexpected query: ${sql}`);
 };
 
-test("createZone creates a zone with validated defaults", async () => {
+test("createZone generates its code and hierarchy name from one zone letter", async () => {
   await withMockClient(successfulZoneHandler, async ({ queries, wasReleased }) => {
     const { res, nextError } = await callCreateZone({
-      zone_code: "z-a",
-      zone_name: "General Storage",
+      zone_letter: "a",
       allowed_cargo_type: "General Goods",
       warehouse_id: 3
     });
@@ -103,11 +112,13 @@ test("createZone creates a zone with validated defaults", async () => {
     const insert = queries.find((query) => query.sql.includes("INSERT INTO zones"));
     assert.ok(insert);
     assert.equal(insert.params[0], "Z-A");
-    assert.equal(insert.params[5], false);
-    assert.equal(insert.params[6], 0);
-    assert.equal(insert.params[7], 0);
-    assert.equal(insert.params[9], true);
-    assert.equal(insert.params[10], 3);
+    assert.equal(insert.params[1], "WH-A-Z-A");
+    assert.equal(insert.params[2], "A");
+    assert.equal(insert.params[7], false);
+    assert.equal(insert.params[8], 10000);
+    assert.equal(insert.params[9], 100);
+    assert.equal(insert.params[11], true);
+    assert.equal(insert.params[12], 3);
     assert.equal(wasReleased(), true);
   });
 });
@@ -115,8 +126,7 @@ test("createZone creates a zone with validated defaults", async () => {
 test("createZone accepts explicit hazard and capacity values", async () => {
   await withMockClient(successfulZoneHandler, async ({ queries }) => {
     const { res, nextError } = await callCreateZone({
-      code: "Z-G",
-      name: "Hazard Storage",
+      zone_letter: "g",
       zone_type: "Hazardous",
       allowed_cargo_type: "Hazardous Cargo",
       is_hazard_zone: "yes",
@@ -129,24 +139,23 @@ test("createZone accepts explicit hazard and capacity values", async () => {
     assert.equal(res.statusCode, 201);
 
     const insert = queries.find((query) => query.sql.includes("INSERT INTO zones"));
-    assert.equal(insert.params[5], true);
-    assert.equal(insert.params[6], 1250.5);
-    assert.equal(insert.params[7], 45.25);
+    assert.equal(insert.params[7], true);
+    assert.equal(insert.params[8], 1250.5);
+    assert.equal(insert.params[9], 45.25);
   });
 });
 
 test("createZone rejects invalid numeric capacity values", async () => {
   await withMockClient(successfulZoneHandler, async ({ queries }) => {
     const { nextError } = await callCreateZone({
-      zone_code: "Z-B",
-      zone_name: "Electronics",
+      zone_letter: "B",
       allowed_cargo_type: "Electronics",
       max_weight: -1,
       warehouse_id: 3
     });
 
     assert.equal(nextError.statusCode, 400);
-    assert.match(nextError.message, /non-negative numbers/i);
+    assert.match(nextError.message, /greater than zero/i);
     assert.equal(queries.some((query) => query.sql.includes("INSERT INTO zones")), false);
     assert.equal(queries.some((query) => query.sql === "ROLLBACK"), true);
   });
@@ -155,8 +164,7 @@ test("createZone rejects invalid numeric capacity values", async () => {
 test("createZone rejects invalid hazard flag values", async () => {
   await withMockClient(successfulZoneHandler, async ({ queries }) => {
     const { nextError } = await callCreateZone({
-      zone_code: "Z-C",
-      zone_name: "Machinery",
+      zone_letter: "C",
       allowed_cargo_type: "Machinery",
       is_hazard_zone: "maybe",
       warehouse_id: 3

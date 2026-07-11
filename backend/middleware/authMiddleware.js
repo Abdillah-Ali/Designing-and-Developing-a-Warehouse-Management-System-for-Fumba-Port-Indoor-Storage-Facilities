@@ -47,11 +47,14 @@ const portalPermissions = Object.freeze({
     { methods: ["PATCH"], pattern: /^\/levels\/[^/]+\/status$/ },
     { methods: ["GET", "POST"], pattern: /^\/bins$/ },
     { methods: ["GET"], pattern: /^\/bins\/by-level\/[^/]+$/ },
+    { methods: ["GET"], pattern: /^\/bins\/recommend\/[^/]+$/ },
     { methods: ["GET", "PUT", "DELETE"], pattern: /^\/bins\/[^/]+$/ },
     { methods: ["PATCH"], pattern: /^\/bins\/[^/]+\/status$/ },
     { methods: ["POST"], pattern: /^\/bins\/[^/]+\/print-barcode$/ },
     { methods: ["GET"], pattern: /^\/bin-rules$/ },
     { methods: ["PUT"], pattern: /^\/bin-rules\/[^/]+$/ },
+    { methods: ["GET"], pattern: /^\/capacity-configurations$/ },
+    { methods: ["PUT"], pattern: /^\/capacity-configurations\/[^/]+\/[^/]+$/ },
     { methods: ["GET"], pattern: /^\/placement\/logs$/ },
     { methods: ["GET"], pattern: /^\/placement\/failures$/ },
     { methods: ["GET"], pattern: /^\/placement\/activity$/ },
@@ -66,6 +69,7 @@ const portalPermissions = Object.freeze({
     { methods: ["GET"], pattern: /^\/supervisor\/placement-monitoring$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/placement-summary$/ },
     { methods: ["GET"], pattern: /^\/dispatch\/authorization-requests$/ },
+    { methods: ["POST"], pattern: /^\/dispatch\/authorization-requests\/[^/]+\/complete$/ },
     { methods: ["GET", "POST"], pattern: /^\/users$/ },
     { methods: ["POST"], pattern: /^\/users\/scanners$/ },
     { methods: ["GET", "PUT", "DELETE"], pattern: /^\/users\/[^/]+$/ },
@@ -76,7 +80,7 @@ const portalPermissions = Object.freeze({
     { methods: ["PATCH"], pattern: /^\/users\/[^/]+\/deactivate$/ },
     { methods: ["GET"], pattern: /^\/roles$/ },
     { methods: ["GET", "POST"], pattern: /^\/warehouses$/ },
-    { methods: ["PUT", "PATCH"], pattern: /^\/warehouses\/[^/]+$/ },
+    { methods: ["PUT", "PATCH", "DELETE"], pattern: /^\/warehouses\/[^/]+$/ },
     { methods: ["PATCH"], pattern: /^\/warehouses\/[^/]+\/status$/ },
     { methods: ["GET"], pattern: /^\/shifts$/ },
     { methods: ["GET"], pattern: /^\/audit-logs$/ },
@@ -103,6 +107,7 @@ const portalPermissions = Object.freeze({
     { methods: ["GET"], pattern: /^\/levels\/by-rack\/[^/]+$/ },
     { methods: ["GET"], pattern: /^\/levels\/[^/]+$/ },
     { methods: ["GET"], pattern: /^\/bins\/by-level\/[^/]+$/ },
+    { methods: ["GET"], pattern: /^\/bins\/recommend\/[^/]+$/ },
     { methods: ["GET"], pattern: /^\/bins\/[^/]+$/ },
     { methods: ["POST"], pattern: /^\/bins\/[^/]+\/print-barcode$/ },
     { methods: ["GET"], pattern: /^\/placement\/settings$/ },
@@ -113,6 +118,7 @@ const portalPermissions = Object.freeze({
     { methods: ["POST"], pattern: /^\/placement\/request-override$/ },
     { methods: ["POST"], pattern: /^\/dispatch\/request-authorization$/ },
     { methods: ["GET"], pattern: /^\/dispatch\/authorization-requests$/ },
+    { methods: ["POST"], pattern: /^\/dispatch\/authorization-requests\/[^/]+\/complete$/ },
     { methods: ["GET", "PATCH", "DELETE"], pattern: /^\/notifications(?:\/.*)?$/ }
   ]),
   [PORTAL_ROLES.WAREHOUSE_SUPERVISOR]: Object.freeze([
@@ -127,6 +133,7 @@ const portalPermissions = Object.freeze({
     { methods: ["GET"], pattern: /^\/levels\/by-rack\/[^/]+$/ },
     { methods: ["GET"], pattern: /^\/bins(?:\/[^/]+)?$/ },
     { methods: ["GET"], pattern: /^\/bins\/by-level\/[^/]+$/ },
+    { methods: ["GET"], pattern: /^\/bins\/recommend\/[^/]+$/ },
     { methods: ["POST"], pattern: /^\/bins\/[^/]+\/print-barcode$/ },
     { methods: ["GET", "PUT"], pattern: /^\/placement\/settings$/ },
     { methods: ["GET"], pattern: /^\/placement\/activity$/ },
@@ -158,6 +165,11 @@ const canAccessRoute = (role, method, path) => {
     permission.methods.includes(method) && permission.pattern.test(path)
   ));
 };
+
+const isWarehouseConfigurationMutation = (method, path) => (
+  ["POST", "PUT", "PATCH", "DELETE"].includes(method)
+  && /^\/(?:warehouses|zones|racks|levels|bins|bin-rules|capacity-configurations)(?:\/|$)/.test(path)
+);
 
 const extractTokenFromHeader = (authHeader) => {
   if (!authHeader) return null;
@@ -364,6 +376,21 @@ const requirePortalAccess = async (req, res, next) => {
     }
 
     if (!canAccessRoute(role, req.method, path)) {
+      if (isWarehouseConfigurationMutation(req.method, path)) {
+        await db.query(
+          `INSERT INTO audit_logs
+             (user_id, role_id_at_action, warehouse_id_at_action, action, module, description, metadata)
+           VALUES ($1,$2,$3,'UNAUTHORIZED_WAREHOUSE_CONFIGURATION_ATTEMPT',
+                   'Warehouse Configuration',$4,$5)`,
+          [
+            context.auth.userId,
+            account.role_id || null,
+            account.warehouse_id || null,
+            `${req.method} ${path} was denied for role ${role || "unknown"}.`,
+            JSON.stringify({ method: req.method, path, role })
+          ]
+        );
+      }
       res.status(403).json({
         success: false,
         message: "This portal role is not allowed to access that module."
