@@ -48,6 +48,7 @@ import {
   getRacks,
   getZones,
   printCargoBarcode,
+  createPlacementScanSession,
   requestDispatchAuthorization
 } from "@/services/api";
 import { createScannerSocket } from "@/services/scannerSocket";
@@ -361,7 +362,13 @@ function PlacementQueuePanel() {
   const [filter, setFilter] = useState("Unplaced");
   const [selected, setSelected] = useState(null);
   const [printCargo, setPrintCargo] = useState(null);
-  const [placementCargo, setPlacementCargo] = useState(null);
+  const [placementScan, setPlacementScan] = useState({
+    open: false,
+    cargo: null,
+    session: null,
+    instanceKey: 0
+  });
+  const [placementStartingId, setPlacementStartingId] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -426,8 +433,39 @@ function PlacementQueuePanel() {
     return record.registration_status === filter;
   }), [filter, records]);
 
-  const startPlacement = (cargo) => {
-    setPlacementCargo(cargo);
+  const resetPlacementScan = useCallback(() => {
+    setPlacementScan((current) => ({
+      open: false,
+      cargo: null,
+      session: null,
+      instanceKey: current.instanceKey + 1
+    }));
+  }, []);
+
+  const startPlacement = async (cargo) => {
+    if (placementStartingId) return;
+
+    const startId = getRecordId(cargo, "cargo_id");
+    resetPlacementScan();
+    setError("");
+    setPlacementStartingId(startId);
+
+    try {
+      const response = await createPlacementScanSession({
+        cargo_id: cargo.id || cargo.cargo_id
+      });
+      setPlacementScan((current) => ({
+        open: true,
+        cargo,
+        session: response.data || null,
+        instanceKey: current.instanceKey + 1
+      }));
+    } catch (startError) {
+      resetPlacementScan();
+      setError(getErrorMessage(startError));
+    } finally {
+      setPlacementStartingId("");
+    }
   };
 
   return (
@@ -499,16 +537,22 @@ function PlacementQueuePanel() {
                 className: "overflow-hidden whitespace-nowrap",
                 render: (row) => {
                   const gate = placementGate(row);
+                  const rowStartId = getRecordId(row, "cargo_id");
+                  const isStartingPlacement = placementStartingId === rowStartId;
                   return (
                     <div className="flex min-w-0 flex-nowrap items-center gap-1">
                       <button
                         type="button"
                         title={gate.message}
-                        disabled={!gate.canPlace}
+                        disabled={!gate.canPlace || Boolean(placementStartingId)}
                         onClick={() => startPlacement(row)}
                         className="min-w-0 whitespace-nowrap rounded bg-success px-1.5 py-1 text-[9px] font-semibold text-success-foreground disabled:opacity-40"
                       >
-                        {["Placed", "Relocated"].includes(row.placement_status) ? "Relocate" : "Start Placement"}
+                        {isStartingPlacement
+                          ? "Starting..."
+                          : ["Placed", "Relocated"].includes(row.placement_status)
+                            ? "Relocate"
+                            : "Start Placement"}
                       </button>
                       <button
                         type="button"
@@ -613,9 +657,11 @@ function PlacementQueuePanel() {
         )}
       </EnterpriseModal>
       <PlacementSessionModal
-        open={Boolean(placementCargo)}
-        cargo={placementCargo}
-        onClose={() => setPlacementCargo(null)}
+        key={placementScan.instanceKey}
+        open={placementScan.open}
+        cargo={placementScan.cargo}
+        initialSession={placementScan.session}
+        onClose={resetPlacementScan}
         onCompleted={load}
       />
       {printCargo && (

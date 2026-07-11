@@ -9,11 +9,7 @@ import {
 } from "lucide-react";
 import { EnterpriseModal } from "./EnterpriseModal";
 import { ErrorState, StatusBadge } from "./OperationalUi";
-import {
-  cancelScanSession,
-  createPlacementScanSession,
-  getActiveScanSession
-} from "@/services/api";
+import { cancelScanSession } from "@/services/api";
 import { createScannerSocket } from "@/services/scannerSocket";
 import { readCurrentStepError } from "@/lib/scanner-workflow";
 import { getErrorMessage } from "@/lib/wms-operational";
@@ -39,8 +35,9 @@ function Detail({ label, value }) {
   );
 }
 
-function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
+function PlacementSessionModal({ cargo, open, initialSession, onClose, onCompleted }) {
   const completionNotifiedRef = useRef(false);
+  const cancellationNotifiedRef = useRef(false);
   const [session, setSession] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState("Connecting");
   const [loading, setLoading] = useState(false);
@@ -63,38 +60,21 @@ function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
   const currentStepError = useMemo(() => readCurrentStepError(session), [session]);
 
   useEffect(() => {
-    if (!open || !cargo) return undefined;
+    if (!open) {
+      setSession(null);
+      setOperationError("");
+      setCancelling(false);
+      setLoading(false);
+      return undefined;
+    }
 
-    let active = true;
     completionNotifiedRef.current = false;
-    setSession(null);
+    cancellationNotifiedRef.current = false;
+    setSession(initialSession || null);
     setOperationError("");
-    setLoading(true);
-
-    const start = async () => {
-      try {
-        const response = await createPlacementScanSession({
-          cargo_id: cargo.id || cargo.cargo_id
-        });
-        if (active) setSession(response.data || null);
-      } catch (startError) {
-        try {
-          const response = await getActiveScanSession();
-          if (active) setSession(response.data || null);
-        } catch {
-        }
-        if (active) setOperationError(getErrorMessage(startError));
-      } finally {
-        if (active) setLoading(false);
-      }
-    };
-
-    start();
-
-    return () => {
-      active = false;
-    };
-  }, [cargo, open]);
+    setCancelling(false);
+    setLoading(false);
+  }, [initialSession, open]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -131,7 +111,24 @@ function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
     onCompleted?.(session?.context?.result || session);
   }, [completed, onCompleted, session]);
 
+  useEffect(() => {
+    if (!cancelled || cancellationNotifiedRef.current) return;
+    cancellationNotifiedRef.current = true;
+
+    const closeAfterCancellation = async () => {
+      try {
+        await onCompleted?.();
+      } catch {
+      }
+      onClose?.();
+    };
+
+    closeAfterCancellation();
+  }, [cancelled, onClose, onCompleted]);
+
   const cancelSession = async () => {
+    if (loading || cancelling) return;
+
     if (!session?.id || session.status !== "active") {
       onClose?.();
       return;
@@ -143,7 +140,12 @@ function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
     try {
       const response = await cancelScanSession(session.id);
       setSession(response.data || null);
-      await onCompleted?.();
+      cancellationNotifiedRef.current = true;
+      try {
+        await onCompleted?.();
+      } catch {
+      }
+      onClose?.();
     } catch (cancelError) {
       setOperationError(getErrorMessage(cancelError));
     } finally {
@@ -159,16 +161,11 @@ function PlacementSessionModal({ cargo, open, onClose, onCompleted }) {
       title={session?.context?.operation_type === "relocation" ? "Cargo Relocation Scanner" : "Cargo Placement Scanner"}
       subtitle="The scanned cargo becomes the active cargo and is validated by the backend in real time."
       size="medium"
-      onClose={onClose}
+      onClose={cancelSession}
+      closeOnBackdrop={false}
+      closeOnEscape={false}
       footer={(
         <>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded border border-border bg-background px-4 py-2 text-xs font-semibold hover:bg-muted"
-          >
-            Close
-          </button>
           <button
             type="button"
             onClick={cancelSession}

@@ -120,4 +120,139 @@
   .wms-panel-header {
     @apply flex items-center justify-between bg-[hsl(var(--panel-header))] text-[hsl(var(--panel-header-foreground))] px-3 py-2 text-sm font-semibold border-b border-border;
   }
+
+  .scanner-glass {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 18px 60px rgba(0, 0, 0, 0.25);
+  }
+
+  .scanner-state-enter {
+    animation: scanner-state-enter 260ms ease-out both;
+  }
+
+  .scanner-toast {
+    animation: scanner-toast-in 220ms ease-out both;
+  }
+
+  .scanner-focus-window {
+    box-shadow:
+      inset 0 0 54px rgba(0, 0, 0, 0.28),
+      0 24px 70px rgba(0, 0, 0, 0.5);
+  }
+
+  .scanner-corner {
+    position: absolute;
+    width: 48px;
+    height: 48px;
+    border-color: rgb(52 211 153);
+    filter: drop-shadow(0 0 14px rgba(52, 211, 153, 0.45));
+  }
+
+  .scanner-corner-tl {
+    left: 12px;
+    top: 12px;
+    border-left-width: 4px;
+    border-top-width: 4px;
+    border-top-left-radius: 16px;
+  }
+
+  .scanner-corner-tr {
+    right: 12px;
+    top: 12px;
+    border-right-width: 4px;
+    border-top-width: 4px;
+    border-top-right-radius: 16px;
+  }
+
+  .scanner-corner-bl {
+    bottom: 12px;
+    left: 12px;
+    border-bottom-width: 4px;
+    border-left-width: 4px;
+    border-bottom-left-radius: 16px;
+  }
+
+  .scanner-corner-br {
+    bottom: 12px;
+    right: 12px;
+    border-bottom-width: 4px;
+    border-right-width: 4px;
+    border-bottom-right-radius: 16px;
+  }
+
+  .scanner-scanline {
+    position: absolute;
+    left: 28px;
+    right: 28px;
+    top: 18%;
+    height: 3px;
+    border-radius: 9999px;
+    background: linear-gradient(90deg, transparent, rgba(16, 185, 129, 0.22), rgb(110 231 183), rgba(16, 185, 129, 0.22), transparent);
+    box-shadow: 0 0 20px rgba(16, 185, 129, 0.55);
+    animation: scanner-scanline 2s ease-in-out infinite;
+  }
+}
+
+@keyframes scanner-state-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes scanner-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes scanner-scanline {
+  0%,
+  100% {
+    top: 18%;
+    opacity: 0.35;
+  }
+  50% {
+    top: 82%;
+    opacity: 1;
+  }
+}
+
+@media (max-width: 480px) {
+  .scanner-corner {
+    width: 38px;
+    height: 38px;
+  }
+
+  .scanner-scanline {
+    left: 22px;
+    right: 22px;
+  }
+}
+
+@media (orientation: landscape) and (max-height: 540px) {
+  .scanner-frame-shell {
+    max-width: 540px;
+  }
+
+  .scanner-corner {
+    width: 36px;
+    height: 36px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scanner-state-enter,
+  .scanner-toast,
+  .scanner-scanline {
+    animation: none;
+  }
 }
