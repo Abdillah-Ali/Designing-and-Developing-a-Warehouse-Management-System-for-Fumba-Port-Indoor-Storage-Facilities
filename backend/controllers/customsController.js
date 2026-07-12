@@ -19,6 +19,31 @@ const NOTE_REQUIRED_STATUSES = new Set(["Documents Required", "On Hold", "Reject
 
 const cleanString = (value) => String(value ?? "").trim();
 
+const logCustomsQuery = (sql, params) => {
+  console.log(sql);
+  console.log(params);
+};
+
+const runCustomsWrite = (executor, sql, params) => {
+  logCustomsQuery(sql, params);
+  return executor.query(sql, params);
+};
+
+const handleCustomsUpdateError = (error, next) => {
+  if (error.statusCode) {
+    next(error);
+    return;
+  }
+
+  console.error("Customs status update failed:", {
+    message: error.message,
+    code: error.code,
+    detail: error.detail,
+    stack: error.stack
+  });
+  next(buildError("Unable to update customs status. Please contact the administrator if the problem persists.", 500));
+};
+
 const withTransaction = async (handler) => {
   const client = await db.pool.connect();
   try {
@@ -235,57 +260,100 @@ const ensureCustomsRecord = async (client, cargo, status, notes, documentsReques
     [cargo.id]
   );
   if (existing.rowCount > 0) {
-    const result = await client.query(
-      `UPDATE customs_records
-       SET status = $1,
-           inspection_notes = COALESCE($2, inspection_notes),
-           documents_requested = COALESCE($3, documents_requested),
-           inspection_started_at = CASE WHEN $1 = 'Inspection In Progress' THEN COALESCE(inspection_started_at, CURRENT_TIMESTAMP) ELSE inspection_started_at END,
-           inspection_completed_at = CASE WHEN $1 IN ('Cleared', 'Rejected') THEN CURRENT_TIMESTAMP ELSE inspection_completed_at END,
-           officer_id = $4,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $5
-       RETURNING *`,
-      [status, notes || null, documentsRequested || null, auth?.userId || null, existing.rows[0].id]
+    const sql = `UPDATE customs_records
+     SET status = $1::text,
+         inspection_notes = COALESCE($2::text, inspection_notes),
+         documents_requested = COALESCE($3::text, documents_requested),
+         inspection_started_at = CASE
+           WHEN $4::text = 'Inspection In Progress' THEN COALESCE(inspection_started_at, CURRENT_TIMESTAMP)
+           ELSE inspection_started_at
+         END,
+         inspection_completed_at = CASE
+           WHEN $5::text IN ('Cleared', 'Rejected') THEN CURRENT_TIMESTAMP
+           ELSE inspection_completed_at
+         END,
+         officer_id = $6::integer,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = $7::integer
+     RETURNING *`;
+    const params = [
+      status,
+      notes || null,
+      documentsRequested || null,
+      status,
+      status,
+      auth?.userId || null,
+      existing.rows[0].id
+    ];
+    const result = await runCustomsWrite(
+      client,
+      sql,
+      params
     );
     return result.rows[0];
   }
 
   const publicReference = await generatePublicReference("CUS", client, "customs_records", "public_reference");
-  const result = await client.query(
-    `INSERT INTO customs_records (
-       public_reference, cargo_id, status, inspection_started_at,
-       inspection_completed_at, inspection_notes, documents_requested, officer_id
-     )
-     VALUES ($1,$2,$3,
-             CASE WHEN $3 = 'Inspection In Progress' THEN CURRENT_TIMESTAMP ELSE NULL END,
-             CASE WHEN $3 IN ('Cleared', 'Rejected') THEN CURRENT_TIMESTAMP ELSE NULL END,
-             $4,$5,$6)
-     RETURNING *`,
-    [publicReference, cargo.id, status, notes || null, documentsRequested || null, auth?.userId || null]
+  const sql = `INSERT INTO customs_records (
+     public_reference, cargo_id, status, inspection_started_at,
+     inspection_completed_at, inspection_notes, documents_requested, officer_id
+   )
+   VALUES (
+     $1::text,
+     $2::integer,
+     $3::text,
+     CASE WHEN $4::text = 'Inspection In Progress' THEN CURRENT_TIMESTAMP ELSE NULL END,
+     CASE WHEN $5::text IN ('Cleared', 'Rejected') THEN CURRENT_TIMESTAMP ELSE NULL END,
+     $6::text,
+     $7::text,
+     $8::integer
+   )
+   RETURNING *`;
+  const params = [
+    publicReference,
+    cargo.id,
+    status,
+    status,
+    status,
+    notes || null,
+    documentsRequested || null,
+    auth?.userId || null
+  ];
+  const result = await runCustomsWrite(
+    client,
+    sql,
+    params
   );
   return result.rows[0];
 };
 
 const writeCustomsHistory = async (client, { cargo, customsRecord, previousStatus, newStatus, notes, auth, metadata = {} }) => {
   const publicReference = await generatePublicReference("CSH", client, "customs_status_history", "public_reference");
-  await client.query(
-    `INSERT INTO customs_status_history (
-       public_reference, cargo_id, customs_record_id, previous_status,
-       new_status, notes, changed_by, metadata
-     )
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
-    [
-      publicReference,
-      cargo.id,
-      customsRecord?.id || null,
-      previousStatus || null,
-      newStatus,
-      notes || null,
-      auth?.userId || null,
-      JSON.stringify(metadata)
-    ]
-  );
+  const sql = `INSERT INTO customs_status_history (
+     public_reference, cargo_id, customs_record_id, previous_status,
+     new_status, notes, changed_by, metadata
+   )
+   VALUES (
+     $1::text,
+     $2::integer,
+     $3::integer,
+     $4::text,
+     $5::text,
+     $6::text,
+     $7::integer,
+     $8::jsonb
+   )`;
+  const params = [
+    publicReference,
+    cargo.id,
+    customsRecord?.id || null,
+    previousStatus || null,
+    newStatus,
+    notes || null,
+    auth?.userId || null,
+    JSON.stringify(metadata)
+  ];
+  await runCustomsWrite(client, sql, params);
 };
 
 const startInspection = async (req, res, next) => {
@@ -300,14 +368,13 @@ const startInspection = async (req, res, next) => {
       const newStatus = "Inspection In Progress";
       const notes = cleanString(req.body.notes);
       const customsRecord = await ensureCustomsRecord(client, cargo, newStatus, notes, "", req.auth);
-      const updatedCargo = await client.query(
-        `UPDATE cargo
-         SET customs_status = $1,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = $2
-         RETURNING *`,
-        [newStatus, cargo.id]
-      );
+      const updateCargoSql = `UPDATE cargo
+       SET customs_status = $1::text,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2::integer
+       RETURNING *`;
+      const updateCargoParams = [newStatus, cargo.id];
+      const updatedCargo = await runCustomsWrite(client, updateCargoSql, updateCargoParams);
       await writeCustomsHistory(client, {
         cargo,
         customsRecord,
@@ -340,7 +407,7 @@ const startInspection = async (req, res, next) => {
     });
     res.json({ success: true, data });
   } catch (error) {
-    next(error);
+    handleCustomsUpdateError(error, next);
   }
 };
 
@@ -367,14 +434,13 @@ const updateStatus = async (req, res, next) => {
 
       const previousStatus = cargo.customs_status;
       const customsRecord = await ensureCustomsRecord(client, cargo, status, notes, documentsRequested, req.auth);
-      const updatedCargo = await client.query(
-        `UPDATE cargo
-         SET customs_status = $1,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = $2
-         RETURNING *`,
-        [status, cargo.id]
-      );
+      const updateCargoSql = `UPDATE cargo
+       SET customs_status = $1::text,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2::integer
+       RETURNING *`;
+      const updateCargoParams = [status, cargo.id];
+      const updatedCargo = await runCustomsWrite(client, updateCargoSql, updateCargoParams);
       await writeCustomsHistory(client, {
         cargo,
         customsRecord,
@@ -409,7 +475,7 @@ const updateStatus = async (req, res, next) => {
     });
     res.json({ success: true, data });
   } catch (error) {
-    next(error);
+    handleCustomsUpdateError(error, next);
   }
 };
 
