@@ -5,6 +5,9 @@ export const PORTAL_ROLES = Object.freeze({
   SYSTEM_ADMIN: "system-admin",
   WAREHOUSE_STAFF: "warehouse-staff",
   WAREHOUSE_SUPERVISOR: "warehouse-supervisor",
+  FINANCE_OFFICER: "finance-officer",
+  CUSTOMS_OFFICER: "customs-officer",
+  GATE_OFFICER: "gate-officer",
   SCANNER: "scanner"
 });
 
@@ -115,6 +118,7 @@ export const PORTAL_CONFIG = Object.freeze({
       "/supervisor/warehouse/bins",
       "/supervisor/dispatch/requests",
       "/supervisor/dispatch/approved",
+      "/supervisor/dispatch/emergency-releases",
       "/supervisor/notifications",
       "/supervisor/profile"
     ]),
@@ -123,6 +127,81 @@ export const PORTAL_CONFIG = Object.freeze({
       "cargo-supervision",
       "warehouse-monitoring",
       "dispatch-authorization",
+      "profile"
+    ])
+  },
+  [PORTAL_ROLES.FINANCE_OFFICER]: {
+    label: "Finance Officer",
+    roleName: "Finance Officer",
+    displayRoleName: "Finance Officer",
+    basePath: "/finance",
+    defaultPath: "/finance",
+    allowedPaths: Object.freeze([
+      "/finance",
+      "/finance/dashboard",
+      "/finance/cargo-charges",
+      "/finance/invoices",
+      "/finance/payments",
+      "/finance/tariffs",
+      "/finance/reports",
+      "/finance/notifications",
+      "/finance/profile"
+    ]),
+    modules: Object.freeze([
+      "dashboard",
+      "cargo-charges",
+      "invoices",
+      "payments",
+      "tariff-configuration",
+      "financial-reports",
+      "profile"
+    ])
+  },
+  [PORTAL_ROLES.CUSTOMS_OFFICER]: {
+    label: "Customs Officer",
+    roleName: "Customs Officer",
+    displayRoleName: "Customs Officer",
+    basePath: "/customs",
+    defaultPath: "/customs",
+    allowedPaths: Object.freeze([
+      "/customs",
+      "/customs/dashboard",
+      "/customs/inspection-queue",
+      "/customs/records",
+      "/customs/cleared",
+      "/customs/holds",
+      "/customs/notifications",
+      "/customs/profile"
+    ]),
+    modules: Object.freeze([
+      "dashboard",
+      "inspection-queue",
+      "customs-records",
+      "cleared-cargo",
+      "cargo-on-hold",
+      "profile"
+    ])
+  },
+  [PORTAL_ROLES.GATE_OFFICER]: {
+    label: "Gate Officer",
+    roleName: "Gate Officer",
+    displayRoleName: "Gate Officer",
+    basePath: "/gate",
+    defaultPath: "/gate",
+    allowedPaths: Object.freeze([
+      "/gate",
+      "/gate/dashboard",
+      "/gate/release-queue",
+      "/gate/gate-out-records",
+      "/gate/emergency-releases",
+      "/gate/notifications",
+      "/gate/profile"
+    ]),
+    modules: Object.freeze([
+      "dashboard",
+      "release-queue",
+      "gate-out-records",
+      "emergency-releases",
       "profile"
     ])
   },
@@ -151,6 +230,13 @@ const roleAliases = Object.freeze({
   "warehouse-supervisor": PORTAL_ROLES.WAREHOUSE_SUPERVISOR,
   "warehouse supervisor": PORTAL_ROLES.WAREHOUSE_SUPERVISOR,
   "supervisor": PORTAL_ROLES.WAREHOUSE_SUPERVISOR,
+  "finance-officer": PORTAL_ROLES.FINANCE_OFFICER,
+  "finance officer": PORTAL_ROLES.FINANCE_OFFICER,
+  "billing officer": PORTAL_ROLES.FINANCE_OFFICER,
+  "customs-officer": PORTAL_ROLES.CUSTOMS_OFFICER,
+  "customs officer": PORTAL_ROLES.CUSTOMS_OFFICER,
+  "gate-officer": PORTAL_ROLES.GATE_OFFICER,
+  "gate officer": PORTAL_ROLES.GATE_OFFICER,
   "scanner": PORTAL_ROLES.SCANNER
 });
 

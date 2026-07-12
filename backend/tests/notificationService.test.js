@@ -3,16 +3,19 @@ const assert = require("node:assert/strict");
 
 const {
   NOTIFICATION_TYPES,
+  archiveNotification,
   createNotification,
   createNotificationsForAudience,
   createSystemAnnouncement,
+  getNotificationSummary,
   getUnreadCount,
   markAllNotificationsRead,
   markNotificationRead,
   notifyCargoRegistrationPending,
   notifyCorrectionRequested,
   notifyDispatchSubmitted,
-  notifyWarehouseAlert
+  notifyWarehouseAlert,
+  restoreNotification
 } = require("../services/notificationService");
 const {
   PORTAL_ROLES,
@@ -86,19 +89,22 @@ const createExecutor = (overrides = {}) => {
     if (sql.includes("INSERT INTO notifications")) {
       const notification = {
         id: state.nextNotificationId++,
-        recipient_user_id: params[0],
-        recipient_role_id: params[1],
-        recipient_warehouse_id: params[2],
-        notification_type: params[3],
-        title: params[4],
-        message: params[5],
-        related_module: params[6],
-        related_entity_type: params[7],
-        related_entity_id: params[8],
-        priority: params[9],
-        created_by: params[10],
-        expires_at: params[11],
-        metadata: JSON.parse(params[12]),
+        public_reference: params[0],
+        recipient_user_id: params[1],
+        recipient_role_id: params[2],
+        recipient_warehouse_id: params[3],
+        notification_type: params[4],
+        title: params[5],
+        message: params[6],
+        related_module: params[7],
+        related_entity_type: params[8],
+        related_entity_id: params[9],
+        priority: params[10],
+        status: 'pending',
+        completed_at: null,
+        created_by: params[11],
+        expires_at: params[12],
+        metadata: JSON.parse(params[13]),
         is_read: false,
         read_at: null,
         archived_at: null,
@@ -122,7 +128,16 @@ const createExecutor = (overrides = {}) => {
     }
 
     if (sql.includes("SELECT COUNT(*)::int AS count")) {
-      const count = state.notifications.filter((notification) => !notification.is_read && !notification.archived_at).length;
+      let rows = [...state.notifications];
+      if (sql.includes("n.archived_at IS NOT NULL")) {
+        rows = rows.filter((notification) => notification.archived_at);
+      } else if (sql.includes("n.archived_at IS NULL")) {
+        rows = rows.filter((notification) => !notification.archived_at);
+      }
+      if (sql.includes("n.is_read = FALSE")) {
+        rows = rows.filter((notification) => !notification.is_read);
+      }
+      const count = rows.length;
       return { rowCount: 1, rows: [{ count }] };
     }
 
@@ -130,8 +145,19 @@ const createExecutor = (overrides = {}) => {
       return { rowCount: 1, rows: [{ total: state.notifications.length }] };
     }
 
-    if (sql.includes("UPDATE notifications n") && sql.includes("SET is_read = TRUE") && sql.includes("n.id = $1")) {
-      const notification = state.notifications.find((entry) => entry.id === Number(params[0]));
+    if (
+      sql.includes("FROM notifications n")
+      && sql.includes("SELECT public_reference")
+      && sql.includes("notification_type")
+      && sql.includes("status")
+      && !sql.includes("UPDATE")
+    ) {
+      const notification = state.notifications.find((entry) => entry.public_reference === params[0]);
+      return { rowCount: notification ? 1 : 0, rows: notification ? [notification] : [] };
+    }
+
+    if (sql.includes("UPDATE notifications n") && sql.includes("SET is_read = TRUE") && sql.includes("n.public_reference = $1")) {
+      const notification = state.notifications.find((entry) => entry.public_reference === params[0]);
       if (!notification) return { rowCount: 0, rows: [] };
       notification.is_read = true;
       notification.read_at = "2026-06-26T10:05:00.000Z";
@@ -145,11 +171,30 @@ const createExecutor = (overrides = {}) => {
           notification.is_read = true;
           notification.read_at = "2026-06-26T10:10:00.000Z";
           return {
-            id: notification.id,
+            public_reference: notification.public_reference,
             notification_type: notification.notification_type
           };
         });
       return { rowCount: rows.length, rows };
+    }
+
+    if (sql.includes("UPDATE notifications n") && sql.includes("archived_at = COALESCE")) {
+      const notification = state.notifications.find((entry) => entry.public_reference === params[1]);
+      if (!notification) return { rowCount: 0, rows: [] };
+      notification.archived_at = "2026-06-26T10:05:00.000Z";
+      notification.archived_by = params[0];
+      if (notification.status === 'pending') {
+        notification.status = 'dismissed';
+      }
+      return { rowCount: 1, rows: [notification] };
+    }
+
+    if (sql.includes("UPDATE notifications n") && sql.includes("archived_at = NULL")) {
+      const notification = state.notifications.find((entry) => entry.public_reference === params[0] && entry.archived_at);
+      if (!notification) return { rowCount: 0, rows: [] };
+      notification.archived_at = null;
+      notification.archived_by = null;
+      return { rowCount: 1, rows: [notification] };
     }
 
     throw new Error(`Unexpected query: ${sql}`);
@@ -167,7 +212,9 @@ const staffAuth = {
 
 test("notification RBAC allows reading notifications but restricts announcements to admins", () => {
   assert.equal(canAccessRoute(PORTAL_ROLES.WAREHOUSE_STAFF, "GET", "/notifications"), true);
-  assert.equal(canAccessRoute(PORTAL_ROLES.WAREHOUSE_STAFF, "PATCH", "/notifications/12/read"), true);
+  assert.equal(canAccessRoute(PORTAL_ROLES.WAREHOUSE_STAFF, "GET", "/notifications/summary"), true);
+  assert.equal(canAccessRoute(PORTAL_ROLES.WAREHOUSE_STAFF, "PATCH", "/notifications/NTF-2026-A1B2C3/read"), true);
+  assert.equal(canAccessRoute(PORTAL_ROLES.WAREHOUSE_STAFF, "PATCH", "/notifications/NTF-2026-A1B2C3/restore"), true);
   assert.equal(canAccessRoute(PORTAL_ROLES.WAREHOUSE_STAFF, "POST", "/notifications/system-announcement"), false);
   assert.equal(canAccessRoute(PORTAL_ROLES.SYSTEM_ADMIN, "POST", "/notifications/system-announcement"), true);
 });
@@ -230,7 +277,7 @@ test("mark read actions update notifications and write audit entries", async () 
 
   const read = await markNotificationRead({
     auth: staffAuth,
-    notificationId: first.id,
+    publicRef: first.public_reference,
     executor
   });
   const remaining = await markAllNotificationsRead({ auth: staffAuth, executor });
@@ -239,6 +286,48 @@ test("mark read actions update notifications and write audit entries", async () 
   assert.equal(remaining.length, 1);
   assert.equal(executor.auditLogs.some((entry) => entry.action === "READ_NOTIFICATION"), true);
   assert.equal(executor.auditLogs.some((entry) => entry.action === "READ_ALL_NOTIFICATIONS"), true);
+});
+
+test("archived notifications are counted separately and restored without changing history", async () => {
+  const executor = createExecutor();
+  const notification = await createNotification({
+    recipient_user_id: 2,
+    notification_type: NOTIFICATION_TYPES.WAREHOUSE_ALERT,
+    title: "Capacity notice",
+    message: "A bin is over capacity."
+  }, executor, { audit: false });
+
+  await markNotificationRead({
+    auth: staffAuth,
+    publicRef: notification.public_reference,
+    executor
+  });
+
+  const archived = await archiveNotification({
+    auth: staffAuth,
+    publicRef: notification.public_reference,
+    executor
+  });
+  let summary = await getNotificationSummary({ auth: staffAuth, executor });
+
+  assert.equal(archived.archived_at, "2026-06-26T10:05:00.000Z");
+  assert.equal(archived.status, "dismissed");
+  assert.deepEqual(summary, { active: 0, unread: 0, archived: 1 });
+
+  const restored = await restoreNotification({
+    auth: staffAuth,
+    publicRef: notification.public_reference,
+    executor
+  });
+  summary = await getNotificationSummary({ auth: staffAuth, executor });
+
+  assert.equal(restored.archived_at, null);
+  assert.equal(restored.status, "dismissed");
+  assert.equal(restored.is_read, true);
+  assert.equal(executor.notifications.length, 1);
+  assert.deepEqual(summary, { active: 1, unread: 0, archived: 0 });
+  assert.equal(executor.auditLogs.some((entry) => entry.action === "ARCHIVE_NOTIFICATION"), true);
+  assert.equal(executor.auditLogs.some((entry) => entry.action === "RESTORE_NOTIFICATION"), true);
 });
 
 test("audience notifications expand to each active matching user", async () => {

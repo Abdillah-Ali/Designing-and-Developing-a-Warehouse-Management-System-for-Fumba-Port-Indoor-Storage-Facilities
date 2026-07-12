@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bell, CheckCheck, ExternalLink } from "lucide-react";
+import { Bell, CheckCheck } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { getPortalConfig, getStoredAuthRole, getStoredAuthToken } from "@/lib/portal-access";
 import { cn } from "@/lib/utils";
@@ -9,7 +9,8 @@ import {
   markAllNotificationsRead,
   markNotificationRead
 } from "@/services/api";
-import { getRelatedPath, shortDate, typeLabels } from "@/components/wms/notification-utils";
+import { shortDate, statusLabels, typeLabels } from "@/components/wms/notification-utils";
+import { NotificationDetailModal } from "@/components/wms/NotificationDetailModal";
 
 function getPortalBase() {
   return getPortalConfig(getStoredAuthRole())?.basePath || "";
@@ -22,6 +23,8 @@ function NotificationBell() {
   const [count, setCount] = useState(0);
   const [notifications, setNotifications] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [selectedNotification, setSelectedNotification] = useState(null);
+  const [modalOpen, setModalOpen] = useState(false);
 
   const loadNotifications = useCallback(async () => {
     if (!getStoredAuthToken()) return;
@@ -64,30 +67,51 @@ function NotificationBell() {
     if (basePath) navigate(`${basePath}/notifications`);
   };
 
-  const markRead = async (notification) => {
-    setNotifications((current) => current.filter((entry) => entry.id !== notification.id));
+  const markRead = async (notification, event) => {
+    if (event) event.stopPropagation();
+    setNotifications((current) => current.filter((entry) => entry.public_reference !== notification.public_reference));
     setCount((current) => Math.max(current - 1, 0));
-    await markNotificationRead(notification.id);
+    try {
+      await markNotificationRead(notification.public_reference);
+    } catch (err) {
+      console.error("Non-blocking mark read failure:", err);
+    }
     await loadNotifications();
   };
 
   const markAllRead = async () => {
     setNotifications([]);
     setCount(0);
-    await markAllNotificationsRead();
+    try {
+      await markAllNotificationsRead();
+    } catch (err) {
+      console.error("Mark all read failure:", err);
+    }
     await loadNotifications();
   };
 
-  const viewRelated = async (notification) => {
-    const path = getRelatedPath(notification);
-    if (!path) return;
-    if (!notification.is_read) {
-      setNotifications((current) => current.filter((entry) => entry.id !== notification.id));
-      setCount((current) => Math.max(current - 1, 0));
-      await markNotificationRead(notification.id);
-    }
+  const handleNotificationClick = (notification) => {
+    setSelectedNotification(notification);
+    setModalOpen(true);
     setOpen(false);
-    navigate(path);
+  };
+
+  const handleArchiveCompleted = (archivedNtf) => {
+    setNotifications((current) => current.filter((entry) => entry.public_reference !== archivedNtf.public_reference));
+    loadNotifications();
+  };
+
+  const handleReadCompleted = (readNotification) => {
+    setSelectedNotification((current) => (
+      current?.public_reference === readNotification.public_reference
+        ? { ...current, ...readNotification, is_read: true }
+        : current
+    ));
+    setNotifications((current) =>
+      current.filter((entry) => entry.public_reference !== readNotification.public_reference)
+    );
+    setCount((current) => Math.max(current - 1, 0));
+    loadNotifications();
   };
 
   return (
@@ -133,12 +157,12 @@ function NotificationBell() {
             ) : notifications.length === 0 ? (
               <div className="px-3 py-5 text-center text-xs text-muted-foreground">No unread notifications.</div>
             ) : notifications.map((notification) => {
-              const relatedPath = getRelatedPath(notification);
               return (
                 <div
-                  key={notification.id}
+                  key={notification.public_reference}
+                  onClick={() => handleNotificationClick(notification)}
                   className={cn(
-                    "border-b border-border px-3 py-2 text-xs last:border-b-0",
+                    "cursor-pointer border-b border-border px-3 py-2 text-xs last:border-b-0 hover:bg-muted/40 transition-colors",
                     !notification.is_read && "bg-info/10"
                   )}
                 >
@@ -151,6 +175,7 @@ function NotificationBell() {
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
                     <span className="rounded bg-muted px-1.5 py-0.5">{typeLabels[notification.notification_type] || notification.notification_type}</span>
+                    <span className="rounded bg-muted px-1.5 py-0.5">{statusLabels[notification.status] || notification.status}</span>
                     <span className="rounded bg-muted px-1.5 py-0.5">{notification.priority}</span>
                     <span>{shortDate(notification.created_at)}</span>
                   </div>
@@ -158,20 +183,10 @@ function NotificationBell() {
                     {!notification.is_read && (
                       <button
                         type="button"
-                        onClick={() => markRead(notification)}
-                        className="text-[11px] font-semibold text-info"
+                        onClick={(e) => markRead(notification, e)}
+                        className="text-[11px] font-semibold text-info hover:underline"
                       >
                         Mark as read
-                      </button>
-                    )}
-                    {relatedPath && (
-                      <button
-                        type="button"
-                        onClick={() => viewRelated(notification)}
-                        className="inline-flex items-center gap-1 text-[11px] font-semibold text-info"
-                      >
-                        <ExternalLink className="h-3 w-3" />
-                        View
                       </button>
                     )}
                   </div>
@@ -188,6 +203,18 @@ function NotificationBell() {
           </button>
         </div>
       )}
+
+      <NotificationDetailModal
+        open={modalOpen}
+        notification={selectedNotification}
+        onClose={() => {
+          setModalOpen(false);
+          setSelectedNotification(null);
+        }}
+        onActionCompleted={loadNotifications}
+        onArchived={handleArchiveCompleted}
+        onRead={handleReadCompleted}
+      />
     </div>
   );
 }

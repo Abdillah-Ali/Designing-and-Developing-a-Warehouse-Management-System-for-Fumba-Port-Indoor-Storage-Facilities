@@ -18,6 +18,9 @@ const roleNames = Object.freeze({
   systemAdmin: process.env.SYSTEM_ADMIN_ROLE_NAME || "System Admin",
   warehouseStaff: process.env.WAREHOUSE_STAFF_ROLE_NAME || "Warehouse Staff",
   warehouseSupervisor: process.env.WAREHOUSE_SUPERVISOR_ROLE_NAME || "Supervisor",
+  financeOfficer: process.env.FINANCE_OFFICER_ROLE_NAME || "Finance Officer",
+  customsOfficer: process.env.CUSTOMS_OFFICER_ROLE_NAME || "Customs Officer",
+  gateOfficer: process.env.GATE_OFFICER_ROLE_NAME || "Gate Officer",
   scanner: process.env.SCANNER_ROLE_NAME || "Scanner"
 });
 
@@ -33,6 +36,18 @@ const defaultRoleDefinitions = Object.freeze(parseJsonSetting("WMS_ROLE_DEFINITI
   {
     name: roleNames.warehouseSupervisor,
     description: "Warehouse Supervisor access for cargo approvals, placement exceptions, dispatch authorization, and operational monitoring."
+  },
+  {
+    name: roleNames.financeOfficer,
+    description: "Finance access for cargo charges, invoices, payments, tariffs, and financial reports."
+  },
+  {
+    name: roleNames.customsOfficer,
+    description: "Customs access for cargo inspection, document requests, holds, rejection, and clearance."
+  },
+  {
+    name: roleNames.gateOfficer,
+    description: "Gate access for dispatch validation, release eligibility checks, gate-out confirmation, and emergency release requests."
   },
   {
     name: roleNames.scanner,

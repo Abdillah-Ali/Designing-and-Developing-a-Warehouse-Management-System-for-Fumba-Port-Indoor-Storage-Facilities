@@ -578,7 +578,7 @@ const recommendBin = async (req, res, next) => {
          AND c.weight>0 AND c.volume>0 AND c.cargo_type IS NOT NULL
          AND (c.cargo_type<>'Fragile Goods' OR LOWER(COALESCE(z.handling_condition,'')) LIKE '%fragile%')
          AND (
-           LOWER(COALESCE(c.customs_status,''))<>'hold'
+           LOWER(COALESCE(c.customs_status,'')) NOT LIKE '%hold%'
            OR LOWER(COALESCE(b.cargo_restrictions,'')) LIKE '%customs hold%'
          )
          AND b.current_weight+c.weight<=b.max_weight

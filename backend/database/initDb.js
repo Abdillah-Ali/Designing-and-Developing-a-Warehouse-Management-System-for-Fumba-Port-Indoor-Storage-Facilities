@@ -92,11 +92,25 @@ const applySchema = async () => {
   );
   const schemaPath = path.join(__dirname, "schema.sql");
   const schema = await fs.readFile(schemaPath, "utf8");
+  const financeCustomsGateMigrationPath = path.join(
+    __dirname,
+    "migrations",
+    "finance_customs_gate_workflows.sql"
+  );
+  const warehouseConfigurationMigrationPath = path.join(
+    __dirname,
+    "migrations",
+    "warehouse_configuration_srs.sql"
+  );
+  const financeCustomsGateMigration = await fs.readFile(financeCustomsGateMigrationPath, "utf8");
+  const warehouseConfigurationMigration = await fs.readFile(warehouseConfigurationMigrationPath, "utf8");
 
   try {
     await moveIncompatibleTables(client);
     await client.query(schema);
     await seedOperationalConfiguration(client);
+    await client.query(warehouseConfigurationMigration);
+    await client.query(financeCustomsGateMigration);
     console.log("✔ Roles seeded");
     console.log("✔ Shifts seeded");
     await seedBootstrapAdmin(client);

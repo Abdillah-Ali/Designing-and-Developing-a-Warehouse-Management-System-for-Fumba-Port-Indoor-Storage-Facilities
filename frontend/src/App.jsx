@@ -24,6 +24,9 @@ const ChangePassword = lazy(() => import("./pages/ChangePassword.jsx"));
 const BootstrapAdminSetup = lazy(() => import("./pages/BootstrapAdminSetup.jsx"));
 const SupervisorPortal = lazy(() => import("./pages/SupervisorPortal.jsx"));
 const ScannerPortal = lazy(() => import("./pages/ScannerPortal.jsx"));
+const FinancePortal = lazy(() => import("./pages/FinancePortal.jsx"));
+const CustomsPortal = lazy(() => import("./pages/CustomsPortal.jsx"));
+const GatePortal = lazy(() => import("./pages/GatePortal.jsx"));
 
 function PageFallback() {
   return (
@@ -154,6 +157,30 @@ const App = () => (
               element={
                 <PortalAccessGate role={PORTAL_ROLES.WAREHOUSE_SUPERVISOR}>
                   <SupervisorPortal />
+                </PortalAccessGate>
+              }
+            />
+            <Route
+              path="/finance/*"
+              element={
+                <PortalAccessGate role={PORTAL_ROLES.FINANCE_OFFICER}>
+                  <FinancePortal />
+                </PortalAccessGate>
+              }
+            />
+            <Route
+              path="/customs/*"
+              element={
+                <PortalAccessGate role={PORTAL_ROLES.CUSTOMS_OFFICER}>
+                  <CustomsPortal />
+                </PortalAccessGate>
+              }
+            />
+            <Route
+              path="/gate/*"
+              element={
+                <PortalAccessGate role={PORTAL_ROLES.GATE_OFFICER}>
+                  <GatePortal />
                 </PortalAccessGate>
               }
             />

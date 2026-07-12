@@ -1,12 +1,16 @@
 const db = require("../config/db");
 const { buildError } = require("../utils/apiError");
 const {
+  ACTIONABLE_WORKFLOW_TYPES,
+  addVisibleNotificationClauses,
   archiveNotification,
   createSystemAnnouncement,
+  getNotificationSummary,
   getUnreadCount,
   listNotifications,
   markAllNotificationsRead,
-  markNotificationRead
+  markNotificationRead,
+  restoreNotification
 } = require("../services/notificationService");
 
 const sendNotFound = () => {
@@ -46,13 +50,25 @@ const getUnreadNotificationCount = async (req, res, next) => {
   }
 };
 
+const getNotificationSummaryForUser = async (req, res, next) => {
+  try {
+    res.json({
+      success: true,
+      data: await getNotificationSummary({ auth: req.auth })
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 const markNotificationAsRead = async (req, res, next) => {
   const client = await db.pool.connect();
   try {
+    const { publicRef } = req.params;
     await client.query("BEGIN");
     const notification = await markNotificationRead({
       auth: req.auth,
-      notificationId: req.params.id,
+      publicRef,
       executor: client
     });
     if (!notification) sendNotFound();
@@ -108,10 +124,11 @@ const createSystemAnnouncementNotification = async (req, res, next) => {
 const archiveNotificationForUser = async (req, res, next) => {
   const client = await db.pool.connect();
   try {
+    const { publicRef } = req.params;
     await client.query("BEGIN");
     const notification = await archiveNotification({
       auth: req.auth,
-      notificationId: req.params.id,
+      publicRef,
       executor: client
     });
     if (!notification) sendNotFound();
@@ -125,11 +142,96 @@ const archiveNotificationForUser = async (req, res, next) => {
   }
 };
 
+const restoreNotificationForUser = async (req, res, next) => {
+  const client = await db.pool.connect();
+  try {
+    const { publicRef } = req.params;
+    await client.query("BEGIN");
+    const notification = await restoreNotification({
+      auth: req.auth,
+      publicRef,
+      executor: client
+    });
+    if (!notification) sendNotFound();
+    await client.query("COMMIT");
+    res.json({ success: true, data: notification });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    next(error);
+  } finally {
+    client.release();
+  }
+};
+
+const resolveNotificationRoute = async (req, res, next) => {
+  const client = await db.pool.connect();
+  try {
+    const { publicRef } = req.params;
+    await client.query("BEGIN");
+
+    const findValues = [publicRef];
+    const findClauses = ["n.public_reference = $1"];
+    addVisibleNotificationClauses(req.auth, findClauses, findValues);
+    const findResult = await client.query(
+      `SELECT public_reference, notification_type, status
+       FROM notifications n
+       WHERE ${findClauses.join(" AND ")}
+       LIMIT 1`,
+      findValues
+    );
+    const notification = findResult.rows[0];
+    if (!notification) {
+      throw buildError("Notification not found.", 404);
+    }
+
+    if (ACTIONABLE_WORKFLOW_TYPES.has(notification.notification_type)) {
+      throw buildError("Complete the required workflow action to resolve this notification.", 409);
+    }
+
+    const values = [publicRef];
+    const clauses = ["n.public_reference = $1"];
+    addVisibleNotificationClauses(req.auth, clauses, values);
+
+    const result = await client.query(
+      `UPDATE notifications n
+       SET status = 'completed',
+           completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
+           is_read = TRUE,
+           read_at = COALESCE(read_at, CURRENT_TIMESTAMP)
+       WHERE ${clauses.join(" AND ")}
+       RETURNING
+         public_reference,
+         notification_type,
+         status,
+         completed_at,
+         is_read,
+         read_at`,
+      values
+    );
+
+    const updated = result.rows[0];
+    if (!updated) {
+      throw buildError("Notification not found.", 404);
+    }
+
+    await client.query("COMMIT");
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    next(error);
+  } finally {
+    client.release();
+  }
+};
+
 module.exports = {
   archiveNotificationForUser,
   createSystemAnnouncementNotification,
   getNotifications,
+  getNotificationSummaryForUser,
   getUnreadNotificationCount,
   markAllNotificationsAsRead,
-  markNotificationAsRead
+  markNotificationAsRead,
+  restoreNotificationForUser,
+  resolveNotificationRoute
 };

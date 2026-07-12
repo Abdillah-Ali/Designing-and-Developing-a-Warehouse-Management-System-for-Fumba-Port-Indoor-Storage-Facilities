@@ -44,6 +44,7 @@ describe("NotificationBell", () => {
     let notificationRead = false;
     const notification = {
       id: 11,
+      public_reference: "NTF-2026-TEST",
       notification_type: "pending_approval",
       title: "Cargo registration needs review",
       message: "CARGO-2026-0001 is waiting for supervisor review.",
@@ -72,7 +73,7 @@ describe("NotificationBell", () => {
         };
       }
 
-      if (url.includes("/notifications/11/read") && options.method === "PATCH") {
+      if (url.includes("/notifications/NTF-2026-TEST/read") && options.method === "PATCH") {
         notificationRead = true;
         return {
           ok: true,
@@ -101,7 +102,7 @@ describe("NotificationBell", () => {
 
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringContaining("/notifications/11/read"),
+        expect.stringContaining("/notifications/NTF-2026-TEST/read"),
         expect.objectContaining({ method: "PATCH" })
       );
     });

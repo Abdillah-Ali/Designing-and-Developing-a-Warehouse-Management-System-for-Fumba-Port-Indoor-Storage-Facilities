@@ -586,7 +586,7 @@ const validatePlacement = async (payload = {}, executor = db) => {
 
   if (
     isRuleActive(rules, "customs_hold")
-    && String(cargo.customs_status || "").toLowerCase() === "hold"
+    && String(cargo.customs_status || "").toLowerCase().includes("hold")
     && !String(bin.cargo_restrictions || "").toLowerCase().includes("customs hold")
   ) {
     addIssue("restrictedZone", "Customs Hold Restriction", "Cargo under customs hold requires a bin configured for customs-hold storage.");

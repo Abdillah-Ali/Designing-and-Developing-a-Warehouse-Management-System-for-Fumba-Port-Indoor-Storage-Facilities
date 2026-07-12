@@ -20,6 +20,8 @@ const {
   updateCargoRegistrationStatus
 } = require("../services/cargoWorkflowService");
 
+const REQUEST_NOT_AVAILABLE_MESSAGE = "This request could not be found or is not available to your account.";
+
 const approvalSelect = `
   SELECT
     ar.*,
@@ -64,13 +66,39 @@ const approvalSelect = `
   LEFT JOIN users decider ON decider.id = ar.decided_by
 `;
 
+const toPublicApproval = (row) => {
+  const {
+    id,
+    cargo_record_id,
+    requested_by,
+    assigned_to,
+    assigned_supervisor_id,
+    warehouse_id,
+    warehouse_id_at_request,
+    decided_by,
+    supporting_documents,
+    ...publicRow
+  } = row;
+
+  return {
+    ...publicRow,
+    supporting_documents: Array.isArray(supporting_documents)
+      ? supporting_documents.map((document) => {
+          const publicDocument = { ...document };
+          delete publicDocument.id;
+          return publicDocument;
+        })
+      : supporting_documents
+  };
+};
+
 const assertWarehouseAccess = (req, warehouseId) => {
   if (
     req.auth?.role === "warehouse-supervisor"
     && req.auth?.warehouseId
     && Number(warehouseId) !== Number(req.auth.warehouseId)
   ) {
-    throw buildError("Approval request not found.", 404);
+    throw buildError(REQUEST_NOT_AVAILABLE_MESSAGE, 404);
   }
 };
 
@@ -169,6 +197,10 @@ const getApprovals = async (req, res, next) => {
     const values = [];
     const clauses = ["c.is_deleted = FALSE"];
 
+    if (req.query.cargoRef) {
+      values.push(req.query.cargoRef);
+      clauses.push(`c.cargo_id = $${values.length}`);
+    }
     if (req.query.status) {
       values.push(req.query.status);
       clauses.push(`ar.status = $${values.length}`);
@@ -188,7 +220,10 @@ const getApprovals = async (req, res, next) => {
                 ar.created_at DESC, ar.id DESC`,
       values
     );
-    res.json({ success: true, count: result.rowCount, data: result.rows });
+    if (req.query.cargoRef && result.rowCount === 0) {
+      throw buildError(REQUEST_NOT_AVAILABLE_MESSAGE, 404);
+    }
+    res.json({ success: true, count: result.rowCount, data: result.rows.map(toPublicApproval) });
   } catch (error) {
     next(error);
   }
@@ -198,14 +233,15 @@ const getApproval = async (req, res, next) => {
   try {
     const result = await db.query(
       `${approvalSelect}
-       WHERE ar.id = $1
+       WHERE (ar.id::text = $1 OR c.cargo_id = $1)
          AND c.is_deleted = FALSE
+       ORDER BY ar.created_at DESC, ar.id DESC
        LIMIT 1`,
-      [req.params.id]
+      [String(req.params.id)]
     );
-    if (result.rowCount === 0) throw buildError("Approval request not found.", 404);
+    if (result.rowCount === 0) throw buildError(REQUEST_NOT_AVAILABLE_MESSAGE, 404);
     assertApprovalAccess(req, result.rows[0]);
-    res.json({ success: true, data: result.rows[0] });
+    res.json({ success: true, data: toPublicApproval(result.rows[0]) });
   } catch (error) {
     next(error);
   }
@@ -228,12 +264,16 @@ const decideApproval = async (req, res, next, decision, options = {}) => {
               COALESCE(ar.assigned_to, ar.assigned_supervisor_id) AS assigned_to
        FROM approval_requests ar
        JOIN cargo c ON c.id = ar.cargo_id
-       WHERE ar.id = $1
+       WHERE (ar.id::text = $1 OR c.cargo_id = $1)
          AND c.is_deleted = FALSE
+       ORDER BY CASE WHEN ar.status = 'Pending' THEN 0 ELSE 1 END,
+                ar.created_at DESC,
+                ar.id DESC
+       LIMIT 1
        FOR UPDATE OF ar, c`,
-      [req.params.id]
+      [String(req.params.id)]
     );
-    if (approvalResult.rowCount === 0) throw buildError("Approval request not found.", 404);
+    if (approvalResult.rowCount === 0) throw buildError(REQUEST_NOT_AVAILABLE_MESSAGE, 404);
 
     const approval = approvalResult.rows[0];
     assertApprovalAccess(req, approval);
@@ -484,13 +524,31 @@ const decideApproval = async (req, res, next, decision, options = {}) => {
       );
     }
 
+    // Resolve matching pending notifications
+    const { resolveNotificationsByEntity } = require("../services/notificationService");
+    if (isRegistrationApproval) {
+      await resolveNotificationsByEntity({
+        relatedEntityType: "cargo",
+        relatedEntityId: approval.cargo_record_id,
+        notificationTypes: ["pending_approval"],
+        executor: client
+      });
+    } else if (approval.request_type === "PLACEMENT_OVERRIDE") {
+      await resolveNotificationsByEntity({
+        relatedEntityType: "cargo",
+        relatedEntityId: approval.cargo_record_id,
+        notificationTypes: ["placement_override"],
+        executor: client
+      });
+    }
+
     const result = await client.query(
       `${approvalSelect}
        WHERE ar.id = $1`,
       [approval.id]
     );
     await client.query("COMMIT");
-    res.json({ success: true, data: result.rows[0] });
+    res.json({ success: true, data: toPublicApproval(result.rows[0]) });
   } catch (error) {
     await client.query("ROLLBACK");
     next(error);
@@ -530,12 +588,16 @@ const requestCorrection = async (req, res, next) => {
               c.*
        FROM approval_requests ar
        JOIN cargo c ON c.id = ar.cargo_id
-       WHERE ar.id = $1
+       WHERE (ar.id::text = $1 OR c.cargo_id = $1)
          AND c.is_deleted = FALSE
+       ORDER BY CASE WHEN ar.status = 'Pending' THEN 0 ELSE 1 END,
+                ar.created_at DESC,
+                ar.id DESC
+       LIMIT 1
        FOR UPDATE OF ar, c`,
-      [req.params.id]
+      [String(req.params.id)]
     );
-    if (approvalResult.rowCount === 0) throw buildError("Approval request not found.", 404);
+    if (approvalResult.rowCount === 0) throw buildError(REQUEST_NOT_AVAILABLE_MESSAGE, 404);
 
     const approval = approvalResult.rows[0];
     assertApprovalAccess(req, approval);
@@ -627,12 +689,21 @@ const requestCorrection = async (req, res, next) => {
       client
     );
 
+    // Resolve matching pending approval notifications
+    const { resolveNotificationsByEntity } = require("../services/notificationService");
+    await resolveNotificationsByEntity({
+      relatedEntityType: "cargo",
+      relatedEntityId: approval.cargo_record_id,
+      notificationTypes: ["pending_approval"],
+      executor: client
+    });
+
     const result = await client.query(
       `${approvalSelect} WHERE ar.id = $1`,
       [approval.approval_id]
     );
     await client.query("COMMIT");
-    res.json({ success: true, data: result.rows[0] });
+    res.json({ success: true, data: toPublicApproval(result.rows[0]) });
   } catch (error) {
     await client.query("ROLLBACK");
     next(error);

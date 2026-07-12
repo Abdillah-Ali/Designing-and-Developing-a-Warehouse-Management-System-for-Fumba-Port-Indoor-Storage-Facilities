@@ -1,4 +1,5 @@
 const dotenv = require("dotenv");
+const crypto = require("node:crypto");
 const fs = require("fs");
 const { Client } = require("pg");
 const path = require("path");
@@ -13,6 +14,16 @@ const clientConfig = {
   user: process.env.DB_USER || "postgres",
   password: process.env.DB_PASSWORD,
   database: dbName
+};
+
+const generateNotificationReference = (createdAt = new Date()) => {
+  const year = new Date(createdAt || new Date()).getFullYear();
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let randomPart = "";
+  for (let index = 0; index < 6; index += 1) {
+    randomPart += chars[crypto.randomInt(chars.length)];
+  }
+  return `NTF-${year}-${randomPart}`;
 };
 
 const runUpdates = async () => {
@@ -543,6 +554,7 @@ const runUpdates = async () => {
     await client.query(`
       CREATE TABLE IF NOT EXISTS notifications (
         id SERIAL PRIMARY KEY,
+        public_reference VARCHAR(40),
         recipient_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
         recipient_role_id INTEGER REFERENCES roles(id) ON DELETE CASCADE,
         recipient_warehouse_id INTEGER REFERENCES warehouses(id) ON DELETE CASCADE,
@@ -555,6 +567,8 @@ const runUpdates = async () => {
         priority VARCHAR(20) NOT NULL DEFAULT 'normal',
         is_read BOOLEAN NOT NULL DEFAULT FALSE,
         read_at TIMESTAMP,
+        status VARCHAR(40) NOT NULL DEFAULT 'pending',
+        completed_at TIMESTAMP,
         created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
         created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         expires_at TIMESTAMP,
@@ -562,6 +576,66 @@ const runUpdates = async () => {
         archived_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
         metadata JSONB NOT NULL DEFAULT '{}'::jsonb
       );
+
+      ALTER TABLE notifications
+        ADD COLUMN IF NOT EXISTS public_reference VARCHAR(40);
+    `);
+
+    // Backfill existing notifications with secure references.
+    const selectRes = await client.query("SELECT id, created_at FROM notifications WHERE public_reference IS NULL");
+    console.log(`✔ Backfilling ${selectRes.rowCount} notifications with public references...`);
+    const generatedReferences = new Set();
+
+    for (const row of selectRes.rows) {
+      let success = false;
+      let attempts = 0;
+      while (!success && attempts < 5) {
+        attempts++;
+        const publicReference = generateNotificationReference(row.created_at);
+        if (generatedReferences.has(publicReference)) continue;
+        try {
+          await client.query("UPDATE notifications SET public_reference = $1 WHERE id = $2", [publicReference, row.id]);
+          generatedReferences.add(publicReference);
+          success = true;
+        } catch (err) {
+          if (
+            err.code === "23505"
+            && err.constraint === "notifications_public_reference_key"
+          ) {
+            continue;
+          }
+          throw err;
+        }
+      }
+      if (!success) {
+        throw new Error(`Failed to generate a unique public reference for notification ID ${row.id}`);
+      }
+    }
+
+    const nullReferenceCheck = await client.query(
+      "SELECT COUNT(*)::int AS count FROM notifications WHERE public_reference IS NULL"
+    );
+    if (nullReferenceCheck.rows[0]?.count > 0) {
+      throw new Error("Notification public reference backfill failed: NULL values remain.");
+    }
+
+    const duplicateReferenceCheck = await client.query(`
+      SELECT public_reference, COUNT(*)::int AS count
+      FROM notifications
+      GROUP BY public_reference
+      HAVING COUNT(*) > 1
+      LIMIT 1
+    `);
+    if (duplicateReferenceCheck.rowCount > 0) {
+      throw new Error(`Notification public reference backfill failed: duplicate reference ${duplicateReferenceCheck.rows[0].public_reference}.`);
+    }
+
+    // Apply public reference constraints, then lifecycle/archive columns and constraints.
+    await client.query(`
+      ALTER TABLE notifications ALTER COLUMN public_reference SET NOT NULL;
+
+      ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_public_reference_key;
+      ALTER TABLE notifications ADD CONSTRAINT notifications_public_reference_key UNIQUE (public_reference);
 
       ALTER TABLE notifications
         ADD COLUMN IF NOT EXISTS recipient_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -573,6 +647,8 @@ const runUpdates = async () => {
         ADD COLUMN IF NOT EXISTS priority VARCHAR(20) NOT NULL DEFAULT 'normal',
         ADD COLUMN IF NOT EXISTS is_read BOOLEAN NOT NULL DEFAULT FALSE,
         ADD COLUMN IF NOT EXISTS read_at TIMESTAMP,
+        ADD COLUMN IF NOT EXISTS status VARCHAR(40) NOT NULL DEFAULT 'pending',
+        ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP,
         ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
         ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP,
         ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP,
@@ -582,6 +658,12 @@ const runUpdates = async () => {
       ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_priority_check;
       ALTER TABLE notifications
         ADD CONSTRAINT notifications_priority_check CHECK (priority IN ('low', 'normal', 'high', 'urgent'));
+
+      ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_status_check;
+      ALTER TABLE notifications ADD CONSTRAINT notifications_status_check CHECK (status IN ('pending', 'completed', 'dismissed'));
+
+      ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_archived_by_fkey;
+      ALTER TABLE notifications ADD CONSTRAINT notifications_archived_by_fkey FOREIGN KEY (archived_by) REFERENCES users(id) ON DELETE SET NULL;
 
       CREATE INDEX IF NOT EXISTS idx_notifications_recipient_user
         ON notifications(recipient_user_id, is_read, created_at DESC);
@@ -593,7 +675,8 @@ const runUpdates = async () => {
         ON notifications(notification_type, priority, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_notifications_archived ON notifications(archived_at);
     `);
-    console.log("✔ Notifications table checked/added");
+
+    console.log("✔ Notifications table checked/added/backfilled");
 
     const warehouseConfigurationMigration = fs.readFileSync(
       path.join(__dirname, "migrations", "warehouse_configuration_srs.sql"),
@@ -601,6 +684,13 @@ const runUpdates = async () => {
     );
     await client.query(warehouseConfigurationMigration);
     console.log("✔ SRS warehouse configuration schema checked/applied");
+
+    const financeCustomsGateMigration = fs.readFileSync(
+      path.join(__dirname, "migrations", "finance_customs_gate_workflows.sql"),
+      "utf8"
+    );
+    await client.query(financeCustomsGateMigration);
+    console.log("✔ Finance, Customs, and Gate workflow schema checked/applied");
 
     await client.query("COMMIT");
     console.log("All database updates applied successfully!");

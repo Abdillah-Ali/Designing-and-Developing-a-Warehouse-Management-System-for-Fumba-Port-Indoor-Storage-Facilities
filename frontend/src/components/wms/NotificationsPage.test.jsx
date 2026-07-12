@@ -36,6 +36,13 @@ describe("NotificationsPage", () => {
     const fetchMock = vi.fn(async (input) => {
       const url = String(input);
 
+      if (url.endsWith("/notifications/summary")) {
+        return {
+          ok: true,
+          json: async () => ({ success: true, data: { active: 1, unread: 1, archived: 0 } })
+        };
+      }
+
       if (url.includes("/notifications?")) {
         return {
           ok: true,
@@ -82,7 +89,13 @@ describe("NotificationsPage", () => {
     renderPage();
 
     expect(await screen.findByText("Bin capacity alert")).toBeInTheDocument();
-    expect(screen.getByText("Create System Announcement")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Notifications" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create Announcement" })).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Announcement title")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create Announcement" }));
+
+    expect(await screen.findByText("Create System Announcement")).toBeInTheDocument();
     expect(screen.getByPlaceholderText("Announcement title")).toBeInTheDocument();
   });
 
@@ -94,6 +107,13 @@ describe("NotificationsPage", () => {
 
     vi.stubGlobal("fetch", vi.fn(async (input) => {
       const url = String(input);
+
+      if (url.endsWith("/notifications/summary")) {
+        return {
+          ok: true,
+          json: async () => ({ success: true, data: { active: 0, unread: 0, archived: 0 } })
+        };
+      }
 
       if (url.includes("/notifications?")) {
         return {
@@ -107,8 +127,83 @@ describe("NotificationsPage", () => {
 
     renderPage();
 
-    expect(await screen.findByText("No notifications found")).toBeInTheDocument();
+    expect(await screen.findByText("No notifications found.")).toBeInTheDocument();
     expect(screen.queryByText("Create System Announcement")).not.toBeInTheDocument();
+  });
+
+  it("shows archived notifications and restores them by public reference", async () => {
+    setStoredAuthToken(createUnsignedBrowserToken({
+      role: "Warehouse Staff",
+      exp: Math.floor(Date.now() / 1000) + 60
+    }));
+
+    let restored = false;
+    const archivedNotification = {
+      public_reference: "NTF-2026-ARCH1",
+      notification_type: "warehouse_alert",
+      title: "Archived cargo notice",
+      message: "Cargo notification was archived after completion.",
+      priority: "normal",
+      status: "dismissed",
+      is_read: true,
+      created_at: "2026-06-26T11:00:00.000Z",
+      archived_at: "2026-06-27T11:00:00.000Z"
+    };
+
+    const fetchMock = vi.fn(async (input, options = {}) => {
+      const url = String(input);
+
+      if (url.endsWith("/notifications/summary")) {
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            data: { active: restored ? 1 : 0, unread: 0, archived: restored ? 0 : 1 }
+          })
+        };
+      }
+
+      if (url.includes("/notifications/NTF-2026-ARCH1/restore") && options.method === "PATCH") {
+        restored = true;
+        return {
+          ok: true,
+          json: async () => ({ success: true, data: { ...archivedNotification, archived_at: null } })
+        };
+      }
+
+      if (url.includes("/notifications?")) {
+        const isArchivedQuery = url.includes("archived=true");
+        return {
+          ok: true,
+          json: async () => ({
+            success: true,
+            data: isArchivedQuery && !restored ? [archivedNotification] : []
+          })
+        };
+      }
+
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: /Archived/i }));
+    expect(await screen.findByText("Archived cargo notice")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("archived=true"),
+      expect.any(Object)
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Restore/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/notifications/NTF-2026-ARCH1/restore"),
+        expect.objectContaining({ method: "PATCH" })
+      );
+    });
+    expect(await screen.findByText("No archived notifications.")).toBeInTheDocument();
   });
 
   it("loads specific announcement users from backend role and warehouse filters", async () => {
@@ -119,6 +214,13 @@ describe("NotificationsPage", () => {
 
     const fetchMock = vi.fn(async (input) => {
       const url = String(input);
+
+      if (url.endsWith("/notifications/summary")) {
+        return {
+          ok: true,
+          json: async () => ({ success: true, data: { active: 0, unread: 0, archived: 0 } })
+        };
+      }
 
       if (url.includes("/notifications?")) {
         return {
@@ -162,6 +264,8 @@ describe("NotificationsPage", () => {
 
     renderPage();
 
+    expect(await screen.findByRole("button", { name: "Create Announcement" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Create Announcement" }));
     expect(await screen.findByText("Create System Announcement")).toBeInTheDocument();
     fireEvent.change(screen.getByDisplayValue("All roles"), { target: { value: "2" } });
     fireEvent.change(screen.getByDisplayValue("All warehouses"), { target: { value: "1" } });

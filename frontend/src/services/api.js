@@ -95,6 +95,26 @@ const request = async (path, options = {}) => {
   return payload;
 };
 
+const buildQuerySuffix = (params = {}) => {
+  const search = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null) return;
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        if (item !== undefined && item !== null) {
+          search.append(key, String(item));
+        }
+      });
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return query ? `?${query}` : "";
+};
+
 // Authentication endpoints
 export const login = async (username, password) => {
   let response;
@@ -148,9 +168,7 @@ export const createFirstSystemAdmin = (payload) => request("/bootstrap/create-ad
 });
 
 export const getCargo = (params = {}) => {
-  const search = new URLSearchParams(params);
-  const suffix = search.toString() ? `?${search.toString()}` : "";
-  return request(`/cargo${suffix}`);
+  return request(`/cargo${buildQuerySuffix(params)}`);
 };
 
 export const getCargoById = (id) => request(`/cargo/${encodeURIComponent(id)}`);
@@ -199,9 +217,7 @@ export const deleteCargo = (id, reason = "") => request(`/cargo/${encodeURICompo
 });
 
 export const getZones = (params = {}) => {
-  const search = new URLSearchParams(params);
-  const suffix = search.toString() ? `?${search.toString()}` : "";
-  return request(`/zones${suffix}`);
+  return request(`/zones${buildQuerySuffix(params)}`);
 };
 export const getZoneById = (id) => request(`/zones/${encodeURIComponent(id)}`);
 export const getRacks = (zoneId) => request(`/racks/by-zone/${encodeURIComponent(zoneId)}`);
@@ -212,9 +228,7 @@ export const getAllLevels = () => request("/levels");
 export const getLevelById = (id) => request(`/levels/${encodeURIComponent(id)}`);
 export const getBins = (levelId) => request(`/bins/by-level/${encodeURIComponent(levelId)}`);
 export const getAllBins = (params = {}) => {
-  const search = new URLSearchParams(params);
-  const suffix = search.toString() ? `?${search.toString()}` : "";
-  return request(`/bins${suffix}`);
+  return request(`/bins${buildQuerySuffix(params)}`);
 };
 export const getBinById = (id) => request(`/bins/${encodeURIComponent(id)}`);
 export const printBinBarcode = (id) => request(`/bins/${encodeURIComponent(id)}/print-barcode`, {
@@ -222,9 +236,7 @@ export const printBinBarcode = (id) => request(`/bins/${encodeURIComponent(id)}/
 });
 
 export const getUsers = (params = {}) => {
-  const search = new URLSearchParams(params);
-  const suffix = search.toString() ? `?${search.toString()}` : "";
-  return request(`/users${suffix}`);
+  return request(`/users${buildQuerySuffix(params)}`);
 };
 
 export const getUserById = (id) => request(`/users/${encodeURIComponent(id)}`);
@@ -272,15 +284,11 @@ export const getWarehouses = () => request("/warehouses");
 export const getShifts = () => request("/shifts");
 
 export const getAuditLogs = (params = {}) => {
-  const search = new URLSearchParams(params);
-  const suffix = search.toString() ? `?${search.toString()}` : "";
-  return request(`/audit-logs${suffix}`);
+  return request(`/audit-logs${buildQuerySuffix(params)}`);
 };
 
 export const getUserSessions = (params = {}) => {
-  const search = new URLSearchParams(params);
-  const suffix = search.toString() ? `?${search.toString()}` : "";
-  return request(`/user-sessions${suffix}`);
+  return request(`/user-sessions${buildQuerySuffix(params)}`);
 };
 
 export const validatePlacement = (payload, options = {}) => request("/placement/validate", {
@@ -302,19 +310,13 @@ export const updatePlacementSettings = (manualPlacementEnabled) => request("/pla
 export const getPlacementLogs = () => request("/placement/logs");
 export const getPlacementFailures = () => request("/placement/failures");
 export const getPlacementActivity = (params = {}) => {
-  const search = new URLSearchParams(params);
-  const suffix = search.toString() ? `?${search.toString()}` : "";
-  return request(`/placement/activity${suffix}`);
+  return request(`/placement/activity${buildQuerySuffix(params)}`);
 };
 export const getPlacementActivitySummary = (params = {}) => {
-  const search = new URLSearchParams(params);
-  const suffix = search.toString() ? `?${search.toString()}` : "";
-  return request(`/placement/activity/summary${suffix}`);
+  return request(`/placement/activity/summary${buildQuerySuffix(params)}`);
 };
 export const getCargoPlacementActivity = (id, params = {}) => {
-  const search = new URLSearchParams(params);
-  const suffix = search.toString() ? `?${search.toString()}` : "";
-  return request(`/cargo/${encodeURIComponent(id)}/placement-activity${suffix}`);
+  return request(`/cargo/${encodeURIComponent(id)}/placement-activity${buildQuerySuffix(params)}`);
 };
 export const requestPlacementOverride = (payload) => request("/placement/request-override", {
   method: "POST",
@@ -337,9 +339,7 @@ export const getSupervisorDashboard = () => request("/supervisor/dashboard");
 export const getSupervisorReviewHistory = () => request("/supervisor/my/review-history");
 export const getSupervisorReviewConfiguration = () => request("/supervisor/review-configuration");
 export const getSupervisorApprovals = (params = {}) => {
-  const search = new URLSearchParams(params);
-  const suffix = search.toString() ? `?${search.toString()}` : "";
-  return request(`/supervisor/approvals${suffix}`);
+  return request(`/supervisor/approvals${buildQuerySuffix(params)}`);
 };
 export const getSupervisorApproval = (id) => request(`/supervisor/approvals/${encodeURIComponent(id)}`);
 export const approveSupervisorApproval = (id, decisionNotes = "") => request(`/supervisor/approvals/${encodeURIComponent(id)}/approve`, {
@@ -373,9 +373,7 @@ export const requestDispatchAuthorization = (payload) => request("/dispatch/requ
   body: payload
 });
 export const getDispatchAuthorizationRequests = (params = {}) => {
-  const search = new URLSearchParams(params);
-  const suffix = search.toString() ? `?${search.toString()}` : "";
-  return request(`/dispatch/authorization-requests${suffix}`);
+  return request(`/dispatch/authorization-requests${buildQuerySuffix(params)}`);
 };
 export const approveDispatchAuthorization = (id, decisionNotes = "") => request(`/dispatch/authorization-requests/${encodeURIComponent(id)}/approve`, {
   method: "POST",
@@ -392,12 +390,12 @@ export const rejectDispatchAuthorization = (id, decisionNotes = "") => request(`
 
 // Notification endpoints
 export const getNotifications = (params = {}) => {
-  const search = new URLSearchParams(params);
-  const suffix = search.toString() ? `?${search.toString()}` : "";
-  return request(`/notifications${suffix}`);
+  return request(`/notifications${buildQuerySuffix(params)}`);
 };
 
 export const getUnreadNotificationCount = () => request("/notifications/unread-count");
+
+export const getNotificationSummary = () => request("/notifications/summary");
 
 export const markNotificationRead = (id) => request(`/notifications/${encodeURIComponent(id)}/read`, {
   method: "PATCH"
@@ -408,6 +406,10 @@ export const markAllNotificationsRead = () => request("/notifications/read-all",
 });
 
 export const archiveNotification = (id) => request(`/notifications/${encodeURIComponent(id)}/archive`, {
+  method: "PATCH"
+});
+
+export const restoreNotification = (id) => request(`/notifications/${encodeURIComponent(id)}/restore`, {
   method: "PATCH"
 });
 
@@ -546,9 +548,7 @@ export const updateWarehouseStatus = (id, status) => request(`/warehouses/${enco
 export const deleteWarehouse = (id) => request(`/warehouses/${encodeURIComponent(id)}`, { method: "DELETE" });
 
 export const getCapacityConfigurations = (params = {}) => {
-  const search = new URLSearchParams(params);
-  const suffix = search.toString() ? `?${search.toString()}` : "";
-  return request(`/capacity-configurations${suffix}`);
+  return request(`/capacity-configurations${buildQuerySuffix(params)}`);
 };
 
 export const updateCapacityConfiguration = (entityType, entityId, payload) => request(
@@ -564,4 +564,83 @@ export const getBinRules = () => request("/bin-rules");
 export const updateBinRule = (id, payload) => request(`/bin-rules/${encodeURIComponent(id)}`, {
   method: "PUT",
   body: payload
+});
+
+// Finance endpoints
+export const getFinanceDashboard = (params = {}) => request(`/finance/dashboard${buildQuerySuffix(params)}`);
+export const getFinanceCargoCharges = (params = {}) => request(`/finance/cargo-charges${buildQuerySuffix(params)}`);
+export const getFinanceInvoices = (params = {}) => request(`/finance/invoices${buildQuerySuffix(params)}`);
+export const getFinanceInvoice = (invoiceNumber) => request(`/finance/invoices/${encodeURIComponent(invoiceNumber)}`);
+export const generateFinanceDraftInvoice = (payload) => request("/finance/invoices/draft", {
+  method: "POST",
+  body: payload
+});
+export const issueFinanceInvoice = (invoiceNumber) => request(`/finance/invoices/${encodeURIComponent(invoiceNumber)}/issue`, {
+  method: "POST"
+});
+export const cancelFinanceInvoice = (invoiceNumber, reason) => request(`/finance/invoices/${encodeURIComponent(invoiceNumber)}/cancel`, {
+  method: "POST",
+  body: { reason }
+});
+export const getFinancePayments = (params = {}) => request(`/finance/payments${buildQuerySuffix(params)}`);
+export const recordFinancePayment = (payload) => request("/finance/payments", {
+  method: "POST",
+  body: payload
+});
+export const getFinanceTariffs = (params = {}) => request(`/finance/tariffs${buildQuerySuffix(params)}`);
+export const createFinanceTariff = (payload) => request("/finance/tariffs", {
+  method: "POST",
+  body: payload
+});
+export const updateFinanceTariff = (reference, payload) => request(`/finance/tariffs/${encodeURIComponent(reference)}`, {
+  method: "PUT",
+  body: payload
+});
+export const activateFinanceTariff = (reference) => request(`/finance/tariffs/${encodeURIComponent(reference)}/activate`, {
+  method: "POST",
+  body: { confirm: true }
+});
+export const deactivateFinanceTariff = (reference) => request(`/finance/tariffs/${encodeURIComponent(reference)}/deactivate`, {
+  method: "POST"
+});
+export const getFinanceReports = (params = {}) => request(`/finance/reports${buildQuerySuffix(params)}`);
+
+// Customs endpoints
+export const getCustomsDashboard = () => request("/customs/dashboard");
+export const getCustomsQueue = (params = {}) => request(`/customs/queue${buildQuerySuffix(params)}`);
+export const getCustomsRecords = (params = {}) => request(`/customs/records${buildQuerySuffix(params)}`);
+export const getCustomsCleared = (params = {}) => request(`/customs/cleared${buildQuerySuffix(params)}`);
+export const getCustomsHolds = (params = {}) => request(`/customs/holds${buildQuerySuffix(params)}`);
+export const getCustomsCargo = (cargoReference) => request(`/customs/cargo/${encodeURIComponent(cargoReference)}`);
+export const getCustomsHistory = (cargoReference) => request(`/customs/cargo/${encodeURIComponent(cargoReference)}/history`);
+export const startCustomsInspection = (cargoReference, payload = {}) => request(`/customs/cargo/${encodeURIComponent(cargoReference)}/start`, {
+  method: "POST",
+  body: payload
+});
+export const updateCustomsStatus = (cargoReference, payload) => request(`/customs/cargo/${encodeURIComponent(cargoReference)}/status`, {
+  method: "POST",
+  body: payload
+});
+
+// Gate endpoints
+export const getGateDashboard = () => request("/gate/dashboard");
+export const getGateReleaseQueue = (params = {}) => request(`/gate/release-queue${buildQuerySuffix(params)}`);
+export const getGateRecords = () => request("/gate/records");
+export const getGateEligibility = (cargoReference) => request(`/gate/cargo/${encodeURIComponent(cargoReference)}/eligibility`);
+export const confirmGateOut = (cargoReference, payload) => request(`/gate/cargo/${encodeURIComponent(cargoReference)}/gate-out`, {
+  method: "POST",
+  body: payload
+});
+export const getEmergencyReleaseRequests = () => request("/gate/emergency-requests");
+export const requestEmergencyRelease = (payload) => request("/gate/emergency-requests", {
+  method: "POST",
+  body: payload
+});
+export const approveEmergencyRelease = (reference, decisionNotes = "") => request(`/gate/emergency-requests/${encodeURIComponent(reference)}/approve`, {
+  method: "POST",
+  body: { decision_notes: decisionNotes }
+});
+export const rejectEmergencyRelease = (reference, decisionNotes = "") => request(`/gate/emergency-requests/${encodeURIComponent(reference)}/reject`, {
+  method: "POST",
+  body: { decision_notes: decisionNotes }
 });

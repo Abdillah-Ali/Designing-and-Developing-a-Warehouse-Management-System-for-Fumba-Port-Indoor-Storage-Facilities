@@ -22,6 +22,9 @@ const dispatchRoutes = require("./routes/dispatchRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 const profileRoutes = require("./routes/profileRoutes");
 const scannerRoutes = require("./routes/scannerRoutes");
+const financeRoutes = require("./routes/financeRoutes");
+const customsRoutes = require("./routes/customsRoutes");
+const gateRoutes = require("./routes/gateRoutes");
 const {
   errorHandler,
   notFoundHandler
@@ -129,6 +132,9 @@ app.use("/api/bin-rules", binRuleRoutes);
 app.use("/api/supervisor", supervisorRoutes);
 app.use("/api/dispatch", dispatchRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/finance", financeRoutes);
+app.use("/api/customs", customsRoutes);
+app.use("/api/gate", gateRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

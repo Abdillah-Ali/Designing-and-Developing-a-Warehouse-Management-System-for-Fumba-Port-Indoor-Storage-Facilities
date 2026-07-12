@@ -1,3 +1,4 @@
+const crypto = require("node:crypto");
 const db = require("../config/db");
 const { roleNames } = require("../config/systemConfig");
 const { writeAuditLog } = require("../models/adminModel");
@@ -9,11 +10,43 @@ const NOTIFICATION_TYPES = Object.freeze({
   APPROVAL_DECISION: "approval_decision",
   PLACEMENT_OVERRIDE: "placement_override",
   DISPATCH_REQUEST: "dispatch_request",
+  DISPATCH_UPDATE: "dispatch_update",
+  CUSTOMS_INSPECTION: "customs_inspection",
+  INVOICE_PENDING: "invoice_pending",
+  FINANCE_CHARGE_STARTED: "finance_charge_started",
+  FINANCE_PAYMENT_UPDATE: "finance_payment_update",
+  GATE_RELEASE_UPDATE: "gate_release_update",
   WAREHOUSE_ALERT: "warehouse_alert",
   SYSTEM_ANNOUNCEMENT: "system_announcement"
 });
 
 const PRIORITIES = new Set(["low", "normal", "high", "urgent"]);
+const ACTIONABLE_WORKFLOW_TYPES = new Set([
+  NOTIFICATION_TYPES.PENDING_APPROVAL,
+  NOTIFICATION_TYPES.CORRECTION_REQUEST,
+  NOTIFICATION_TYPES.PLACEMENT_OVERRIDE,
+  NOTIFICATION_TYPES.DISPATCH_REQUEST,
+  NOTIFICATION_TYPES.CUSTOMS_INSPECTION,
+  NOTIFICATION_TYPES.INVOICE_PENDING,
+  NOTIFICATION_TYPES.GATE_RELEASE_UPDATE
+]);
+
+const publicNotificationFields = `
+  n.public_reference,
+  n.notification_type,
+  n.title,
+  n.message,
+  n.related_module,
+  n.related_entity_type,
+  n.priority,
+  n.status,
+  n.completed_at,
+  n.is_read,
+  n.read_at,
+  n.created_at,
+  n.expires_at,
+  n.archived_at
+`;
 
 const normalizePriority = (priority) => {
   const value = String(priority || "normal").trim().toLowerCase();
@@ -47,7 +80,7 @@ const getStaffOwnerId = (cargo) => (
 
 const notificationSelect = `
   SELECT
-    n.*,
+    ${publicNotificationFields},
     recipient.full_name AS recipient_full_name,
     recipient.username AS recipient_username,
     target_role.role_name AS recipient_role_name,
@@ -55,6 +88,7 @@ const notificationSelect = `
     target_warehouse.warehouse_code AS recipient_warehouse_code,
     creator.full_name AS created_by_name,
     creator.username AS created_by_username,
+    related_cargo.cargo_id AS related_record_reference,
     related_cargo.cargo_id AS related_cargo_identifier,
     related_cargo.barcode AS related_cargo_barcode
   FROM notifications n
@@ -66,9 +100,13 @@ const notificationSelect = `
     AND n.related_entity_type = 'cargo'
 `;
 
-const addVisibleNotificationClauses = (auth, clauses, values, alias = "n") => {
-  clauses.push(`${alias}.archived_at IS NULL`);
-  clauses.push(`(${alias}.expires_at IS NULL OR ${alias}.expires_at > CURRENT_TIMESTAMP)`);
+const addVisibleNotificationClauses = (auth, clauses, values, alias = "n", options = {}) => {
+  if (!options.includeArchived) {
+    clauses.push(`${alias}.archived_at IS NULL`);
+  }
+  if (!options.includeExpired) {
+    clauses.push(`(${alias}.expires_at IS NULL OR ${alias}.expires_at > CURRENT_TIMESTAMP)`);
+  }
 
   values.push(auth?.userId || 0);
   const userParam = `$${values.length}`;
@@ -87,8 +125,23 @@ const addVisibleNotificationClauses = (auth, clauses, values, alias = "n") => {
   )`);
 };
 
-const buildFilterClauses = (filters, values, alias = "n") => {
+const isArchivedRequest = (filters = {}) => (
+  filters.archived === "true"
+  || filters.view === "archived"
+  || filters.status_view === "archived"
+);
+
+const getDateFilterColumn = (filters = {}, alias = "n", defaultDateField = "created_at") => {
+  const allowedDateFields = new Set(["created_at", "archived_at"]);
+  const dateField = allowedDateFields.has(filters.date_field)
+    ? filters.date_field
+    : defaultDateField;
+  return `${alias}.${dateField}`;
+};
+
+const buildFilterClauses = (filters, values, alias = "n", options = {}) => {
   const clauses = [];
+  const dateColumn = getDateFilterColumn(filters, alias, options.defaultDateField || "created_at");
 
   if (filters.unread === "true" || filters.unread_only === "true") {
     clauses.push(`${alias}.is_read = FALSE`);
@@ -110,6 +163,14 @@ const buildFilterClauses = (filters, values, alias = "n") => {
     clauses.push(`${alias}.priority = $${values.length}`);
   }
 
+  if (filters.status) {
+    const status = String(filters.status || "").trim().toLowerCase();
+    if (["pending", "completed", "dismissed"].includes(status)) {
+      values.push(status);
+      clauses.push(`${alias}.status = $${values.length}`);
+    }
+  }
+
   if (filters.related_module) {
     values.push(filters.related_module);
     clauses.push(`${alias}.related_module = $${values.length}`);
@@ -117,12 +178,12 @@ const buildFilterClauses = (filters, values, alias = "n") => {
 
   if (filters.date_from) {
     values.push(filters.date_from);
-    clauses.push(`${alias}.created_at >= $${values.length}::date`);
+    clauses.push(`${dateColumn} >= $${values.length}::date`);
   }
 
   if (filters.date_to) {
     values.push(filters.date_to);
-    clauses.push(`${alias}.created_at < ($${values.length}::date + INTERVAL '1 day')`);
+    clauses.push(`${dateColumn} < ($${values.length}::date + INTERVAL '1 day')`);
   }
 
   if (filters.search) {
@@ -137,11 +198,44 @@ const buildFilterClauses = (filters, values, alias = "n") => {
   return clauses;
 };
 
+const buildNotificationOrder = (filters = {}, archivedOnly = false) => {
+  const allowedSortFields = new Set(["archived_at", "created_at", "status"]);
+  const sortBy = allowedSortFields.has(filters.sort_by) ? filters.sort_by : "";
+  const direction = String(filters.sort_order || "").toLowerCase() === "asc" ? "ASC" : "DESC";
+
+  if (sortBy === "status") {
+    return `n.status ${direction}, n.created_at DESC, n.id DESC`;
+  }
+
+  if (sortBy === "created_at") {
+    return `n.created_at ${direction}, n.id DESC`;
+  }
+
+  if (sortBy === "archived_at") {
+    return `n.archived_at ${direction} NULLS LAST, n.created_at DESC, n.id DESC`;
+  }
+
+  if (archivedOnly) {
+    return "n.archived_at DESC NULLS LAST, n.created_at DESC, n.id DESC";
+  }
+
+  return "n.is_read ASC, n.created_at DESC, n.id DESC";
+};
+
 const listNotifications = async ({ auth, filters = {}, executor = db }) => {
   const values = [];
   const clauses = [];
-  addVisibleNotificationClauses(auth, clauses, values);
-  clauses.push(...buildFilterClauses(filters, values));
+  const archivedOnly = isArchivedRequest(filters);
+  addVisibleNotificationClauses(auth, clauses, values, "n", {
+    includeArchived: archivedOnly,
+    includeExpired: archivedOnly
+  });
+  if (archivedOnly) {
+    clauses.push("n.archived_at IS NOT NULL");
+  }
+  clauses.push(...buildFilterClauses(filters, values, "n", {
+    defaultDateField: archivedOnly ? "archived_at" : "created_at"
+  }));
 
   const whereClause = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const page = Math.max(Number(filters.page) || 1, 1);
@@ -156,7 +250,7 @@ const listNotifications = async ({ auth, filters = {}, executor = db }) => {
   const result = await executor.query(
     `${notificationSelect}
      ${whereClause}
-     ORDER BY n.is_read ASC, n.created_at DESC, n.id DESC
+     ORDER BY ${buildNotificationOrder(filters, archivedOnly)}
      LIMIT ${limit} OFFSET ${offset}`,
     values
   );
@@ -167,6 +261,40 @@ const listNotifications = async ({ auth, filters = {}, executor = db }) => {
     page,
     limit
   };
+};
+
+const getNotificationSummary = async ({ auth, executor = db }) => {
+  const countNotifications = async (buildClauses) => {
+    const values = [];
+    const clauses = [];
+    buildClauses(clauses, values);
+    const result = await executor.query(
+      `SELECT COUNT(*)::int AS count
+       FROM notifications n
+       WHERE ${clauses.join(" AND ")}`,
+      values
+    );
+    return result.rows[0]?.count || 0;
+  };
+
+  const [active, unread, archived] = await Promise.all([
+    countNotifications((clauses, values) => {
+      addVisibleNotificationClauses(auth, clauses, values);
+    }),
+    countNotifications((clauses, values) => {
+      clauses.push("n.is_read = FALSE");
+      addVisibleNotificationClauses(auth, clauses, values);
+    }),
+    countNotifications((clauses, values) => {
+      addVisibleNotificationClauses(auth, clauses, values, "n", {
+        includeArchived: true,
+        includeExpired: true
+      });
+      clauses.push("n.archived_at IS NOT NULL");
+    })
+  ]);
+
+  return { active, unread, archived };
 };
 
 const getUnreadCount = async ({ auth, executor = db }) => {
@@ -184,6 +312,16 @@ const getUnreadCount = async ({ auth, executor = db }) => {
   return result.rows[0]?.count || 0;
 };
 
+const generateNotificationReference = () => {
+  const year = new Date().getFullYear();
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let randomPart = "";
+  for (let i = 0; i < 6; i++) {
+    randomPart += chars[crypto.randomInt(chars.length)];
+  }
+  return `NTF-${year}-${randomPart}`;
+};
+
 const createNotification = async (payload, executor = db, options = {}) => {
   const title = cleanString(payload.title);
   const message = cleanString(payload.message);
@@ -191,42 +329,81 @@ const createNotification = async (payload, executor = db, options = {}) => {
     throw new Error("Notification title and message are required.");
   }
 
-  const result = await executor.query(
-    `INSERT INTO notifications (
-      recipient_user_id,
-      recipient_role_id,
-      recipient_warehouse_id,
-      notification_type,
-      title,
-      message,
-      related_module,
-      related_entity_type,
-      related_entity_id,
-      priority,
-      created_by,
-      expires_at,
-      metadata
-    )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
-    RETURNING *`,
-    [
-      readPositiveId(payload.recipient_user_id),
-      readPositiveId(payload.recipient_role_id),
-      readPositiveId(payload.recipient_warehouse_id),
-      cleanString(payload.notification_type) || NOTIFICATION_TYPES.SYSTEM_ANNOUNCEMENT,
-      title,
-      message,
-      cleanString(payload.related_module) || null,
-      cleanString(payload.related_entity_type) || null,
-      readPositiveId(payload.related_entity_id),
-      normalizePriority(payload.priority),
-      readPositiveId(payload.created_by),
-      cleanString(payload.expires_at) || null,
-      JSON.stringify(payload.metadata || {})
-    ]
-  );
+  const maxAttempts = 5;
+  let notification = null;
 
-  const notification = result.rows[0];
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const publicRef = generateNotificationReference();
+    try {
+      const result = await executor.query(
+        `INSERT INTO notifications (
+          public_reference,
+          recipient_user_id,
+          recipient_role_id,
+          recipient_warehouse_id,
+          notification_type,
+          title,
+          message,
+          related_module,
+          related_entity_type,
+          related_entity_id,
+          priority,
+          status,
+          created_by,
+          expires_at,
+          metadata
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13, $14::jsonb)
+        RETURNING
+          public_reference,
+          notification_type,
+          title,
+          message,
+          related_module,
+          related_entity_type,
+          priority,
+          status,
+          completed_at,
+          is_read,
+          read_at,
+          created_at,
+          expires_at,
+          archived_at`,
+        [
+          publicRef,
+          readPositiveId(payload.recipient_user_id),
+          readPositiveId(payload.recipient_role_id),
+          readPositiveId(payload.recipient_warehouse_id),
+          cleanString(payload.notification_type) || NOTIFICATION_TYPES.SYSTEM_ANNOUNCEMENT,
+          title,
+          message,
+          cleanString(payload.related_module) || null,
+          cleanString(payload.related_entity_type) || null,
+          readPositiveId(payload.related_entity_id),
+          normalizePriority(payload.priority),
+          readPositiveId(payload.created_by),
+          cleanString(payload.expires_at) || null,
+          JSON.stringify(payload.metadata || {})
+        ]
+      );
+      notification = result.rows[0];
+      break;
+    } catch (error) {
+      if (
+        error.code === "23505" &&
+        error.constraint === "notifications_public_reference_key" &&
+        attempt < maxAttempts - 1
+      ) {
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  if (!notification) {
+    throw new Error("Unable to generate a unique notification reference.");
+  }
+
   if (options.audit !== false) {
     await writeAuditLog(
       {
@@ -235,14 +412,9 @@ const createNotification = async (payload, executor = db, options = {}) => {
         module: "Notifications",
         description: `Created notification: ${title}.`,
         metadata: {
-          notification_id: notification.id,
+          public_reference: notification.public_reference,
           notification_type: notification.notification_type,
-          target_user_id: notification.recipient_user_id,
-          target_role_id: notification.recipient_role_id,
-          target_warehouse_id: notification.recipient_warehouse_id,
-          created_by: notification.created_by,
           related_entity_type: notification.related_entity_type,
-          related_entity_id: notification.related_entity_id,
           timestamp: notification.created_at
         }
       },
@@ -325,9 +497,9 @@ const createNotificationsForAudience = async (payload, audience = {}, executor =
   return notifications;
 };
 
-const markNotificationRead = async ({ auth, notificationId, executor = db }) => {
-  const values = [notificationId];
-  const clauses = ["n.id = $1"];
+const markNotificationRead = async ({ auth, publicRef, executor = db }) => {
+  const values = [publicRef];
+  const clauses = ["n.public_reference = $1"];
   addVisibleNotificationClauses(auth, clauses, values);
 
   const result = await executor.query(
@@ -335,7 +507,13 @@ const markNotificationRead = async ({ auth, notificationId, executor = db }) => 
      SET is_read = TRUE,
          read_at = COALESCE(read_at, CURRENT_TIMESTAMP)
      WHERE ${clauses.join(" AND ")}
-     RETURNING n.*`,
+     RETURNING
+       public_reference,
+       notification_type,
+       status,
+       completed_at,
+       is_read,
+       read_at`,
     values
   );
 
@@ -346,17 +524,10 @@ const markNotificationRead = async ({ auth, notificationId, executor = db }) => 
         user_id: auth?.userId || null,
         action: "READ_NOTIFICATION",
         module: "Notifications",
-        description: `Read notification ${notification.id}.`,
+        description: `Read notification ${publicRef}.`,
         metadata: {
-          notification_id: notification.id,
+          public_reference: publicRef,
           notification_type: notification.notification_type,
-          target_user_id: notification.recipient_user_id,
-          target_role_id: notification.recipient_role_id,
-          target_warehouse_id: notification.recipient_warehouse_id,
-          related_module: notification.related_module,
-          related_entity_type: notification.related_entity_type,
-          related_entity_id: notification.related_entity_id,
-          created_by: notification.created_by,
           timestamp: notification.read_at
         }
       },
@@ -378,15 +549,12 @@ const markAllNotificationsRead = async ({ auth, executor = db }) => {
          read_at = COALESCE(read_at, CURRENT_TIMESTAMP)
      WHERE ${clauses.join(" AND ")}
      RETURNING
-       n.id,
-       n.notification_type,
-       n.recipient_user_id,
-       n.recipient_role_id,
-       n.recipient_warehouse_id,
-       n.related_module,
-       n.related_entity_type,
-       n.related_entity_id,
-       n.created_by`,
+       public_reference,
+       notification_type,
+       status,
+       completed_at,
+       is_read,
+       read_at`,
     values
   );
 
@@ -397,19 +565,7 @@ const markAllNotificationsRead = async ({ auth, executor = db }) => {
       module: "Notifications",
       description: `Marked ${result.rowCount} notification(s) as read.`,
       metadata: {
-        notification_ids: result.rows.map((row) => row.id),
-        notification_types: result.rows.map((row) => row.notification_type),
-        notifications: result.rows.map((row) => ({
-          notification_id: row.id,
-          notification_type: row.notification_type,
-          target_user_id: row.recipient_user_id,
-          target_role_id: row.recipient_role_id,
-          target_warehouse_id: row.recipient_warehouse_id,
-          related_module: row.related_module,
-          related_entity_type: row.related_entity_type,
-          related_entity_id: row.related_entity_id,
-          created_by: row.created_by
-        })),
+        public_references: result.rows.map((row) => row.public_reference),
         timestamp: new Date().toISOString()
       }
     },
@@ -419,46 +575,151 @@ const markAllNotificationsRead = async ({ auth, executor = db }) => {
   return result.rows;
 };
 
-const archiveNotification = async ({ auth, notificationId, executor = db }) => {
-  const values = [notificationId, auth?.userId || null];
-  const clauses = ["n.id = $1"];
-  addVisibleNotificationClauses(auth, clauses, values);
+const archiveNotification = async ({ auth, publicRef, executor = db }) => {
+  const selectValues = [publicRef];
+  const selectClauses = ["n.public_reference = $1"];
+  addVisibleNotificationClauses(auth, selectClauses, selectValues, "n", { includeArchived: true });
+  const selectRes = await executor.query(
+    `SELECT public_reference, notification_type, status
+     FROM notifications n
+     WHERE ${selectClauses.join(" AND ")}
+     LIMIT 1`,
+    selectValues
+  );
+  const notification = selectRes.rows[0];
+  if (!notification) return null;
+
+  if (ACTIONABLE_WORKFLOW_TYPES.has(notification.notification_type) && notification.status === "pending") {
+    throw buildError("Complete the required workflow action before archiving this notification.", 409);
+  }
+
+  const values = [auth?.userId || null, publicRef];
+  const clauses = ["n.public_reference = $2"];
+  addVisibleNotificationClauses(auth, clauses, values, "n", { includeArchived: true });
 
   const result = await executor.query(
     `UPDATE notifications n
-     SET archived_at = CURRENT_TIMESTAMP,
-         archived_by = $2
+     SET archived_at = COALESCE(archived_at, CURRENT_TIMESTAMP),
+         archived_by = COALESCE(archived_by, $1),
+         status = CASE
+           WHEN status = 'pending' THEN 'dismissed'
+           WHEN status = 'completed' THEN 'completed'
+           ELSE 'dismissed'
+         END
      WHERE ${clauses.join(" AND ")}
-     RETURNING n.*`,
+     RETURNING
+       public_reference,
+       notification_type,
+       status,
+       completed_at,
+       is_read,
+       read_at,
+       archived_at`,
     values
   );
 
-  const notification = result.rows[0] || null;
-  if (notification) {
+  const updatedNotification = result.rows[0] || null;
+  if (updatedNotification) {
     await writeAuditLog(
       {
         user_id: auth?.userId || null,
         action: "ARCHIVE_NOTIFICATION",
         module: "Notifications",
-        description: `Archived notification ${notification.id}.`,
+        description: `Archived notification ${publicRef}.`,
         metadata: {
-          notification_id: notification.id,
-          notification_type: notification.notification_type,
-          target_user_id: notification.recipient_user_id,
-          target_role_id: notification.recipient_role_id,
-          target_warehouse_id: notification.recipient_warehouse_id,
-          related_module: notification.related_module,
-          related_entity_type: notification.related_entity_type,
-          related_entity_id: notification.related_entity_id,
-          created_by: notification.created_by,
-          timestamp: notification.archived_at
+          public_reference: publicRef,
+          status: updatedNotification.status,
+          timestamp: updatedNotification.archived_at
         }
       },
       executor
     );
   }
 
-  return notification;
+  return updatedNotification;
+};
+
+const restoreNotification = async ({ auth, publicRef, executor = db }) => {
+  const values = [publicRef];
+  const clauses = ["n.public_reference = $1", "n.archived_at IS NOT NULL"];
+  addVisibleNotificationClauses(auth, clauses, values, "n", {
+    includeArchived: true,
+    includeExpired: true
+  });
+
+  const result = await executor.query(
+    `UPDATE notifications n
+     SET archived_at = NULL,
+         archived_by = NULL
+     WHERE ${clauses.join(" AND ")}
+     RETURNING
+       public_reference,
+       notification_type,
+       title,
+       message,
+       related_module,
+       related_entity_type,
+       priority,
+       status,
+       completed_at,
+       is_read,
+       read_at,
+       created_at,
+       expires_at,
+       archived_at`,
+    values
+  );
+
+  const restoredNotification = result.rows[0] || null;
+  if (restoredNotification) {
+    await writeAuditLog(
+      {
+        user_id: auth?.userId || null,
+        action: "RESTORE_NOTIFICATION",
+        module: "Notifications",
+        description: `Restored notification ${publicRef}.`,
+        metadata: {
+          public_reference: publicRef,
+          status: restoredNotification.status,
+          timestamp: new Date().toISOString()
+        }
+      },
+      executor
+    );
+  }
+
+  return restoredNotification;
+};
+
+const resolveNotificationsByEntity = async ({ relatedEntityType, relatedEntityId, notificationTypes, executor = db }) => {
+  if (!Array.isArray(notificationTypes) || notificationTypes.length === 0) {
+    return { rowCount: 0, rows: [] };
+  }
+
+  const result = await executor.query(
+    `UPDATE notifications
+     SET status = 'completed',
+         completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
+         is_read = TRUE,
+         read_at = COALESCE(read_at, CURRENT_TIMESTAMP)
+     WHERE status = 'pending'
+       AND related_entity_type = $1
+       AND related_entity_id = $2
+       AND notification_type = ANY($3::text[])
+     RETURNING
+       public_reference,
+       notification_type,
+       status,
+       completed_at,
+       is_read,
+       read_at`,
+    [relatedEntityType, relatedEntityId, notificationTypes]
+  );
+
+  return {
+    rowCount: result.rowCount,
+    rows: result.rows
+  };
 };
 
 const createSystemAnnouncement = async (payload, auth, executor = db) => {
@@ -501,15 +762,11 @@ const createSystemAnnouncement = async (payload, auth, executor = db) => {
       action: "CREATE_SYSTEM_ANNOUNCEMENT",
       module: "Notifications",
       description: `Created system announcement: ${cleanString(payload.title)}.`,
-      metadata: {
-        notification_ids: notifications.map((notification) => notification.id),
-        notification_type: NOTIFICATION_TYPES.SYSTEM_ANNOUNCEMENT,
-        target_role_id: roleId,
-        target_warehouse_id: warehouseId,
-        target_user_id: userId,
-        created_by: auth?.userId || null,
-        timestamp: new Date().toISOString()
-      }
+        metadata: {
+          public_references: notifications.map((notification) => notification.public_reference),
+          notification_type: NOTIFICATION_TYPES.SYSTEM_ANNOUNCEMENT,
+          timestamp: new Date().toISOString()
+        }
     },
     executor
   );
@@ -531,6 +788,51 @@ const notifyCargoRegistrationPending = async ({ cargo, approvalRequestId, actorI
       metadata: { approval_request_id: approvalRequestId || null }
     },
     { roleName: roleNames.warehouseSupervisor, warehouseId: cargo.warehouse_id || cargo.warehouse_id_at_registration },
+    executor,
+    { actorId: actorId || null, fallbackBroadTarget: true }
+  )
+);
+
+const notifyFinanceChargeStarted = async ({ cargo, actorId }, executor = db) => (
+  createNotificationsForAudience(
+    {
+      notification_type: NOTIFICATION_TYPES.FINANCE_CHARGE_STARTED,
+      title: `Cargo registered and charging started: ${cargo.cargo_id}`,
+      message: `Storage charging started from registration time for ${cargo.cargo_id}.`,
+      related_module: "Billing and Payment",
+      related_entity_type: "cargo",
+      related_entity_id: cargo.id,
+      priority: "normal",
+      created_by: actorId || null,
+      metadata: {
+        cargo_identifier: cargo.cargo_id,
+        charge_start_at: cargo.charge_start_at || cargo.created_at,
+        deep_link: `/finance/cargo-charges?search=${encodeURIComponent(cargo.cargo_id)}`
+      }
+    },
+    { roleName: roleNames.financeOfficer },
+    executor,
+    { actorId: actorId || null, fallbackBroadTarget: true }
+  )
+);
+
+const notifyCustomsAwaitingInspection = async ({ cargo, actorId }, executor = db) => (
+  createNotificationsForAudience(
+    {
+      notification_type: NOTIFICATION_TYPES.CUSTOMS_INSPECTION,
+      title: `Cargo awaiting customs inspection: ${cargo.cargo_id}`,
+      message: `Cargo ${cargo.cargo_id} is registered and available for customs processing.`,
+      related_module: "Customs Management",
+      related_entity_type: "cargo",
+      related_entity_id: cargo.id,
+      priority: "normal",
+      created_by: actorId || null,
+      metadata: {
+        cargo_identifier: cargo.cargo_id,
+        deep_link: `/customs/inspection-queue?search=${encodeURIComponent(cargo.cargo_id)}`
+      }
+    },
+    { roleName: roleNames.customsOfficer },
     executor,
     { actorId: actorId || null, fallbackBroadTarget: true }
   )
@@ -674,7 +976,7 @@ const notifyRegistrationDecision = async ({ cargo, approvalRequestId, decision, 
 const notifyPlacementOverridePending = async ({ cargo, bin, approvalRequestId, actorId }, executor = db) => (
   createNotificationsForAudience(
     {
-      notification_type: NOTIFICATION_TYPES.PENDING_APPROVAL,
+      notification_type: NOTIFICATION_TYPES.PLACEMENT_OVERRIDE,
       title: "Placement override pending approval",
       message: `Placement override request pending approval${cargo?.cargo_id ? ` for ${cargo.cargo_id}` : ""}.`,
       related_module: "Cargo Placement",
@@ -699,7 +1001,7 @@ const notifyPlacementOverrideDecision = async ({ cargo, approval, decision, note
   if (!requesterId) return [];
   return createNotificationsForAudience(
     {
-      notification_type: NOTIFICATION_TYPES.PLACEMENT_OVERRIDE,
+      notification_type: NOTIFICATION_TYPES.APPROVAL_DECISION,
       title: decision === "Approved" ? "Placement override approved" : "Placement override rejected",
       message: notes || `${decision} placement override request${cargo?.cargo_id ? ` for ${cargo.cargo_id}` : ""}.`,
       related_module: "Cargo Placement",
@@ -739,7 +1041,7 @@ const notifyDispatchSubmitted = async ({ cargo, dispatchRequestId, requesterId, 
   if (requesterId) {
     notifications.push(...await createNotificationsForAudience(
       {
-        notification_type: NOTIFICATION_TYPES.DISPATCH_REQUEST,
+        notification_type: NOTIFICATION_TYPES.DISPATCH_UPDATE,
         title: "Dispatch request submitted",
         message: `Dispatch request submitted for ${cargo.cargo_id}.`,
         related_module: "Dispatch Operations",
@@ -760,10 +1062,11 @@ const notifyDispatchSubmitted = async ({ cargo, dispatchRequestId, requesterId, 
 
 const notifyDispatchDecision = async ({ cargo, dispatchRequest, decision, notes, actorId }, executor = db) => {
   const requesterId = readPositiveId(dispatchRequest?.requested_by);
-  if (!requesterId) return [];
-  return createNotificationsForAudience(
+  const notifications = [];
+  if (requesterId) {
+    notifications.push(...await createNotificationsForAudience(
     {
-      notification_type: NOTIFICATION_TYPES.DISPATCH_REQUEST,
+      notification_type: NOTIFICATION_TYPES.DISPATCH_UPDATE,
       title: decision === "Approved" ? "Dispatch request approved" : "Dispatch request rejected",
       message: notes || `Dispatch request ${decision.toLowerCase()} for ${cargo.cargo_id}.`,
       related_module: "Dispatch Operations",
@@ -779,8 +1082,105 @@ const notifyDispatchDecision = async ({ cargo, dispatchRequest, decision, notes,
     { userIds: [requesterId] },
     executor,
     { actorId: actorId || null }
-  );
+    ));
+  }
+
+  if (decision === "Approved") {
+    notifications.push(...await createNotificationsForAudience(
+      {
+        notification_type: NOTIFICATION_TYPES.GATE_RELEASE_UPDATE,
+        title: `Cargo approved for gate release: ${cargo.cargo_id}`,
+        message: `Dispatch was approved for ${cargo.cargo_id}. Validate customs and payment before release.`,
+        related_module: "Dispatch and Gate",
+        related_entity_type: "cargo",
+        related_entity_id: cargo.id || dispatchRequest?.cargo_record_id || null,
+        priority: "high",
+        created_by: actorId || null,
+        metadata: {
+          dispatch_request_id: dispatchRequest?.id || null,
+          cargo_identifier: cargo.cargo_id,
+          deep_link: `/gate/release-queue?search=${encodeURIComponent(cargo.cargo_id)}`
+        }
+      },
+      { roleName: roleNames.gateOfficer },
+      executor,
+      { actorId: actorId || null, fallbackBroadTarget: true }
+    ));
+  }
+
+  return notifications;
 };
+
+const notifyGateReleaseBlocked = async ({ cargo, outstandingAmount, blockedRequirements = [], actorId }, executor = db) => {
+  const financeNotifications = await createNotificationsForAudience(
+    {
+      notification_type: NOTIFICATION_TYPES.FINANCE_PAYMENT_UPDATE,
+      title: `Dispatch blocked by unpaid charges: ${cargo.cargo_id}`,
+      message: `Gate release for ${cargo.cargo_id} is blocked. Outstanding balance: ${outstandingAmount || "0.00"}.`,
+      related_module: "Billing and Payment",
+      related_entity_type: "cargo",
+      related_entity_id: cargo.id,
+      priority: "high",
+      created_by: actorId || null,
+      metadata: {
+        cargo_identifier: cargo.cargo_id,
+        outstanding_amount: outstandingAmount || "0.00",
+        blocked_requirements: blockedRequirements,
+        deep_link: `/finance/cargo-charges?search=${encodeURIComponent(cargo.cargo_id)}`
+      }
+    },
+    { roleName: roleNames.financeOfficer },
+    executor,
+    { actorId: actorId || null, fallbackBroadTarget: true }
+  );
+
+  const gateNotifications = await createNotificationsForAudience(
+    {
+      notification_type: NOTIFICATION_TYPES.GATE_RELEASE_UPDATE,
+      title: `Release blocked: ${cargo.cargo_id}`,
+      message: `Release for ${cargo.cargo_id} is blocked. Finance confirmation is required.`,
+      related_module: "Dispatch and Gate",
+      related_entity_type: "cargo",
+      related_entity_id: cargo.id,
+      priority: "high",
+      created_by: actorId || null,
+      metadata: {
+        cargo_identifier: cargo.cargo_id,
+        outstanding_amount: outstandingAmount || "0.00",
+        blocked_requirements: blockedRequirements,
+        deep_link: `/gate/release-queue?search=${encodeURIComponent(cargo.cargo_id)}`
+      }
+    },
+    { roleName: roleNames.gateOfficer },
+    executor,
+    { actorId: actorId || null, fallbackBroadTarget: true }
+  );
+
+  return [...financeNotifications, ...gateNotifications];
+};
+
+const notifyEmergencyReleaseCompleted = async ({ cargo, outstandingAmount, actorId }, executor = db) => (
+  createNotificationsForAudience(
+    {
+      notification_type: NOTIFICATION_TYPES.FINANCE_PAYMENT_UPDATE,
+      title: `Emergency release completed with balance: ${cargo.cargo_id}`,
+      message: `Emergency release completed for ${cargo.cargo_id}. Outstanding balance remains ${outstandingAmount || "0.00"}.`,
+      related_module: "Billing and Payment",
+      related_entity_type: "cargo",
+      related_entity_id: cargo.id,
+      priority: "urgent",
+      created_by: actorId || null,
+      metadata: {
+        cargo_identifier: cargo.cargo_id,
+        outstanding_amount: outstandingAmount || "0.00",
+        deep_link: `/finance/cargo-charges?search=${encodeURIComponent(cargo.cargo_id)}`
+      }
+    },
+    { roleName: roleNames.financeOfficer },
+    executor,
+    { actorId: actorId || null, fallbackBroadTarget: true }
+  )
+);
 
 const notifyWarehouseAlert = async ({ title, message, warehouseId, relatedEntityType, relatedEntityId, priority = "high", metadata = {}, actorId = null }, executor = db) => {
   const supervisors = await createNotificationsForAudience(
@@ -823,6 +1223,7 @@ const notifyWarehouseAlert = async ({ title, message, warehouseId, relatedEntity
 };
 
 module.exports = {
+  ACTIONABLE_WORKFLOW_TYPES,
   NOTIFICATION_TYPES,
   PRIORITIES,
   addVisibleNotificationClauses,
@@ -831,15 +1232,23 @@ module.exports = {
   createNotificationsForAudience,
   createSystemAnnouncement,
   getRoleIdByName,
+  getNotificationSummary,
   getUnreadCount,
   listNotifications,
   markAllNotificationsRead,
   markNotificationRead,
+  resolveNotificationsByEntity,
+  restoreNotification,
+  generateNotificationReference,
+  notifyCustomsAwaitingInspection,
   notifyCargoRegistrationPending,
   notifyCorrectionRequested,
+  notifyEmergencyReleaseCompleted,
+  notifyFinanceChargeStarted,
   notifyPendingReviewEscalations,
   notifyDispatchDecision,
   notifyDispatchSubmitted,
+  notifyGateReleaseBlocked,
   notifyPlacementOverrideDecision,
   notifyPlacementOverridePending,
   notifyRegistrationDecision,

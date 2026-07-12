@@ -1,0 +1,629 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Navigate, NavLink, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
+import {
+  BarChart3,
+  Bell,
+  CreditCard,
+  FileText,
+  LayoutDashboard,
+  LogOut,
+  PackageSearch,
+  Plus,
+  ReceiptText,
+  Save,
+  Settings2,
+  UserCircle2
+} from "lucide-react";
+import { HeaderActions } from "@/components/wms/HeaderActions";
+import { NotificationsPage } from "@/components/wms/NotificationsPage";
+import { AccountProfilePage } from "@/components/wms/ProfilePage";
+import {
+  DataTable,
+  ErrorState,
+  OperationalStatCard,
+  PageHeader,
+  SectionCard,
+  StatusBadge
+} from "@/components/wms/OperationalUi";
+import { cn } from "@/lib/utils";
+import { formatDateTime, getErrorMessage, statusTone } from "@/lib/wms-operational";
+import {
+  activateFinanceTariff,
+  cancelFinanceInvoice,
+  createFinanceTariff,
+  generateFinanceDraftInvoice,
+  getFinanceCargoCharges,
+  getFinanceDashboard,
+  getFinanceInvoices,
+  getFinancePayments,
+  getFinanceReports,
+  getFinanceTariffs,
+  issueFinanceInvoice,
+  logout,
+  recordFinancePayment
+} from "@/services/api";
+
+const inputClass = "h-9 w-full rounded border border-input bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring";
+
+const navigation = [
+  { label: "Dashboard", icon: LayoutDashboard, to: "/finance" },
+  { label: "Cargo Charges", icon: PackageSearch, to: "/finance/cargo-charges" },
+  { label: "Invoices", icon: ReceiptText, to: "/finance/invoices" },
+  { label: "Payments", icon: CreditCard, to: "/finance/payments" },
+  { label: "Tariff Configuration", icon: Settings2, to: "/finance/tariffs" },
+  { label: "Financial Reports", icon: BarChart3, to: "/finance/reports" },
+  { label: "Notifications", icon: Bell, to: "/finance/notifications" },
+  { label: "Profile", icon: UserCircle2, to: "/finance/profile" }
+];
+
+function formatMoney(value, currency = "TZS") {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return `${currency} 0.00`;
+  return `${currency} ${number.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function useLoad(loader, dependencyKey = "") {
+  const [state, setState] = useState({ data: null, rows: [], loading: true, error: "" });
+  const loaderRef = useRef(loader);
+
+  useEffect(() => {
+    loaderRef.current = loader;
+  }, [loader]);
+
+  const load = useCallback(async () => {
+    setState((current) => ({ ...current, loading: true, error: "" }));
+    try {
+      const response = await loaderRef.current();
+      setState({
+        data: response.data || null,
+        rows: response.data || [],
+        loading: false,
+        error: ""
+      });
+    } catch (error) {
+      setState({ data: null, rows: [], loading: false, error: getErrorMessage(error) });
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load, dependencyKey]);
+
+  return { ...state, refresh: load };
+}
+
+function FinanceSidebar() {
+  const navigate = useNavigate();
+  return (
+    <aside className="flex h-full w-64 shrink-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
+      <div className="border-b border-sidebar-border px-4 py-4">
+        <div className="text-[10px] uppercase tracking-widest text-sidebar-foreground/60">Finance Officer</div>
+        <div className="mt-1 text-sm font-semibold">Billing Console</div>
+      </div>
+      <nav className="flex-1 overflow-auto py-2">
+        {navigation.map((item) => (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            end={item.to === "/finance"}
+            className={({ isActive }) => cn(
+              "relative flex items-center gap-3 px-4 py-2.5 text-sm transition hover:bg-sidebar-accent",
+              isActive && "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+            )}
+          >
+            <item.icon className="h-4 w-4" />
+            <span>{item.label}</span>
+          </NavLink>
+        ))}
+      </nav>
+      <div className="border-t border-sidebar-border p-3">
+        <button
+          type="button"
+          onClick={async () => {
+            await logout();
+            navigate("/");
+          }}
+          className="flex w-full items-center justify-center gap-2 rounded border border-sidebar-border bg-sidebar-accent px-3 py-2 text-xs font-semibold"
+        >
+          <LogOut className="h-3.5 w-3.5" />
+          Exit
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function FinanceLayout({ children }) {
+  return (
+    <div className="flex h-screen flex-col overflow-hidden bg-background">
+      <header className="flex h-14 items-center justify-between bg-header px-5 text-header-foreground shadow-sm">
+        <div>
+          <div className="text-base font-semibold">Fumba Port WMS</div>
+          <div className="text-[11px] text-white/75">Finance Operations</div>
+        </div>
+        <HeaderActions />
+      </header>
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <FinanceSidebar />
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{children}</main>
+      </div>
+    </div>
+  );
+}
+
+function DashboardPage() {
+  const dashboard = useLoad(() => getFinanceDashboard(), "finance-dashboard");
+  const metrics = dashboard.data?.metrics || {};
+  return (
+    <>
+      <PageHeader eyebrow="Finance" title="Finance Dashboard" description="Live charging, invoice, payment, and outstanding balance overview." />
+      <div className="flex-1 overflow-auto p-4">
+        {dashboard.error && <ErrorState message={dashboard.error} />}
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <OperationalStatCard title="Accumulating Charges" icon={PackageSearch} loading={dashboard.loading} value={metrics.accumulating_charges} emptyTitle="No active charges" tone="info" />
+          <OperationalStatCard title="Draft Invoices" icon={FileText} loading={dashboard.loading} value={metrics.draft_invoices} emptyTitle="No draft invoices" tone="warning" />
+          <OperationalStatCard title="Partially Paid" icon={CreditCard} loading={dashboard.loading} value={metrics.partially_paid_invoices} emptyTitle="No partial payments" tone="warning" />
+          <OperationalStatCard title="Paid Invoices" icon={ReceiptText} loading={dashboard.loading} value={metrics.paid_invoices} emptyTitle="No paid invoices" tone="success" />
+        </div>
+        <div className="mt-3 grid gap-3 xl:grid-cols-3">
+          <SectionCard title="Financial Totals" icon={BarChart3}>
+            <div className="grid gap-2 text-xs">
+              <ReadonlyValue label="Total Invoiced" value={formatMoney(metrics.total_invoiced_amount)} />
+              <ReadonlyValue label="Total Received" value={formatMoney(metrics.total_amount_received)} />
+              <ReadonlyValue label="Outstanding Balance" value={formatMoney(metrics.outstanding_balance)} />
+              <ReadonlyValue label="Uninvoiced Accrued" value={formatMoney(metrics.uninvoiced_accrued_charges)} />
+            </div>
+          </SectionCard>
+          <SectionCard title="Recent Payments" icon={CreditCard} className="xl:col-span-2">
+            <DataTable
+              loading={dashboard.loading}
+              rows={dashboard.data?.recent_payments || []}
+              emptyTitle="No recent payments"
+              columns={[
+                { key: "payment_reference", label: "Payment Ref", className: "font-mono font-semibold" },
+                { key: "invoice_number", label: "Invoice", className: "font-mono" },
+                { key: "cargo_reference", label: "Cargo", className: "font-mono" },
+                { key: "amount", label: "Amount", render: (row) => formatMoney(row.amount) },
+                { key: "bank_name", label: "Bank" },
+                { key: "payment_date", label: "Payment Date", render: (row) => formatDateTime(row.payment_date) }
+              ]}
+            />
+          </SectionCard>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function ReadonlyValue({ label, value }) {
+  return (
+    <div className="rounded border border-border bg-muted/20 p-3">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-1 text-sm font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function CargoChargesPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [filters, setFilters] = useState({
+    search: searchParams.get("search") || "",
+    cargo_type: "",
+    approval_status: "",
+    placement_status: "",
+    customs_status: "",
+    billing_status: "",
+    page: 1
+  });
+  const [message, setMessage] = useState("");
+  const key = JSON.stringify(filters);
+  const charges = useLoad(() => getFinanceCargoCharges({ ...filters, limit: 25 }), key);
+
+  useEffect(() => {
+    const value = searchParams.get("search") || "";
+    if (value && value !== filters.search) {
+      setFilters((current) => ({ ...current, search: value, page: 1 }));
+    }
+  }, [filters.search, searchParams]);
+
+  const updateFilter = (keyName, value) => {
+    setFilters((current) => ({ ...current, [keyName]: value, page: 1 }));
+    if (keyName === "search") {
+      const next = new URLSearchParams(searchParams);
+      value ? next.set("search", value) : next.delete("search");
+      setSearchParams(next, { replace: true });
+    }
+  };
+
+  const draftInvoice = async (cargoReference) => {
+    setMessage("");
+    try {
+      const response = await generateFinanceDraftInvoice({ cargo_reference: cargoReference });
+      setMessage(`Draft invoice ${response.data.invoice_number} generated for ${cargoReference}.`);
+      await charges.refresh();
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    }
+  };
+
+  return (
+    <>
+      <PageHeader eyebrow="Finance" title="Cargo Charges" description="All registered cargo, including unapproved and unplaced cargo, with dynamic backend charge calculations." />
+      <div className="flex-1 overflow-auto p-4">
+        <SectionCard title="Search and Filters" icon={PackageSearch}>
+          <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+            <FormField label="Search">
+              <input className={inputClass} value={filters.search} onChange={(event) => updateFilter("search", event.target.value)} placeholder="Cargo ref, barcode, consignee" />
+            </FormField>
+            <FormField label="Cargo Type">
+              <input className={inputClass} value={filters.cargo_type} onChange={(event) => updateFilter("cargo_type", event.target.value)} placeholder="All cargo types" />
+            </FormField>
+            <SelectField label="Approval" value={filters.approval_status} onChange={(value) => updateFilter("approval_status", value)} options={["", "Pending Review", "Approved", "Correction Required", "Rejected"]} />
+            <SelectField label="Placement" value={filters.placement_status} onChange={(value) => updateFilter("placement_status", value)} options={["", "Unplaced", "Placed", "Relocated", "Dispatched"]} />
+            <SelectField label="Customs" value={filters.customs_status} onChange={(value) => updateFilter("customs_status", value)} options={["", "Pending Inspection", "Inspection In Progress", "Documents Required", "On Hold", "Cleared", "Rejected"]} />
+            <SelectField label="Billing" value={filters.billing_status} onChange={(value) => updateFilter("billing_status", value)} options={["", "Unbilled", "Outstanding", "Partially Paid", "Fully Paid", "Released With Balance"]} />
+          </div>
+        </SectionCard>
+        {message && <div className="mt-3 rounded border border-info/30 bg-info/10 px-3 py-2 text-xs font-semibold text-info">{message}</div>}
+        <div className="mt-3">
+          <SectionCard title="Dynamic Cargo Charges" icon={ReceiptText}>
+            <DataTable
+              loading={charges.loading}
+              error={charges.error}
+              rows={charges.data?.data || charges.rows || []}
+              emptyTitle="No cargo charge records found"
+              columns={[
+                { key: "cargo_reference", label: "Cargo Ref", className: "font-mono font-semibold" },
+                { key: "cargo_type", label: "Type" },
+                { key: "owner_information", label: "Owner" },
+                { key: "registration_date", label: "Registered", render: (row) => formatDateTime(row.registration_date) },
+                { key: "approval_status", label: "Approval", render: (row) => <StatusBadge tone={statusTone(row.approval_status)}>{row.approval_status}</StatusBadge> },
+                { key: "placement_status", label: "Placement", render: (row) => <StatusBadge tone={statusTone(row.placement_status)}>{row.placement_status}</StatusBadge> },
+                { key: "customs_status", label: "Customs", render: (row) => <StatusBadge tone={statusTone(row.customs_status)}>{row.customs_status}</StatusBadge> },
+                { key: "billable_days", label: "Days" },
+                { key: "current_accrued_charge", label: "Accrued", render: (row) => formatMoney(row.current_accrued_charge) },
+                { key: "invoiced_amount", label: "Invoiced", render: (row) => formatMoney(row.invoiced_amount) },
+                { key: "paid_amount", label: "Paid", render: (row) => formatMoney(row.paid_amount) },
+                { key: "outstanding_amount", label: "Outstanding", render: (row) => formatMoney(row.outstanding_amount) },
+                { key: "billing_status", label: "Billing", render: (row) => <StatusBadge tone={statusTone(row.billing_status)}>{row.billing_status}</StatusBadge> },
+                {
+                  key: "actions",
+                  label: "Actions",
+                  render: (row) => (
+                    <button type="button" onClick={() => draftInvoice(row.cargo_reference)} className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground">
+                      Draft Invoice
+                    </button>
+                  )
+                }
+              ]}
+            />
+          </SectionCard>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function FormField({ label, children }) {
+  return (
+    <label className="space-y-1.5 text-xs font-semibold">
+      {label}
+      {children}
+    </label>
+  );
+}
+
+function SelectField({ label, value, onChange, options }) {
+  return (
+    <FormField label={label}>
+      <select className={inputClass} value={value} onChange={(event) => onChange(event.target.value)}>
+        {options.map((option) => (
+          <option key={option || "all"} value={option}>{option || "All"}</option>
+        ))}
+      </select>
+    </FormField>
+  );
+}
+
+function InvoicesPage() {
+  const [status, setStatus] = useState("");
+  const [message, setMessage] = useState("");
+  const invoices = useLoad(() => getFinanceInvoices({ status, limit: 100 }), status);
+
+  const act = async (action, invoiceNumber) => {
+    setMessage("");
+    try {
+      if (action === "issue") await issueFinanceInvoice(invoiceNumber);
+      if (action === "cancel") {
+        const reason = window.prompt("Enter cancellation reason");
+        if (!reason) return;
+        await cancelFinanceInvoice(invoiceNumber, reason);
+      }
+      setMessage(`${invoiceNumber} updated.`);
+      await invoices.refresh();
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    }
+  };
+
+  return (
+    <>
+      <PageHeader eyebrow="Finance" title="Invoices" description="Preview, issue, cancel unpaid invoices, and continue payment workflows." />
+      <div className="flex-1 overflow-auto p-4">
+        <SectionCard title="Invoice Filter" icon={FileText}>
+          <div className="w-56">
+            <SelectField label="Status" value={status} onChange={setStatus} options={["", "Draft", "Issued", "Partially Paid", "Paid", "Overdue", "Cancelled"]} />
+          </div>
+        </SectionCard>
+        {message && <div className="mt-3 rounded border border-info/30 bg-info/10 px-3 py-2 text-xs font-semibold text-info">{message}</div>}
+        <div className="mt-3">
+          <SectionCard title="Invoices" icon={ReceiptText}>
+            <DataTable
+              loading={invoices.loading}
+              error={invoices.error}
+              rows={invoices.rows || []}
+              emptyTitle="No invoices found"
+              columns={[
+                { key: "invoice_number", label: "Invoice", className: "font-mono font-semibold" },
+                { key: "cargo_reference", label: "Cargo", className: "font-mono" },
+                { key: "owner_information", label: "Owner" },
+                { key: "status", label: "Status", render: (row) => <StatusBadge tone={statusTone(row.status)}>{row.status}</StatusBadge> },
+                { key: "payment_status", label: "Payment", render: (row) => <StatusBadge tone={statusTone(row.payment_status)}>{row.payment_status}</StatusBadge> },
+                { key: "billable_days", label: "Days" },
+                { key: "total_amount", label: "Total", render: (row) => formatMoney(row.total_amount, row.currency) },
+                { key: "amount_paid", label: "Paid", render: (row) => formatMoney(row.amount_paid, row.currency) },
+                { key: "outstanding_balance", label: "Outstanding", render: (row) => formatMoney(row.outstanding_balance, row.currency) },
+                { key: "created_at", label: "Created", render: (row) => formatDateTime(row.created_at) },
+                {
+                  key: "actions",
+                  label: "Actions",
+                  render: (row) => (
+                    <div className="flex gap-1">
+                      {row.status === "Draft" && <button type="button" onClick={() => act("issue", row.invoice_number)} className="rounded bg-success px-2 py-1 text-[11px] font-semibold text-success-foreground">Issue</button>}
+                      {["Draft", "Issued"].includes(row.status) && <button type="button" onClick={() => act("cancel", row.invoice_number)} className="rounded border border-destructive/30 bg-destructive/10 px-2 py-1 text-[11px] font-semibold text-destructive">Cancel</button>}
+                    </div>
+                  )
+                }
+              ]}
+            />
+          </SectionCard>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function PaymentsPage() {
+  const payments = useLoad(() => getFinancePayments(), "payments");
+  const [form, setForm] = useState({
+    invoice_number: "",
+    amount: "",
+    bank_name: "",
+    bank_reference: "",
+    payment_date: "",
+    notes: ""
+  });
+  const [message, setMessage] = useState("");
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setMessage("");
+    try {
+      await recordFinancePayment(form);
+      setForm({ invoice_number: "", amount: "", bank_name: "", bank_reference: "", payment_date: "", notes: "" });
+      setMessage("Payment recorded and confirmed.");
+      await payments.refresh();
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    }
+  };
+
+  return (
+    <>
+      <PageHeader eyebrow="Finance" title="Payments" description="Record and confirm bank-based partial or full payments." />
+      <div className="flex-1 overflow-auto p-4">
+        <SectionCard title="Record Payment" icon={CreditCard}>
+          <form className="grid gap-3 md:grid-cols-3" onSubmit={submit}>
+            {["invoice_number", "amount", "bank_name", "bank_reference", "payment_date"].map((field) => (
+              <FormField key={field} label={field.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase())}>
+                <input
+                  className={inputClass}
+                  type={field === "payment_date" ? "datetime-local" : field === "amount" ? "number" : "text"}
+                  min={field === "amount" ? "0.01" : undefined}
+                  step={field === "amount" ? "0.01" : undefined}
+                  value={form[field]}
+                  onChange={(event) => setForm((current) => ({ ...current, [field]: event.target.value }))}
+                  required
+                />
+              </FormField>
+            ))}
+            <FormField label="Notes">
+              <input className={inputClass} value={form.notes} onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))} />
+            </FormField>
+            <div className="flex items-end">
+              <button type="submit" className="inline-flex h-9 items-center gap-2 rounded bg-info px-3 text-xs font-semibold text-info-foreground">
+                <Save className="h-4 w-4" />
+                Confirm Payment
+              </button>
+            </div>
+          </form>
+        </SectionCard>
+        {message && <div className="mt-3 rounded border border-info/30 bg-info/10 px-3 py-2 text-xs font-semibold text-info">{message}</div>}
+        <div className="mt-3">
+          <SectionCard title="Recent Payments" icon={CreditCard}>
+            <DataTable
+              loading={payments.loading}
+              error={payments.error}
+              rows={payments.rows || []}
+              emptyTitle="No payments recorded"
+              columns={[
+                { key: "payment_reference", label: "Payment Ref", className: "font-mono font-semibold" },
+                { key: "invoice_number", label: "Invoice", className: "font-mono" },
+                { key: "cargo_reference", label: "Cargo", className: "font-mono" },
+                { key: "amount", label: "Amount", render: (row) => formatMoney(row.amount) },
+                { key: "bank_name", label: "Bank" },
+                { key: "bank_reference", label: "Bank Ref" },
+                { key: "payment_date", label: "Payment Date", render: (row) => formatDateTime(row.payment_date) }
+              ]}
+            />
+          </SectionCard>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function TariffsPage() {
+  const tariffs = useLoad(() => getFinanceTariffs(), "tariffs");
+  const [message, setMessage] = useState("");
+  const [form, setForm] = useState({
+    tariff_name: "",
+    cargo_type: "",
+    charging_unit: "per_cargo_per_day",
+    daily_rate: "",
+    currency: "TZS",
+    minimum_billable_days: 1,
+    grace_period_days: 0,
+    penalty_type: "none",
+    penalty_rate: 0,
+    fixed_penalty: 0,
+    effective_from: "",
+    effective_to: "",
+    notes: ""
+  });
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setMessage("");
+    try {
+      await createFinanceTariff(form);
+      setMessage("Tariff version created.");
+      await tariffs.refresh();
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    }
+  };
+
+  const activate = async (reference) => {
+    setMessage("");
+    try {
+      await activateFinanceTariff(reference);
+      setMessage(`${reference} activated.`);
+      await tariffs.refresh();
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    }
+  };
+
+  return (
+    <>
+      <PageHeader eyebrow="Finance" title="Tariff Configuration" description="Create versioned storage tariffs without granting unrelated system settings access." />
+      <div className="flex-1 overflow-auto p-4">
+        <SectionCard title="New Tariff Version" icon={Plus}>
+          <form className="grid gap-3 md:grid-cols-3 xl:grid-cols-4" onSubmit={submit}>
+            <FormInput label="Tariff Name" value={form.tariff_name} onChange={(value) => setForm((current) => ({ ...current, tariff_name: value }))} required />
+            <FormInput label="Cargo Type" value={form.cargo_type} onChange={(value) => setForm((current) => ({ ...current, cargo_type: value }))} required />
+            <SelectField label="Charging Unit" value={form.charging_unit} onChange={(value) => setForm((current) => ({ ...current, charging_unit: value }))} options={["per_cargo_per_day", "per_kilogram_per_day", "per_tonne_per_day", "per_cubic_metre_per_day", "fixed_daily_charge"]} />
+            <FormInput label="Daily Rate" type="number" value={form.daily_rate} onChange={(value) => setForm((current) => ({ ...current, daily_rate: value }))} required />
+            <FormInput label="Currency" value={form.currency} onChange={(value) => setForm((current) => ({ ...current, currency: value.toUpperCase() }))} required />
+            <FormInput label="Minimum Days" type="number" value={form.minimum_billable_days} onChange={(value) => setForm((current) => ({ ...current, minimum_billable_days: value }))} />
+            <FormInput label="Grace Days" type="number" value={form.grace_period_days} onChange={(value) => setForm((current) => ({ ...current, grace_period_days: value }))} />
+            <SelectField label="Penalty Type" value={form.penalty_type} onChange={(value) => setForm((current) => ({ ...current, penalty_type: value }))} options={["none", "percentage", "fixed"]} />
+            <FormInput label="Penalty Rate" type="number" value={form.penalty_rate} onChange={(value) => setForm((current) => ({ ...current, penalty_rate: value }))} />
+            <FormInput label="Fixed Penalty" type="number" value={form.fixed_penalty} onChange={(value) => setForm((current) => ({ ...current, fixed_penalty: value }))} />
+            <FormInput label="Effective From" type="datetime-local" value={form.effective_from} onChange={(value) => setForm((current) => ({ ...current, effective_from: value }))} required />
+            <FormInput label="Effective To" type="datetime-local" value={form.effective_to} onChange={(value) => setForm((current) => ({ ...current, effective_to: value }))} />
+            <FormInput label="Notes" value={form.notes} onChange={(value) => setForm((current) => ({ ...current, notes: value }))} />
+            <div className="flex items-end">
+              <button type="submit" className="inline-flex h-9 items-center gap-2 rounded bg-info px-3 text-xs font-semibold text-info-foreground">
+                <Save className="h-4 w-4" />
+                Create Tariff
+              </button>
+            </div>
+          </form>
+        </SectionCard>
+        {message && <div className="mt-3 rounded border border-info/30 bg-info/10 px-3 py-2 text-xs font-semibold text-info">{message}</div>}
+        <div className="mt-3">
+          <SectionCard title="Tariff Versions" icon={Settings2}>
+            <DataTable
+              loading={tariffs.loading}
+              error={tariffs.error}
+              rows={tariffs.rows || []}
+              emptyTitle="No tariffs configured"
+              columns={[
+                { key: "tariff_version_reference", label: "Version Ref", className: "font-mono font-semibold" },
+                { key: "tariff_name", label: "Name" },
+                { key: "cargo_type", label: "Cargo Type" },
+                { key: "charging_unit", label: "Unit" },
+                { key: "daily_rate", label: "Daily Rate", render: (row) => formatMoney(row.daily_rate, row.currency) },
+                { key: "minimum_billable_days", label: "Min Days" },
+                { key: "effective_from", label: "Effective From", render: (row) => formatDateTime(row.effective_from) },
+                { key: "effective_to", label: "Effective To", render: (row) => formatDateTime(row.effective_to) },
+                { key: "is_active", label: "Status", render: (row) => <StatusBadge tone={row.is_active ? "success" : "muted"}>{row.is_active ? "Active" : "Inactive"}</StatusBadge> },
+                { key: "actions", label: "Actions", render: (row) => !row.is_active && <button type="button" onClick={() => activate(row.tariff_version_reference)} className="rounded bg-success px-2 py-1 text-[11px] font-semibold text-success-foreground">Activate</button> }
+              ]}
+            />
+          </SectionCard>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function FormInput({ label, value, onChange, type = "text", required = false }) {
+  return (
+    <FormField label={label}>
+      <input className={inputClass} type={type} value={value} required={required} min={type === "number" ? "0" : undefined} step={type === "number" ? "0.01" : undefined} onChange={(event) => onChange(event.target.value)} />
+    </FormField>
+  );
+}
+
+function ReportsPage() {
+  const reports = useLoad(() => getFinanceReports(), "reports");
+  return (
+    <>
+      <PageHeader eyebrow="Finance" title="Financial Reports" description="Revenue by date range and charges grouped by cargo type." />
+      <div className="flex-1 overflow-auto p-4">
+        <div className="grid gap-3 xl:grid-cols-2">
+          <SectionCard title="Revenue By Date" icon={BarChart3}>
+            <DataTable loading={reports.loading} error={reports.error} rows={reports.data?.revenue_by_date || []} emptyTitle="No revenue data" columns={[
+              { key: "date", label: "Date", render: (row) => formatDateTime(row.date) },
+              { key: "amount", label: "Revenue", render: (row) => formatMoney(row.amount) }
+            ]} />
+          </SectionCard>
+          <SectionCard title="Charges By Cargo Type" icon={PackageSearch}>
+            <DataTable loading={reports.loading} error={reports.error} rows={reports.data?.charges_by_cargo_type || []} emptyTitle="No charge data" columns={[
+              { key: "cargo_type", label: "Cargo Type" },
+              { key: "amount", label: "Charges", render: (row) => formatMoney(row.amount) }
+            ]} />
+          </SectionCard>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function ProfilePage() {
+  return <AccountProfilePage title="Finance Officer Profile" description="Your authenticated finance account details." />;
+}
+
+function FinancePortal() {
+  return (
+    <FinanceLayout>
+      <Routes>
+        <Route index element={<DashboardPage />} />
+        <Route path="dashboard" element={<DashboardPage />} />
+        <Route path="cargo-charges" element={<CargoChargesPage />} />
+        <Route path="invoices" element={<InvoicesPage />} />
+        <Route path="payments" element={<PaymentsPage />} />
+        <Route path="tariffs" element={<TariffsPage />} />
+        <Route path="reports" element={<ReportsPage />} />
+        <Route path="notifications" element={<NotificationsPage />} />
+        <Route path="profile" element={<ProfilePage />} />
+        <Route path="*" element={<Navigate to="/finance" replace />} />
+      </Routes>
+    </FinanceLayout>
+  );
+}
+
+export default FinancePortal;

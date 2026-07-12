@@ -6,6 +6,9 @@ const PORTAL_ROLES = Object.freeze({
   SYSTEM_ADMIN: "system-admin",
   WAREHOUSE_STAFF: "warehouse-staff",
   WAREHOUSE_SUPERVISOR: "warehouse-supervisor",
+  FINANCE_OFFICER: "finance-officer",
+  CUSTOMS_OFFICER: "customs-officer",
+  GATE_OFFICER: "gate-officer",
   SCANNER: "scanner"
 });
 
@@ -19,12 +22,67 @@ const roleAliases = Object.freeze({
   "warehouse-supervisor": PORTAL_ROLES.WAREHOUSE_SUPERVISOR,
   "warehouse supervisor": PORTAL_ROLES.WAREHOUSE_SUPERVISOR,
   "supervisor": PORTAL_ROLES.WAREHOUSE_SUPERVISOR,
+  "finance-officer": PORTAL_ROLES.FINANCE_OFFICER,
+  "finance officer": PORTAL_ROLES.FINANCE_OFFICER,
+  "billing officer": PORTAL_ROLES.FINANCE_OFFICER,
+  "customs-officer": PORTAL_ROLES.CUSTOMS_OFFICER,
+  "customs officer": PORTAL_ROLES.CUSTOMS_OFFICER,
+  "gate-officer": PORTAL_ROLES.GATE_OFFICER,
+  "gate officer": PORTAL_ROLES.GATE_OFFICER,
   "scanner": PORTAL_ROLES.SCANNER,
   [roleNames.systemAdmin.toLowerCase()]: PORTAL_ROLES.SYSTEM_ADMIN,
   [roleNames.warehouseStaff.toLowerCase()]: PORTAL_ROLES.WAREHOUSE_STAFF,
   [roleNames.warehouseSupervisor.toLowerCase()]: PORTAL_ROLES.WAREHOUSE_SUPERVISOR,
+  [roleNames.financeOfficer.toLowerCase()]: PORTAL_ROLES.FINANCE_OFFICER,
+  [roleNames.customsOfficer.toLowerCase()]: PORTAL_ROLES.CUSTOMS_OFFICER,
+  [roleNames.gateOfficer.toLowerCase()]: PORTAL_ROLES.GATE_OFFICER,
   [roleNames.scanner.toLowerCase()]: PORTAL_ROLES.SCANNER
 });
+
+const rolePermissionKeys = Object.freeze({
+  [PORTAL_ROLES.SYSTEM_ADMIN]: Object.freeze(["*"]),
+  [PORTAL_ROLES.FINANCE_OFFICER]: Object.freeze([
+    "finance.dashboard.view",
+    "finance.charges.view",
+    "finance.invoices.create",
+    "finance.invoices.issue",
+    "finance.invoices.view",
+    "finance.invoices.cancel",
+    "finance.payments.record",
+    "finance.payments.confirm",
+    "finance.reports.view",
+    "finance.tariffs.view",
+    "finance.tariffs.create",
+    "finance.tariffs.update",
+    "finance.tariffs.activate"
+  ]),
+  [PORTAL_ROLES.CUSTOMS_OFFICER]: Object.freeze([
+    "customs.dashboard.view",
+    "customs.cargo.view",
+    "customs.inspections.create",
+    "customs.inspections.update",
+    "customs.clearance.update",
+    "customs.history.view"
+  ]),
+  [PORTAL_ROLES.GATE_OFFICER]: Object.freeze([
+    "gate.dashboard.view",
+    "gate.release_queue.view",
+    "gate.release.validate",
+    "gate.gate_out.confirm",
+    "gate.emergency_release.request",
+    "gate.history.view"
+  ]),
+  [PORTAL_ROLES.WAREHOUSE_SUPERVISOR]: Object.freeze([
+    "gate.history.view",
+    "gate.emergency_release.approve"
+  ])
+});
+
+const hasPermission = (authOrRole, permissionKey) => {
+  const role = typeof authOrRole === "string" ? normalizeRole(authOrRole) : normalizeRole(authOrRole?.role);
+  const permissions = rolePermissionKeys[role] || [];
+  return permissions.includes("*") || permissions.includes(permissionKey);
+};
 
 const portalPermissions = Object.freeze({
   [PORTAL_ROLES.SYSTEM_ADMIN]: Object.freeze([
@@ -69,7 +127,9 @@ const portalPermissions = Object.freeze({
     { methods: ["GET"], pattern: /^\/supervisor\/placement-monitoring$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/placement-summary$/ },
     { methods: ["GET"], pattern: /^\/dispatch\/authorization-requests$/ },
-    { methods: ["POST"], pattern: /^\/dispatch\/authorization-requests\/[^/]+\/complete$/ },
+    { methods: ["GET", "POST", "PUT"], pattern: /^\/finance(?:\/.*)?$/ },
+    { methods: ["GET", "POST"], pattern: /^\/customs(?:\/.*)?$/ },
+    { methods: ["GET", "POST"], pattern: /^\/gate(?:\/.*)?$/ },
     { methods: ["GET", "POST"], pattern: /^\/users$/ },
     { methods: ["POST"], pattern: /^\/users\/scanners$/ },
     { methods: ["GET", "PUT", "DELETE"], pattern: /^\/users\/[^/]+$/ },
@@ -118,7 +178,6 @@ const portalPermissions = Object.freeze({
     { methods: ["POST"], pattern: /^\/placement\/request-override$/ },
     { methods: ["POST"], pattern: /^\/dispatch\/request-authorization$/ },
     { methods: ["GET"], pattern: /^\/dispatch\/authorization-requests$/ },
-    { methods: ["POST"], pattern: /^\/dispatch\/authorization-requests\/[^/]+\/complete$/ },
     { methods: ["GET", "PATCH", "DELETE"], pattern: /^\/notifications(?:\/.*)?$/ }
   ]),
   [PORTAL_ROLES.WAREHOUSE_SUPERVISOR]: Object.freeze([
@@ -150,7 +209,44 @@ const portalPermissions = Object.freeze({
     { methods: ["GET"], pattern: /^\/dispatch\/authorization-requests$/ },
     { methods: ["POST"], pattern: /^\/dispatch\/authorization-requests\/[^/]+\/approve$/ },
     { methods: ["POST"], pattern: /^\/dispatch\/authorization-requests\/[^/]+\/reject$/ },
+    { methods: ["GET"], pattern: /^\/gate\/emergency-requests$/ },
+    { methods: ["POST"], pattern: /^\/gate\/emergency-requests\/[^/]+\/(?:approve|reject)$/ },
     { methods: ["GET", "PATCH", "DELETE"], pattern: /^\/notifications(?:\/.*)?$/ },
+  ])
+  ,
+  [PORTAL_ROLES.FINANCE_OFFICER]: Object.freeze([
+    { methods: ["GET"], pattern: /^\/finance\/dashboard$/ },
+    { methods: ["GET"], pattern: /^\/finance\/cargo-charges$/ },
+    { methods: ["GET"], pattern: /^\/finance\/invoices(?:\/[^/]+)?$/ },
+    { methods: ["POST"], pattern: /^\/finance\/invoices\/draft$/ },
+    { methods: ["POST"], pattern: /^\/finance\/invoices\/[^/]+\/(?:issue|cancel)$/ },
+    { methods: ["GET", "POST"], pattern: /^\/finance\/payments$/ },
+    { methods: ["GET", "POST"], pattern: /^\/finance\/tariffs$/ },
+    { methods: ["PUT"], pattern: /^\/finance\/tariffs\/[^/]+$/ },
+    { methods: ["POST"], pattern: /^\/finance\/tariffs\/[^/]+\/(?:activate|deactivate)$/ },
+    { methods: ["GET"], pattern: /^\/finance\/reports$/ },
+    { methods: ["GET", "PATCH", "DELETE"], pattern: /^\/notifications(?:\/.*)?$/ },
+    { methods: ["GET"], pattern: /^\/profile$/ },
+    { methods: ["PATCH"], pattern: /^\/profile(?:\/change-password)?$/ }
+  ]),
+  [PORTAL_ROLES.CUSTOMS_OFFICER]: Object.freeze([
+    { methods: ["GET"], pattern: /^\/customs\/dashboard$/ },
+    { methods: ["GET"], pattern: /^\/customs\/(?:queue|records|cleared|holds)$/ },
+    { methods: ["GET"], pattern: /^\/customs\/cargo\/[^/]+(?:\/history)?$/ },
+    { methods: ["POST"], pattern: /^\/customs\/cargo\/[^/]+\/(?:start|status)$/ },
+    { methods: ["GET", "PATCH", "DELETE"], pattern: /^\/notifications(?:\/.*)?$/ },
+    { methods: ["GET"], pattern: /^\/profile$/ },
+    { methods: ["PATCH"], pattern: /^\/profile(?:\/change-password)?$/ }
+  ]),
+  [PORTAL_ROLES.GATE_OFFICER]: Object.freeze([
+    { methods: ["GET"], pattern: /^\/gate\/dashboard$/ },
+    { methods: ["GET"], pattern: /^\/gate\/(?:release-queue|records)$/ },
+    { methods: ["GET"], pattern: /^\/gate\/cargo\/[^/]+\/eligibility$/ },
+    { methods: ["POST"], pattern: /^\/gate\/cargo\/[^/]+\/gate-out$/ },
+    { methods: ["GET", "POST"], pattern: /^\/gate\/emergency-requests$/ },
+    { methods: ["GET", "PATCH", "DELETE"], pattern: /^\/notifications(?:\/.*)?$/ },
+    { methods: ["GET"], pattern: /^\/profile$/ },
+    { methods: ["PATCH"], pattern: /^\/profile(?:\/change-password)?$/ }
   ])
 });
 
@@ -442,6 +538,26 @@ const requireRole = (...roles) => {
   };
 };
 
+const requirePermission = (permissionKey) => (req, res, next) => {
+  if (!req.auth) {
+    res.status(401).json({
+      success: false,
+      message: "A valid signed-in session is required for this API request."
+    });
+    return;
+  }
+
+  if (!hasPermission(req.auth, permissionKey)) {
+    res.status(403).json({
+      success: false,
+      message: "This action requires a permission that your portal role does not have."
+    });
+    return;
+  }
+
+  next();
+};
+
 const requireNonScanner = (req, res, next) => {
   if (req.auth?.role === PORTAL_ROLES.SCANNER) {
     res.status(403).json({
@@ -457,9 +573,11 @@ const requireNonScanner = (req, res, next) => {
 module.exports = {
   PORTAL_ROLES,
   canAccessRoute,
+  hasPermission,
   normalizeRole,
   optionalAuthContext,
   requireAuthenticated,
+  requirePermission,
   requireNonScanner,
   requirePortalAccess,
   requireRole

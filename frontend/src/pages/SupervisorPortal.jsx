@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Navigate, NavLink, Route, Routes, useNavigate } from "react-router-dom";
+import { Navigate, NavLink, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Activity,
   AlertTriangle,
@@ -46,6 +46,7 @@ import {
 } from "@/lib/wms-operational";
 import {
   approveDispatchAuthorization,
+  approveEmergencyRelease,
   approveSupervisorApproval,
   getAllBins,
   getAllLevels,
@@ -53,6 +54,7 @@ import {
   getCargo,
   getCargoById,
   getDispatchAuthorizationRequests,
+  getEmergencyReleaseRequests,
   getSupervisorApprovals,
   getSupervisorDashboard,
   getSupervisorReviewHistory,
@@ -60,6 +62,7 @@ import {
   getZones,
   logout,
   rejectDispatchAuthorization,
+  rejectEmergencyRelease,
   rejectSupervisorApproval,
   requestSupervisorCorrection
 } from "@/services/api";
@@ -93,7 +96,8 @@ const navigation = [
     icon: Truck,
     children: [
       { label: "Dispatch Requests", icon: ClipboardCheck, to: "/supervisor/dispatch/requests" },
-      { label: "Approved Dispatch", icon: CheckCircle2, to: "/supervisor/dispatch/approved" }
+      { label: "Approved Dispatch", icon: CheckCircle2, to: "/supervisor/dispatch/approved" },
+      { label: "Emergency Releases", icon: AlertTriangle, to: "/supervisor/dispatch/emergency-releases" }
     ]
   },
   { label: "Profile", icon: UserCircle2, to: "/supervisor/profile" }
@@ -121,6 +125,12 @@ function useCollection(loader, key = "") {
 
   return { ...state, refresh: load };
 }
+
+const normalizeCargoRefParam = (value) => {
+  const ref = String(value || "").trim();
+  if (!ref || ["undefined", "null"].includes(ref.toLowerCase())) return "";
+  return ref;
+};
 
 function SupervisorSidebar() {
   const navigate = useNavigate();
@@ -232,12 +242,17 @@ function DashboardPage() {
 }
 
 function ApprovalsPage({ exceptionsOnly = false }) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawCargoRef = searchParams.get("cargoRef");
+  const cargoRef = normalizeCargoRefParam(rawCargoRef);
+
   const approvals = useCollection(
     () => getSupervisorApprovals({
       status: "Pending",
-      request_type: exceptionsOnly ? "PLACEMENT_OVERRIDE" : "CARGO_REGISTRATION"
+      request_type: exceptionsOnly ? "PLACEMENT_OVERRIDE" : "CARGO_REGISTRATION",
+      cargoRef: cargoRef || undefined
     }),
-    exceptionsOnly ? "exceptions" : "pending"
+    exceptionsOnly ? `exceptions-${cargoRef || ""}` : `pending-${cargoRef || ""}`
   );
   const [busyId, setBusyId] = useState("");
   const [error, setError] = useState("");
@@ -248,6 +263,33 @@ function ApprovalsPage({ exceptionsOnly = false }) {
     rejection_conditions: [],
     error: ""
   });
+
+  useEffect(() => {
+    if (rawCargoRef && !cargoRef) {
+      setSearchParams((current) => {
+        const next = new URLSearchParams(current);
+        next.delete("cargoRef");
+        return next;
+      }, { replace: true });
+    }
+  }, [rawCargoRef, cargoRef, setSearchParams]);
+
+  useEffect(() => {
+    if (cargoRef && !approvals.loading && approvals.rows?.length > 0) {
+      const match = approvals.rows.find((row) => row.cargo_id === cargoRef);
+      if (match) {
+        setReviewApproval(match);
+        if (exceptionsOnly) {
+          setActionMode("approve");
+        }
+        setSearchParams((current) => {
+          const next = new URLSearchParams(current);
+          next.delete("cargoRef");
+          return next;
+        }, { replace: true });
+      }
+    }
+  }, [cargoRef, approvals.loading, approvals.rows, exceptionsOnly, setSearchParams]);
 
   useEffect(() => {
     getSupervisorReviewConfiguration()
@@ -263,16 +305,17 @@ function ApprovalsPage({ exceptionsOnly = false }) {
 
   const submitReviewAction = async (payload) => {
     if (!reviewApproval || !actionMode) return;
-    setBusyId(`${actionMode}-${reviewApproval.id}`);
+    const reviewIdentifier = reviewApproval.cargo_id;
+    setBusyId(`${actionMode}-${reviewIdentifier}`);
     setError("");
     setActionError("");
     try {
       if (actionMode === "approve") {
-        await approveSupervisorApproval(reviewApproval.id, payload);
+        await approveSupervisorApproval(reviewIdentifier, payload);
       } else if (actionMode === "reject") {
-        await rejectSupervisorApproval(reviewApproval.id, payload);
+        await rejectSupervisorApproval(reviewIdentifier, payload);
       } else {
-        await requestSupervisorCorrection(reviewApproval.id, payload);
+        await requestSupervisorCorrection(reviewIdentifier, payload);
       }
       await approvals.refresh();
       setActionMode("");
@@ -816,24 +859,58 @@ function WarehousePage({ scope }) {
 }
 
 function DispatchPage({ approved = false }) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawCargoRef = searchParams.get("cargoRef");
+  const cargoRef = normalizeCargoRefParam(rawCargoRef);
+
   const requests = useCollection(
-    () => getDispatchAuthorizationRequests({ status: approved ? "Approved" : "Pending" }),
-    approved ? "dispatch-approved" : "dispatch-pending"
+    () => getDispatchAuthorizationRequests({
+      status: approved ? "Approved" : "Pending",
+      cargoRef: cargoRef || undefined
+    }),
+    approved ? `dispatch-approved-${cargoRef || ""}` : `dispatch-pending-${cargoRef || ""}`
   );
   const [error, setError] = useState("");
   const [decisionState, setDecisionState] = useState({ row: null, decision: "" });
   const [decisionError, setDecisionError] = useState("");
   const [busy, setBusy] = useState(false);
 
+  useEffect(() => {
+    if (rawCargoRef && !cargoRef) {
+      setSearchParams((current) => {
+        const next = new URLSearchParams(current);
+        next.delete("cargoRef");
+        return next;
+      }, { replace: true });
+    }
+  }, [rawCargoRef, cargoRef, setSearchParams]);
+
+  useEffect(() => {
+    if (cargoRef && !requests.loading && requests.rows?.length > 0) {
+      const match = requests.rows.find((row) => row.cargo_id === cargoRef);
+      if (match) {
+        if (!approved) {
+          setDecisionState({ row: match, decision: "approve" });
+        }
+        setSearchParams((current) => {
+          const next = new URLSearchParams(current);
+          next.delete("cargoRef");
+          return next;
+        }, { replace: true });
+      }
+    }
+  }, [cargoRef, requests.loading, requests.rows, approved, setSearchParams]);
+
   const decide = async (payload) => {
     if (!decisionState.row || !decisionState.decision) return;
+    const requestIdentifier = decisionState.row.cargo_id;
     setBusy(true);
     setDecisionError("");
     try {
       if (decisionState.decision === "approve") {
-        await approveDispatchAuthorization(decisionState.row.id, payload);
+        await approveDispatchAuthorization(requestIdentifier, payload);
       } else {
-        await rejectDispatchAuthorization(decisionState.row.id, payload);
+        await rejectDispatchAuthorization(requestIdentifier, payload);
       }
       await requests.refresh();
       setDecisionState({ row: null, decision: "" });
@@ -897,6 +974,89 @@ function DispatchPage({ approved = false }) {
   );
 }
 
+function EmergencyReleasePage() {
+  const requests = useCollection(getEmergencyReleaseRequests, "supervisor-emergency-releases");
+  const [busyRef, setBusyRef] = useState("");
+  const [message, setMessage] = useState("");
+
+  const decide = async (row, decision) => {
+    const notes = decision === "reject"
+      ? window.prompt("Enter rejection reason")
+      : window.prompt("Optional approval notes") || "";
+    if (decision === "reject" && !notes) return;
+
+    setBusyRef(row.emergency_release_reference);
+    setMessage("");
+    try {
+      if (decision === "approve") {
+        await approveEmergencyRelease(row.emergency_release_reference, notes);
+      } else {
+        await rejectEmergencyRelease(row.emergency_release_reference, notes);
+      }
+      setMessage(`Emergency release request ${row.emergency_release_reference} updated.`);
+      await requests.refresh();
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    } finally {
+      setBusyRef("");
+    }
+  };
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Dispatch Authorization"
+        title="Emergency Releases"
+        description="Review emergency release requests submitted by Gate Officers. Approval does not waive unpaid charges."
+      />
+      <div className="flex-1 overflow-auto p-4">
+        {message && <div className="mb-3 rounded border border-info/30 bg-info/10 px-3 py-2 text-xs font-semibold text-info">{message}</div>}
+        <SectionCard title="Emergency Release Requests" icon={AlertTriangle}>
+          <DataTable
+            loading={requests.loading}
+            error={requests.error}
+            rows={requests.rows}
+            emptyTitle="No emergency release requests"
+            columns={[
+              { key: "emergency_release_reference", label: "Request Ref", className: "font-mono font-semibold" },
+              { key: "cargo_reference", label: "Cargo", className: "font-mono" },
+              { key: "customs_status", label: "Customs", render: (row) => <StatusBadge tone={statusTone(row.customs_status)}>{row.customs_status}</StatusBadge> },
+              { key: "financial_status", label: "Finance", render: (row) => <StatusBadge tone={statusTone(row.financial_status)}>{row.financial_status}</StatusBadge> },
+              { key: "status", label: "Status", render: (row) => <StatusBadge tone={statusTone(row.status)}>{row.status}</StatusBadge> },
+              { key: "justification", label: "Justification", render: (row) => row.justification || "No justification" },
+              { key: "created_at", label: "Requested", render: (row) => formatDateTime(row.created_at) },
+              {
+                key: "actions",
+                label: "Decision",
+                render: (row) => row.status === "Pending" ? (
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      disabled={busyRef === row.emergency_release_reference}
+                      onClick={() => decide(row, "approve")}
+                      className="rounded bg-success px-2 py-1 text-[11px] font-semibold text-success-foreground disabled:opacity-50"
+                    >
+                      Approve
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busyRef === row.emergency_release_reference}
+                      onClick={() => decide(row, "reject")}
+                      className="rounded bg-destructive px-2 py-1 text-[11px] font-semibold text-destructive-foreground disabled:opacity-50"
+                    >
+                      Reject
+                    </button>
+                  </div>
+                ) : "No action"
+              }
+            ]}
+          />
+        </SectionCard>
+      </div>
+    </>
+  );
+}
+
 function ProfilePage() {
   return (
     <AccountProfilePage
@@ -924,6 +1084,7 @@ function SupervisorPortal() {
         <Route path="warehouse/bins" element={<WarehousePage scope="bins" />} />
         <Route path="dispatch/requests" element={<DispatchPage />} />
         <Route path="dispatch/approved" element={<DispatchPage approved />} />
+        <Route path="dispatch/emergency-releases" element={<EmergencyReleasePage />} />
         <Route path="notifications" element={<NotificationsPage />} />
         <Route path="profile" element={<ProfilePage />} />
         <Route path="*" element={<Navigate to="/supervisor" replace />} />

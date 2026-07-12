@@ -31,7 +31,9 @@ const { writeAuditLog } = require("../models/adminModel");
 const { STAFF_TASK_OWNER_SQL } = require("../services/taskOwnershipService");
 const { getPlacementActivity } = require("../services/placementActivityService");
 const {
+  notifyCustomsAwaitingInspection,
   notifyCargoRegistrationPending,
+  notifyFinanceChargeStarted,
   notifyWarehouseAlert
 } = require("../services/notificationService");
 
@@ -567,6 +569,20 @@ const createCargo = async (req, res, next) => {
       },
       client
     );
+    await notifyFinanceChargeStarted(
+      {
+        cargo: insertResult.rows[0],
+        actorId: req.auth?.userId || null
+      },
+      client
+    );
+    await notifyCustomsAwaitingInspection(
+      {
+        cargo: insertResult.rows[0],
+        actorId: req.auth?.userId || null
+      },
+      client
+    );
 
     await client.query("COMMIT");
 
@@ -729,6 +745,16 @@ const resubmitCargo = async (req, res, next) => {
       },
       client
     );
+
+    // Resolve matching pending correction request notifications
+    const { resolveNotificationsByEntity } = require("../services/notificationService");
+    await resolveNotificationsByEntity({
+      relatedEntityType: "cargo",
+      relatedEntityId: cargo.id,
+      notificationTypes: ["correction_request"],
+      executor: client
+    });
+
     await client.query("COMMIT");
     res.json({ success: true, data: resubmission.cargo });
   } catch (error) {

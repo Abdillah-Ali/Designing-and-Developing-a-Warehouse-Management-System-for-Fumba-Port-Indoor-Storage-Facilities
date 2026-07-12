@@ -43,6 +43,9 @@ describe("portal access", () => {
     expect(PORTAL_CONFIG[PORTAL_ROLES.SYSTEM_ADMIN].allowedPaths.every((path) => path.startsWith("/admin"))).toBe(true);
     expect(PORTAL_CONFIG[PORTAL_ROLES.WAREHOUSE_STAFF].allowedPaths.every((path) => path.startsWith("/staff"))).toBe(true);
     expect(PORTAL_CONFIG[PORTAL_ROLES.WAREHOUSE_SUPERVISOR].allowedPaths.every((path) => path.startsWith("/supervisor"))).toBe(true);
+    expect(PORTAL_CONFIG[PORTAL_ROLES.FINANCE_OFFICER].allowedPaths.every((path) => path.startsWith("/finance"))).toBe(true);
+    expect(PORTAL_CONFIG[PORTAL_ROLES.CUSTOMS_OFFICER].allowedPaths.every((path) => path.startsWith("/customs"))).toBe(true);
+    expect(PORTAL_CONFIG[PORTAL_ROLES.GATE_OFFICER].allowedPaths.every((path) => path.startsWith("/gate"))).toBe(true);
   });
 
   it("blocks cross-portal page rendering for staff-only and admin-only modules", () => {
@@ -56,6 +59,12 @@ describe("portal access", () => {
     expect(isPathAllowedForRole(PORTAL_ROLES.SYSTEM_ADMIN, "/staff/cargo/registration")).toBe(false);
     expect(isPathAllowedForRole(PORTAL_ROLES.WAREHOUSE_SUPERVISOR, "/supervisor/cargo/pending-approvals")).toBe(true);
     expect(isPathAllowedForRole(PORTAL_ROLES.WAREHOUSE_SUPERVISOR, "/admin/system/users")).toBe(false);
+    expect(isPathAllowedForRole(PORTAL_ROLES.FINANCE_OFFICER, "/finance/cargo-charges")).toBe(true);
+    expect(isPathAllowedForRole(PORTAL_ROLES.FINANCE_OFFICER, "/admin/system/users")).toBe(false);
+    expect(isPathAllowedForRole(PORTAL_ROLES.CUSTOMS_OFFICER, "/customs/inspection-queue")).toBe(true);
+    expect(isPathAllowedForRole(PORTAL_ROLES.CUSTOMS_OFFICER, "/finance/tariffs")).toBe(false);
+    expect(isPathAllowedForRole(PORTAL_ROLES.GATE_OFFICER, "/gate/release-queue")).toBe(true);
+    expect(isPathAllowedForRole(PORTAL_ROLES.GATE_OFFICER, "/customs/records")).toBe(false);
   });
 
   it("keeps every raw log page restricted to the System Administrator portal", () => {
@@ -75,6 +84,9 @@ describe("portal access", () => {
     expect(getPortalRoleForPath("/admin/audit/logs")).toBe(PORTAL_ROLES.SYSTEM_ADMIN);
     expect(getPortalRoleForPath("/staff/storage/bins")).toBe(PORTAL_ROLES.WAREHOUSE_STAFF);
     expect(getPortalRoleForPath("/supervisor/dispatch/requests")).toBe(PORTAL_ROLES.WAREHOUSE_SUPERVISOR);
+    expect(getPortalRoleForPath("/finance/payments")).toBe(PORTAL_ROLES.FINANCE_OFFICER);
+    expect(getPortalRoleForPath("/customs/records")).toBe(PORTAL_ROLES.CUSTOMS_OFFICER);
+    expect(getPortalRoleForPath("/gate/gate-out-records")).toBe(PORTAL_ROLES.GATE_OFFICER);
     expect(getPortalRoleForPath("/")).toBe(null);
   });
 
@@ -117,10 +129,28 @@ describe("portal access", () => {
     expect(extractRoleFromToken(token)).toBe(PORTAL_ROLES.WAREHOUSE_SUPERVISOR);
   });
 
+  it("maps finance, customs, and gate database roles to dedicated portals", () => {
+    for (const [roleName, portalRole] of [
+      ["Finance Officer", PORTAL_ROLES.FINANCE_OFFICER],
+      ["Customs Officer", PORTAL_ROLES.CUSTOMS_OFFICER],
+      ["Gate Officer", PORTAL_ROLES.GATE_OFFICER]
+    ]) {
+      const token = createUnsignedBrowserToken({
+        role: roleName,
+        exp: Math.floor(Date.now() / 1000) + 60
+      });
+
+      expect(extractRoleFromToken(token)).toBe(portalRole);
+    }
+  });
+
   it("formats authenticated account roles for header display", () => {
     expect(getDisplayRoleName("System Admin")).toBe("System Admin");
     expect(getDisplayRoleName("Warehouse Staff")).toBe("Warehouse Staff");
     expect(getDisplayRoleName("Supervisor")).toBe("Warehouse Supervisor");
+    expect(getDisplayRoleName("Finance Officer")).toBe("Finance Officer");
+    expect(getDisplayRoleName("Customs Officer")).toBe("Customs Officer");
+    expect(getDisplayRoleName("Gate Officer")).toBe("Gate Officer");
   });
 
   it("reads forced password-change and user identity claims from stored tokens", () => {

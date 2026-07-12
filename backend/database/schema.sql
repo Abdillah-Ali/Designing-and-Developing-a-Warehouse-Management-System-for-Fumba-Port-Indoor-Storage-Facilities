@@ -702,6 +702,7 @@ CREATE TABLE IF NOT EXISTS dispatch_requests (
 
 CREATE TABLE IF NOT EXISTS notifications (
   id SERIAL PRIMARY KEY,
+  public_reference VARCHAR(40) NOT NULL,
   recipient_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
   recipient_role_id INTEGER REFERENCES roles(id) ON DELETE CASCADE,
   recipient_warehouse_id INTEGER REFERENCES warehouses(id) ON DELETE CASCADE,
@@ -714,16 +715,21 @@ CREATE TABLE IF NOT EXISTS notifications (
   priority VARCHAR(20) NOT NULL DEFAULT 'normal',
   is_read BOOLEAN NOT NULL DEFAULT FALSE,
   read_at TIMESTAMP,
+  status VARCHAR(40) NOT NULL DEFAULT 'pending',
+  completed_at TIMESTAMP,
   created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   expires_at TIMESTAMP,
   archived_at TIMESTAMP,
   archived_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-  CHECK (priority IN ('low', 'normal', 'high', 'urgent'))
+  CONSTRAINT notifications_public_reference_key UNIQUE (public_reference),
+  CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
+  CONSTRAINT notifications_status_check CHECK (status IN ('pending', 'completed', 'dismissed'))
 );
 
 ALTER TABLE notifications
+  ADD COLUMN IF NOT EXISTS public_reference VARCHAR(40),
   ADD COLUMN IF NOT EXISTS recipient_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
   ADD COLUMN IF NOT EXISTS recipient_role_id INTEGER REFERENCES roles(id) ON DELETE CASCADE,
   ADD COLUMN IF NOT EXISTS recipient_warehouse_id INTEGER REFERENCES warehouses(id) ON DELETE CASCADE,
@@ -733,15 +739,88 @@ ALTER TABLE notifications
   ADD COLUMN IF NOT EXISTS priority VARCHAR(20) NOT NULL DEFAULT 'normal',
   ADD COLUMN IF NOT EXISTS is_read BOOLEAN NOT NULL DEFAULT FALSE,
   ADD COLUMN IF NOT EXISTS read_at TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS status VARCHAR(40) NOT NULL DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS completed_at TIMESTAMP,
   ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP,
   ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP,
   ADD COLUMN IF NOT EXISTS archived_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
 
+DO $$
+DECLARE
+  notification_row RECORD;
+  generated_reference TEXT;
+  random_bytes BYTEA;
+  chars TEXT := 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  index_value INTEGER;
+  attempt INTEGER;
+BEGIN
+  FOR notification_row IN
+    SELECT id, created_at
+    FROM notifications
+    WHERE public_reference IS NULL
+  LOOP
+    attempt := 0;
+    LOOP
+      attempt := attempt + 1;
+      generated_reference := '';
+      random_bytes := gen_random_bytes(6);
+      FOR index_value IN 0..5 LOOP
+        generated_reference := generated_reference
+          || substr(chars, (get_byte(random_bytes, index_value) % length(chars)) + 1, 1);
+      END LOOP;
+      generated_reference := 'NTF-'
+        || EXTRACT(YEAR FROM COALESCE(notification_row.created_at, CURRENT_TIMESTAMP))::int
+        || '-'
+        || generated_reference;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM notifications WHERE public_reference = generated_reference
+      ) THEN
+        UPDATE notifications
+        SET public_reference = generated_reference
+        WHERE id = notification_row.id;
+        EXIT;
+      END IF;
+
+      IF attempt >= 5 THEN
+        RAISE EXCEPTION 'Failed to generate a unique public reference for notification ID %', notification_row.id;
+      END IF;
+    END LOOP;
+  END LOOP;
+
+  IF EXISTS (SELECT 1 FROM notifications WHERE public_reference IS NULL) THEN
+    RAISE EXCEPTION 'Notification public reference backfill failed: NULL values remain.';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM notifications
+    GROUP BY public_reference
+    HAVING COUNT(*) > 1
+  ) THEN
+    RAISE EXCEPTION 'Notification public reference backfill failed: duplicate values remain.';
+  END IF;
+END $$;
+
+ALTER TABLE notifications ALTER COLUMN public_reference SET NOT NULL;
+
 ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_priority_check;
 ALTER TABLE notifications
   ADD CONSTRAINT notifications_priority_check CHECK (priority IN ('low', 'normal', 'high', 'urgent'));
+
+ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_public_reference_key;
+ALTER TABLE notifications
+  ADD CONSTRAINT notifications_public_reference_key UNIQUE (public_reference);
+
+ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_status_check;
+ALTER TABLE notifications
+  ADD CONSTRAINT notifications_status_check CHECK (status IN ('pending', 'completed', 'dismissed'));
+
+ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_archived_by_fkey;
+ALTER TABLE notifications
+  ADD CONSTRAINT notifications_archived_by_fkey FOREIGN KEY (archived_by) REFERENCES users(id) ON DELETE SET NULL;
 
 CREATE TABLE IF NOT EXISTS bin_rules (
   id SERIAL PRIMARY KEY,
