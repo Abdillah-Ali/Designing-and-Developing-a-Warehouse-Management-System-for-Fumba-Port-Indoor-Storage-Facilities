@@ -19,13 +19,10 @@ const NOTE_REQUIRED_STATUSES = new Set(["Documents Required", "On Hold", "Reject
 
 const cleanString = (value) => String(value ?? "").trim();
 
-const logCustomsQuery = (sql, params) => {
-  console.log(sql);
-  console.log(params);
-};
+const { logEvent } = require("../utils/logger");
 
 const runCustomsWrite = (executor, sql, params) => {
-  logCustomsQuery(sql, params);
+  logEvent("info", { operation: "customs_write", result: "attempted" });
   return executor.query(sql, params);
 };
 
@@ -35,13 +32,12 @@ const handleCustomsUpdateError = (error, next) => {
     return;
   }
 
-  console.error("Customs status update failed:", {
-    message: error.message,
-    code: error.code,
-    detail: error.detail,
-    stack: error.stack
+  logEvent("error", {
+    operation: "customs_status_update",
+    result: "failure",
+    error_category: error.code || error.name || "customs_update_error"
   });
-  next(buildError("Unable to update customs status. Please contact the administrator if the problem persists.", 500));
+  next(buildError("Unable to update customs status. Please try again.", 500));
 };
 
 const withTransaction = async (handler) => {

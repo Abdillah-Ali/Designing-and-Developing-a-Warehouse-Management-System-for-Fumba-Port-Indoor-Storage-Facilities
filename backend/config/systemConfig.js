@@ -55,11 +55,7 @@ const defaultRoleDefinitions = Object.freeze(parseJsonSetting("WMS_ROLE_DEFINITI
   }
 ]));
 
-const defaultShifts = Object.freeze(parseJsonSetting("WMS_DEFAULT_SHIFTS_JSON", [
-  { name: "Morning Shift", start: "06:00", end: "14:00" },
-  { name: "Evening Shift", start: "14:00", end: "22:00" },
-  { name: "Night Shift", start: "22:00", end: "06:00" }
-]));
+const defaultShifts = Object.freeze([]);
 
 const rejectionConditions = Object.freeze(parseJsonSetting("WMS_REJECTION_CONDITIONS_JSON", {
   DUPLICATE_REGISTRATION: "Duplicate cargo registration exists.",

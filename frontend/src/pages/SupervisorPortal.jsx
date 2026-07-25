@@ -55,10 +55,14 @@ import {
   getCargoById,
   getDispatchAuthorizationRequests,
   getEmergencyReleaseRequests,
+  getPlacementFailures,
   getSupervisorApprovals,
   getSupervisorDashboard,
+  getSupervisorPlacementMonitoring,
+  getSupervisorPlacementSummary,
   getSupervisorReviewHistory,
   getSupervisorReviewConfiguration,
+  getSupervisorStaffActivity,
   getZones,
   logout,
   rejectDispatchAuthorization,
@@ -216,12 +220,20 @@ function SupervisorLayout({ children }) {
 
 function DashboardPage() {
   const [state, setState] = useState({ data: null, loading: true, error: "" });
+  const [summary, setSummary] = useState({ data: null, loading: true, error: "" });
+  const staffActivity = useCollection(() => getSupervisorStaffActivity(), "staff-activity");
+  const placementMonitoring = useCollection(() => getSupervisorPlacementMonitoring(), "placement-monitoring");
+  const placementFailures = useCollection(() => getPlacementFailures(), "placement-failures");
   useEffect(() => {
     getSupervisorDashboard()
       .then((response) => setState({ data: response.data, loading: false, error: "" }))
       .catch((error) => setState({ data: null, loading: false, error: getErrorMessage(error) }));
+    getSupervisorPlacementSummary()
+      .then((response) => setSummary({ data: response.data, loading: false, error: "" }))
+      .catch((error) => setSummary({ data: null, loading: false, error: getErrorMessage(error) }));
   }, []);
   const metrics = state.data?.metrics || {};
+  const placementSummary = summary.data || {};
 
   return (
     <>
@@ -235,6 +247,55 @@ function DashboardPage() {
           <OperationalStatCard title="Blocked / Reserved Bins" icon={AlertTriangle} loading={state.loading} value={metrics.blocked_reserved_bins} emptyTitle="No blocked or reserved bins" tone="warning" />
           <OperationalStatCard title="Warehouse Occupancy" icon={Warehouse} loading={state.loading} value={metrics.occupancy_percent} emptyTitle="No occupancy recorded" tone="info" />
           <OperationalStatCard title="Active Staff" icon={Users} loading={state.loading} value={metrics.active_staff} emptyTitle="No active staff sessions" tone="info" />
+          <OperationalStatCard title="Validation Attempts Today" icon={ScanLine} loading={summary.loading} value={placementSummary.validation_attempts_today} emptyTitle="No validation attempts" tone="info" />
+          <OperationalStatCard title="Pending Placement Overrides" icon={AlertTriangle} loading={summary.loading} value={placementSummary.pending_placement_approvals} emptyTitle="No pending overrides" tone="warning" />
+        </div>
+        {summary.error && <div className="mt-3"><ErrorState message={summary.error} /></div>}
+        <div className="mt-3 grid gap-3 xl:grid-cols-2">
+          <SectionCard title="Recent Staff Activity" icon={Users}>
+            <DataTable
+              loading={staffActivity.loading}
+              error={staffActivity.error}
+              rows={staffActivity.rows.slice(0, 8)}
+              emptyTitle="No recent staff activity"
+              columns={[
+                { key: "username", label: "Staff" },
+                { key: "module", label: "Module" },
+                { key: "action", label: "Action" },
+                { key: "created_at", label: "Time", render: (row) => formatDateTime(row.created_at) }
+              ]}
+            />
+          </SectionCard>
+          <SectionCard title="Placement Monitoring" icon={ScanLine}>
+            <DataTable
+              loading={placementMonitoring.loading}
+              error={placementMonitoring.error}
+              rows={placementMonitoring.rows.slice(0, 8)}
+              emptyTitle="No placement activity"
+              columns={[
+                { key: "cargo_identifier", label: "Cargo", className: "font-mono" },
+                { key: "bin_identifier", label: "Bin", className: "font-mono" },
+                { key: "result", label: "Result", render: (row) => <StatusBadge tone={row.approved ? "success" : "destructive"}>{row.result || (row.approved ? "Passed" : "Failed")}</StatusBadge> },
+                { key: "created_at", label: "Time", render: (row) => formatDateTime(row.created_at) }
+              ]}
+            />
+          </SectionCard>
+          <SectionCard title="Placement Failures" icon={XCircle} className="xl:col-span-2">
+            <DataTable
+              loading={placementFailures.loading}
+              error={placementFailures.error}
+              rows={placementFailures.rows.slice(0, 10)}
+              emptyTitle="No placement failures"
+              columns={[
+                { key: "cargo_identifier", label: "Cargo", className: "font-mono" },
+                { key: "bin_identifier", label: "Attempted Bin", className: "font-mono" },
+                { key: "placement_mode", label: "Mode" },
+                { key: "attempt_stage", label: "Stage" },
+                { key: "reason", label: "Reason", render: (row) => row.failure_reason || row.validation_message || row.message || row.result || "Validation failed" },
+                { key: "created_at", label: "Time", render: (row) => formatDateTime(row.created_at) }
+              ]}
+            />
+          </SectionCard>
         </div>
       </div>
     </>

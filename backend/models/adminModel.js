@@ -207,6 +207,7 @@ const listRoles = async () => {
   return db.query(
     `SELECT
       r.id,
+      r.public_reference,
       r.role_name,
       r.role_description,
       r.created_at,

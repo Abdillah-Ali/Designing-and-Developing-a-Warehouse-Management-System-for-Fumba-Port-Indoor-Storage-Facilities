@@ -15,7 +15,7 @@ const { requireRole } = require("../middleware/authMiddleware");
 const router = express.Router();
 
 router.get("/logs", requireRole("System Admin"), getPlacementLogs);
-router.get("/failures", requireRole("System Admin"), getPlacementFailures);
+router.get("/failures", requireRole("System Admin", "Supervisor"), getPlacementFailures);
 router.get("/activity", getPlacementActivityTimeline);
 router.get("/activity/summary", getPlacementActivitySummary);
 router.get("/settings", getPlacementSettings);

@@ -2,11 +2,13 @@ const crypto = require("crypto");
 
 const DEFAULT_EXPIRES_IN = "24h";
 
-const getSecret = () => (
-  process.env.JWT_SECRET
-  || process.env.AUTH_TOKEN_SECRET
-  || "fumba-port-development-token-secret"
-);
+const getSecret = () => {
+  const secret = process.env.JWT_SECRET || process.env.AUTH_TOKEN_SECRET;
+  if (!secret) {
+    throw new Error("JWT_SECRET is required for token signing and verification.");
+  }
+  return secret;
+};
 
 const toBase64Url = (value) => Buffer
   .from(typeof value === "string" ? value : JSON.stringify(value))

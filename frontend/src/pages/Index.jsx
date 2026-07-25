@@ -21,7 +21,6 @@ import { CargoCorrectionModal } from "@/components/wms/CargoCorrectionModal";
 import { DetailForm } from "@/components/wms/DetailForm";
 import { EnterpriseModal } from "@/components/wms/EnterpriseModal";
 import { PlacementSessionModal } from "@/components/wms/PlacementSessionModal";
-import { PlacementActivityPanel } from "@/components/wms/PlacementActivityTimeline";
 import { NotificationsPage } from "@/components/wms/NotificationsPage";
 import { AccountProfilePage } from "@/components/wms/ProfilePage";
 import {
@@ -44,7 +43,10 @@ import {
   getBins,
   getCargo,
   getLevels,
+  getMyBarcodePrintLogs,
   getMyCargoSubmissions,
+  getMyPlacementHistory,
+  getMyUploadedDocuments,
   getRacks,
   getZones,
   printCargoBarcode,
@@ -771,9 +773,81 @@ function RegistrationReviewsPanel() {
 }
 
 function PlacementHistoryPanel() {
+  const [state, setState] = useState({
+    placements: [],
+    documents: [],
+    prints: [],
+    loading: true,
+    error: ""
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    setState((current) => ({ ...current, loading: true, error: "" }));
+    Promise.all([getMyPlacementHistory(), getMyUploadedDocuments(), getMyBarcodePrintLogs()])
+      .then(([placements, documents, prints]) => {
+        if (cancelled) return;
+        setState({
+          placements: placements.data || [],
+          documents: documents.data || [],
+          prints: prints.data || [],
+          loading: false,
+          error: ""
+        });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setState({ placements: [], documents: [], prints: [], loading: false, error: getErrorMessage(error) });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <div className="h-full overflow-auto p-3">
-      <PlacementActivityPanel title="My Placement Activity" />
+      {state.error && <ErrorState message={state.error} />}
+      <div className="grid gap-3 xl:grid-cols-2">
+        <SectionCard title="Placement and Relocation History" icon={PackageCheck}>
+          <DataTable
+            loading={state.loading}
+            rows={state.placements}
+            emptyTitle="No placement history found"
+            columns={[
+              { key: "cargo_reference", label: "Cargo", className: "font-mono font-semibold", render: (row) => row.cargo_reference || row.cargo_id || row.cargo_identifier },
+              { key: "bin_identifier", label: "Bin", className: "font-mono" },
+              { key: "movement_type", label: "Type", render: (row) => row.movement_type || row.action || row.placement_mode },
+              { key: "created_at", label: "Time", render: (row) => formatDateTime(row.created_at || row.moved_at) }
+            ]}
+          />
+        </SectionCard>
+        <SectionCard title="Uploaded Document History" icon={ClipboardList}>
+          <DataTable
+            loading={state.loading}
+            rows={state.documents}
+            emptyTitle="No uploaded documents found"
+            columns={[
+              { key: "cargo_reference", label: "Cargo", className: "font-mono font-semibold", render: (row) => row.cargo_reference || row.cargo_id },
+              { key: "file_name", label: "File" },
+              { key: "file_type", label: "Type" },
+              { key: "uploaded_at", label: "Uploaded", render: (row) => formatDateTime(row.uploaded_at || row.created_at) }
+            ]}
+          />
+        </SectionCard>
+        <SectionCard title="Barcode Print History" icon={ScanLine} className="xl:col-span-2">
+          <DataTable
+            loading={state.loading}
+            rows={state.prints}
+            emptyTitle="No barcode print records found"
+            columns={[
+              { key: "cargo_reference", label: "Cargo", className: "font-mono font-semibold", render: (row) => row.cargo_reference || row.cargo_id },
+              { key: "barcode", label: "Barcode", className: "font-mono" },
+              { key: "print_type", label: "Print Type" },
+              { key: "printed_at", label: "Printed", render: (row) => formatDateTime(row.printed_at || row.created_at) }
+            ]}
+          />
+        </SectionCard>
+      </div>
     </div>
   );
 }

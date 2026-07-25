@@ -272,13 +272,8 @@ const decideDispatchRequest = async (req, res, next, decision) => {
 const approveDispatchRequest = (req, res, next) => decideDispatchRequest(req, res, next, "Approved");
 const rejectDispatchRequest = (req, res, next) => decideDispatchRequest(req, res, next, "Rejected");
 
-const completeDispatch = async (req, res, next) => {
-  next(buildError("Dispatch completion is handled by the Gate Officer gate-out workflow.", 410));
-};
-
 module.exports = {
   approveDispatchRequest,
-  completeDispatch,
   getDispatchRequests,
   rejectDispatchRequest,
   requestDispatchAuthorization

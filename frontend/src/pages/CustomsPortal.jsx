@@ -30,6 +30,7 @@ import { cn } from "@/lib/utils";
 import { formatDateTime, getErrorMessage, statusTone } from "@/lib/wms-operational";
 import {
   getCustomsCleared,
+  getCustomsCargo,
   getCustomsDashboard,
   getCustomsHistory,
   getCustomsHolds,
@@ -146,7 +147,7 @@ function DashboardPage() {
   );
 }
 
-function CustomsTable({ rows, loading, error, onAction, onHistory }) {
+function CustomsTable({ rows, loading, error, onAction, onHistory, onDetails }) {
   return (
     <DataTable
       loading={loading}
@@ -163,11 +164,12 @@ function CustomsTable({ rows, loading, error, onAction, onHistory }) {
         { key: "customs_status", label: "Customs", render: (row) => <StatusBadge tone={statusTone(row.customs_status)}>{row.customs_status}</StatusBadge> },
         { key: "financial_status", label: "Finance", render: (row) => <StatusBadge tone={statusTone(row.financial_status)}>{row.financial_status}</StatusBadge> },
         { key: "registration_date", label: "Registered", render: (row) => formatDateTime(row.registration_date) },
-        ...(onAction || onHistory ? [{
+        ...(onAction || onHistory || onDetails ? [{
           key: "actions",
           label: "Actions",
           render: (row) => (
             <div className="flex flex-wrap gap-1">
+              {onDetails && <button type="button" onClick={() => onDetails(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">Details</button>}
               {onAction && <button type="button" onClick={() => onAction(row)} className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground">Update</button>}
               {onHistory && <button type="button" onClick={() => onHistory(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">History</button>}
             </div>
@@ -182,6 +184,7 @@ function CustomsListPage({ mode }) {
   const [search, setSearch] = useState("");
   const [message, setMessage] = useState("");
   const [selected, setSelected] = useState(null);
+  const [detail, setDetail] = useState({ cargo: null, data: null, loading: false, error: "" });
   const [history, setHistory] = useState({ cargo: null, rows: [], error: "" });
   const loader = {
     queue: () => getCustomsQueue({ search }),
@@ -207,6 +210,16 @@ function CustomsListPage({ mode }) {
     }
   };
 
+  const loadDetails = async (row) => {
+    setDetail({ cargo: row, data: null, loading: true, error: "" });
+    try {
+      const response = await getCustomsCargo(row.cargo_reference);
+      setDetail({ cargo: row, data: response.data, loading: false, error: "" });
+    } catch (error) {
+      setDetail({ cargo: row, data: null, loading: false, error: getErrorMessage(error) });
+    }
+  };
+
   return (
     <>
       <PageHeader eyebrow="Customs" title={titles[mode]} description="Search by public cargo reference, barcode, delivery note, or consignee. Financial information is read-only." />
@@ -223,7 +236,7 @@ function CustomsListPage({ mode }) {
         {message && <div className="mt-3 rounded border border-info/30 bg-info/10 px-3 py-2 text-xs font-semibold text-info">{message}</div>}
         <div className="mt-3">
           <SectionCard title={titles[mode]} icon={ClipboardList}>
-            <CustomsTable rows={data.rows || []} loading={data.loading} error={data.error} onAction={setSelected} onHistory={loadHistory} />
+            <CustomsTable rows={data.rows || []} loading={data.loading} error={data.error} onAction={setSelected} onHistory={loadHistory} onDetails={loadDetails} />
           </SectionCard>
         </div>
         {history.cargo && (
@@ -255,7 +268,53 @@ function CustomsListPage({ mode }) {
           await data.refresh();
         }}
       />
+      <CustomsDetailDialog detail={detail} onClose={() => setDetail({ cargo: null, data: null, loading: false, error: "" })} />
     </>
+  );
+}
+
+function CustomsDetailDialog({ detail, onClose }) {
+  if (!detail.cargo) return null;
+  const cargo = detail.data || detail.cargo;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+      <div className="w-full max-w-2xl rounded-md border border-border bg-card p-4 shadow-xl">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold">Customs Cargo Detail</div>
+            <div className="mt-1 font-mono text-xs text-muted-foreground">{cargo.cargo_reference}</div>
+          </div>
+          <button type="button" onClick={onClose} className="rounded border border-border px-2 py-1 text-xs font-semibold">Close</button>
+        </div>
+        {detail.loading && <div className="mt-4 text-xs text-muted-foreground">Loading cargo details...</div>}
+        {detail.error && <div className="mt-4"><ErrorState message={detail.error} /></div>}
+        {!detail.loading && !detail.error && (
+          <div className="mt-4 grid gap-3 text-xs sm:grid-cols-2">
+            <DetailItem label="Owner" value={cargo.owner_information || cargo.consignee_name} />
+            <DetailItem label="Delivery Note" value={cargo.delivery_note_number || "Not recorded"} />
+            <DetailItem label="Cargo Type" value={cargo.cargo_type} />
+            <DetailItem label="Description" value={cargo.cargo_description || "No description"} />
+            <DetailItem label="Customs Status" value={cargo.customs_status} />
+            <DetailItem label="Placement Status" value={cargo.placement_status} />
+            <DetailItem label="Invoice Status" value={cargo.invoice_status} />
+            <DetailItem label="Payment Status" value={cargo.payment_status} />
+            <DetailItem label="Outstanding Balance" value={cargo.outstanding_balance} />
+            <DetailItem label="Location" value={cargo.location || "Not placed"} />
+            <DetailItem label="Registered" value={formatDateTime(cargo.registration_date)} />
+            <DetailItem label="Updated" value={formatDateTime(cargo.updated_at)} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DetailItem({ label, value }) {
+  return (
+    <div className="rounded border border-border bg-background/50 p-2">
+      <div className="text-[10px] uppercase text-muted-foreground">{label}</div>
+      <div className="mt-1 font-semibold">{value || "Not available"}</div>
+    </div>
   );
 }
 

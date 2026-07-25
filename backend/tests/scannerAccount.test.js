@@ -1,5 +1,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+
+process.env.JWT_SECRET ||= "test-only-jwt-secret-that-is-at-least-32-characters";
+
 const db = require("../config/db");
 const { createScanner, login } = require("../controllers/adminController");
 const { hashPassword } = require("../utils/password");
@@ -113,6 +116,7 @@ test("scanner password signs in through the normal login endpoint with scanner-o
         };
       }
       if (sql.includes("UPDATE scanner_accounts")) return { rowCount: 1, rows: [] };
+      if (sql.includes("FROM role_permissions rp")) return { rowCount: 0, rows: [] };
       if (sql.includes("INSERT INTO audit_logs")) return { rowCount: 1, rows: [{ id: 1 }] };
       throw new Error(`Unexpected query: ${sql}`);
     },

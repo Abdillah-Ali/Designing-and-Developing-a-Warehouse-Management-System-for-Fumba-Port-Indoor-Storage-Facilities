@@ -1049,6 +1049,31 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     reader.readAsDataURL(file);
   });
 
+  const validateCargoForm = () => {
+    const errors = [];
+    const positiveNumber = (value) => Number(value) > 0;
+    if (!String(formData.consignee_name || "").trim()) errors.push("Consignee name is required.");
+    if (!/^\+?[0-9][0-9\s()-]{6,18}[0-9]$/.test(String(formData.phone_number || "").trim())) {
+      errors.push("Enter a valid phone number using digits and an optional leading +.");
+    }
+    if (!positiveNumber(formData.quantity)) errors.push("Quantity must be greater than zero.");
+    if (!positiveNumber(formData.weight)) errors.push("Weight must be greater than zero.");
+    if (!positiveNumber(formData.volume)) errors.push("Volume must be greater than zero.");
+    if (formData.source_of_cargo === "Container" && !String(formData.container_number || "").trim()) {
+      errors.push("Container number is required for container cargo.");
+    }
+    if (["Truck", "Manual Delivery"].includes(formData.source_of_cargo) && !String(formData.vehicle_number || "").trim()) {
+      errors.push("Vehicle number is required for truck or manual delivery cargo.");
+    }
+    if (formData.cargo_type === "Hazardous Cargo" && !String(formData.hazard_class || "").trim()) {
+      errors.push("Hazard class is required for hazardous cargo.");
+    }
+    if (formData.cargo_condition !== "Good" && !String(formData.inspection_notes || "").trim()) {
+      errors.push("Inspection notes are required when cargo condition is not Good.");
+    }
+    return errors;
+  };
+
   const saveCargo = async () => {
     if (savingCargo) return;
     setSavingCargo(true);
@@ -1056,6 +1081,13 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     setDuplicateWarning(null);
     setSaveNotice(false);
     setDocumentUploadError("");
+
+    const validationErrors = validateCargoForm();
+    if (validationErrors.length > 0) {
+      setSaveError(validationErrors.join(" "));
+      setSavingCargo(false);
+      return;
+    }
 
     try {
       const response = await createCargo({
@@ -1245,7 +1277,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
             <CollapsibleCard title={<SectionTitle icon={ClipboardList}>Consignee / Owner Information</SectionTitle>} defaultOpen>
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                 <Field label="Consignee Name">
-                  <Input value={formData.consignee_name} onChange={(event) => handleCargoFieldChange("consignee_name", event.target.value)} placeholder="Enter consignee name" />
+                  <Input value={formData.consignee_name} onChange={(event) => handleCargoFieldChange("consignee_name", event.target.value)} placeholder="Enter consignee name" required />
                 </Field>
                 <Field label="Company Name">
                   <Input value={formData.company_name} onChange={(event) => handleCargoFieldChange("company_name", event.target.value)} placeholder="Enter company name" />
@@ -1254,7 +1286,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
                   <Input value={formData.contact_person} onChange={(event) => handleCargoFieldChange("contact_person", event.target.value)} placeholder="Enter contact person" />
                 </Field>
                 <Field label="Phone Number">
-                  <Input value={formData.phone_number} onChange={(event) => handleCargoFieldChange("phone_number", event.target.value)} placeholder="+255 ..." />
+                  <Input value={formData.phone_number} onChange={(event) => handleCargoFieldChange("phone_number", event.target.value)} placeholder="+255 ..." required pattern="^\+?[0-9][0-9\s()-]{6,18}[0-9]$" />
                 </Field>
                 <Field label="Email Address" className="md:col-span-2">
                   <Input value={formData.email} onChange={(event) => handleCargoFieldChange("email", event.target.value)} type="email" placeholder="name@company.com" />
@@ -1301,13 +1333,13 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
                   </Select>
                 </Field>
                 <Field label="Quantity">
-                  <Input value={formData.quantity} onChange={(event) => handleCargoFieldChange("quantity", event.target.value)} type="number" min="0" placeholder="0" />
+                  <Input value={formData.quantity} onChange={(event) => handleCargoFieldChange("quantity", event.target.value)} type="number" min="1" placeholder="1" required />
                 </Field>
                 <Field label="Weight (kg)">
-                  <Input value={formData.weight} onChange={(event) => handleCargoFieldChange("weight", event.target.value)} type="number" min="0" step="0.01" placeholder="0.00" />
+                  <Input value={formData.weight} onChange={(event) => handleCargoFieldChange("weight", event.target.value)} type="number" min="0.01" step="0.01" placeholder="0.00" required />
                 </Field>
                 <Field label="Volume (m³)">
-                  <Input value={formData.volume} onChange={(event) => handleCargoFieldChange("volume", event.target.value)} type="number" min="0" step="0.01" placeholder="0.00" />
+                  <Input value={formData.volume} onChange={(event) => handleCargoFieldChange("volume", event.target.value)} type="number" min="0.01" step="0.01" placeholder="0.00" required />
                 </Field>
                 <Field label="Cargo Condition">
                   <Select value={formData.cargo_condition} onChange={(value) => handleCargoFieldChange("cargo_condition", value)}>

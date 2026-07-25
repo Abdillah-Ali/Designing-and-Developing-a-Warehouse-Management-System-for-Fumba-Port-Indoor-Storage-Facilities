@@ -1,5 +1,6 @@
 const express = require("express");
 const { login, logout, getProfile, updateProfile, changePassword, refreshToken } = require("../controllers/adminController");
+const { getMe, getMyPermissions } = require("../controllers/permissionController");
 const { optionalAuthContext, requireAuthenticated, requireNonScanner } = require("../middleware/authMiddleware");
 
 const router = express.Router();
@@ -44,6 +45,8 @@ router.post("/login", loginRateLimit, optionalAuthContext, login);
 router.post("/logout", requireAuthenticated, logout);
 
 // Profile endpoints (auth required)
+router.get("/me", requireAuthenticated, getMe);
+router.get("/me/permissions", requireAuthenticated, getMyPermissions);
 router.get("/profile", requireAuthenticated, requireNonScanner, getProfile);
 router.patch("/profile", requireAuthenticated, requireNonScanner, updateProfile);
 router.put("/profile", requireAuthenticated, requireNonScanner, updateProfile);

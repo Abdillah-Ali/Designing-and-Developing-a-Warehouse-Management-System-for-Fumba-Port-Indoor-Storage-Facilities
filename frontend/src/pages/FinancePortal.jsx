@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, NavLink, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
+import { Bar, BarChart as RechartsBarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
   BarChart3,
   Bell,
@@ -32,15 +33,18 @@ import {
   cancelFinanceInvoice,
   createFinanceTariff,
   generateFinanceDraftInvoice,
+  deactivateFinanceTariff,
   getFinanceCargoCharges,
   getFinanceDashboard,
+  getFinanceInvoice,
   getFinanceInvoices,
   getFinancePayments,
   getFinanceReports,
   getFinanceTariffs,
   issueFinanceInvoice,
   logout,
-  recordFinancePayment
+  recordFinancePayment,
+  updateFinanceTariff
 } from "@/services/api";
 
 const inputClass = "h-9 w-full rounded border border-input bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring";
@@ -328,6 +332,7 @@ function SelectField({ label, value, onChange, options }) {
 function InvoicesPage() {
   const [status, setStatus] = useState("");
   const [message, setMessage] = useState("");
+  const [detail, setDetail] = useState({ invoice: null, data: null, loading: false, error: "" });
   const invoices = useLoad(() => getFinanceInvoices({ status, limit: 100 }), status);
 
   const act = async (action, invoiceNumber) => {
@@ -343,6 +348,16 @@ function InvoicesPage() {
       await invoices.refresh();
     } catch (error) {
       setMessage(getErrorMessage(error));
+    }
+  };
+
+  const openDetail = async (row) => {
+    setDetail({ invoice: row, data: null, loading: true, error: "" });
+    try {
+      const response = await getFinanceInvoice(row.invoice_number);
+      setDetail({ invoice: row, data: response.data, loading: false, error: "" });
+    } catch (error) {
+      setDetail({ invoice: row, data: null, loading: false, error: getErrorMessage(error) });
     }
   };
 
@@ -379,6 +394,7 @@ function InvoicesPage() {
                   label: "Actions",
                   render: (row) => (
                     <div className="flex gap-1">
+                      <button type="button" onClick={() => openDetail(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">Details</button>
                       {row.status === "Draft" && <button type="button" onClick={() => act("issue", row.invoice_number)} className="rounded bg-success px-2 py-1 text-[11px] font-semibold text-success-foreground">Issue</button>}
                       {["Draft", "Issued"].includes(row.status) && <button type="button" onClick={() => act("cancel", row.invoice_number)} className="rounded border border-destructive/30 bg-destructive/10 px-2 py-1 text-[11px] font-semibold text-destructive">Cancel</button>}
                     </div>
@@ -389,7 +405,55 @@ function InvoicesPage() {
           </SectionCard>
         </div>
       </div>
+      <InvoiceDetailDialog detail={detail} onClose={() => setDetail({ invoice: null, data: null, loading: false, error: "" })} />
     </>
+  );
+}
+
+function InvoiceDetailDialog({ detail, onClose }) {
+  if (!detail.invoice) return null;
+  const invoice = detail.data || detail.invoice;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+      <div className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-md border border-border bg-card p-4 shadow-xl">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold">Invoice Detail</div>
+            <div className="mt-1 font-mono text-xs text-muted-foreground">{invoice.invoice_number}</div>
+          </div>
+          <div className="flex gap-2">
+            <button type="button" onClick={() => window.print()} className="rounded border border-border px-2 py-1 text-xs font-semibold">Print</button>
+            <button type="button" onClick={onClose} className="rounded border border-border px-2 py-1 text-xs font-semibold">Close</button>
+          </div>
+        </div>
+        {detail.loading && <div className="mt-4 text-xs text-muted-foreground">Loading invoice...</div>}
+        {detail.error && <div className="mt-4"><ErrorState message={detail.error} /></div>}
+        {!detail.loading && !detail.error && (
+          <div className="mt-4 space-y-4 text-xs">
+            <div className="grid gap-3 sm:grid-cols-3">
+              <ReadonlyValue label="Cargo" value={invoice.cargo_reference} />
+              <ReadonlyValue label="Status" value={invoice.status} />
+              <ReadonlyValue label="Payment" value={invoice.payment_status} />
+              <ReadonlyValue label="Billing Period" value={`${formatDateTime(invoice.billing_period_start)} to ${formatDateTime(invoice.billing_period_end)}`} />
+              <ReadonlyValue label="Billable Days" value={invoice.billable_days} />
+              <ReadonlyValue label="Total" value={formatMoney(invoice.total_amount, invoice.currency)} />
+              <ReadonlyValue label="Paid" value={formatMoney(invoice.amount_paid, invoice.currency)} />
+              <ReadonlyValue label="Outstanding" value={formatMoney(invoice.outstanding_balance, invoice.currency)} />
+              <ReadonlyValue label="Tariff" value={invoice.tariff?.tariff_name || "Snapshot unavailable"} />
+            </div>
+            <SectionCard title="Charge Breakdown" icon={ReceiptText}>
+              <DataTable rows={invoice.line_items || []} emptyTitle="No line items" columns={[
+                { key: "line_type", label: "Type" },
+                { key: "description", label: "Description" },
+                { key: "quantity", label: "Quantity" },
+                { key: "unit_rate", label: "Unit Rate", render: (row) => formatMoney(row.unit_rate, invoice.currency) },
+                { key: "amount", label: "Amount", render: (row) => formatMoney(row.amount, invoice.currency) }
+              ]} />
+            </SectionCard>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -476,6 +540,7 @@ function PaymentsPage() {
 function TariffsPage() {
   const tariffs = useLoad(() => getFinanceTariffs(), "tariffs");
   const [message, setMessage] = useState("");
+  const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({
     tariff_name: "",
     cargo_type: "",
@@ -509,6 +574,29 @@ function TariffsPage() {
     try {
       await activateFinanceTariff(reference);
       setMessage(`${reference} activated.`);
+      await tariffs.refresh();
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    }
+  };
+
+  const deactivate = async (reference) => {
+    setMessage("");
+    try {
+      await deactivateFinanceTariff(reference);
+      setMessage(`${reference} deactivated.`);
+      await tariffs.refresh();
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    }
+  };
+
+  const saveEdit = async (payload) => {
+    setMessage("");
+    try {
+      await updateFinanceTariff(editing.tariff_version_reference, payload);
+      setEditing(null);
+      setMessage(`${editing.tariff_version_reference} updated.`);
       await tariffs.refresh();
     } catch (error) {
       setMessage(getErrorMessage(error));
@@ -560,13 +648,76 @@ function TariffsPage() {
                 { key: "effective_from", label: "Effective From", render: (row) => formatDateTime(row.effective_from) },
                 { key: "effective_to", label: "Effective To", render: (row) => formatDateTime(row.effective_to) },
                 { key: "is_active", label: "Status", render: (row) => <StatusBadge tone={row.is_active ? "success" : "muted"}>{row.is_active ? "Active" : "Inactive"}</StatusBadge> },
-                { key: "actions", label: "Actions", render: (row) => !row.is_active && <button type="button" onClick={() => activate(row.tariff_version_reference)} className="rounded bg-success px-2 py-1 text-[11px] font-semibold text-success-foreground">Activate</button> }
+                { key: "actions", label: "Actions", render: (row) => (
+                  <div className="flex flex-wrap gap-1">
+                    <button type="button" onClick={() => setEditing(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">Edit</button>
+                    {!row.is_active && <button type="button" onClick={() => activate(row.tariff_version_reference)} className="rounded bg-success px-2 py-1 text-[11px] font-semibold text-success-foreground">Activate</button>}
+                    {row.is_active && <button type="button" onClick={() => deactivate(row.tariff_version_reference)} className="rounded border border-warning/40 bg-warning/10 px-2 py-1 text-[11px] font-semibold text-warning">Deactivate</button>}
+                  </div>
+                ) }
               ]}
             />
           </SectionCard>
         </div>
       </div>
+      <TariffEditDialog tariff={editing} onClose={() => setEditing(null)} onSave={saveEdit} />
     </>
+  );
+}
+
+function TariffEditDialog({ tariff, onClose, onSave }) {
+  const [form, setForm] = useState({});
+  useEffect(() => {
+    if (tariff) {
+      setForm({
+        tariff_name: tariff.tariff_name || "",
+        cargo_type: tariff.cargo_type || "",
+        charging_unit: tariff.charging_unit || "per_cargo_per_day",
+        daily_rate: tariff.daily_rate || "",
+        currency: tariff.currency || "TZS",
+        minimum_billable_days: tariff.minimum_billable_days || 1,
+        grace_period_days: tariff.grace_period_days || 0,
+        penalty_type: tariff.penalty_type || "none",
+        penalty_rate: tariff.penalty_rate || 0,
+        fixed_penalty: tariff.fixed_penalty || 0,
+        effective_from: tariff.effective_from ? String(tariff.effective_from).slice(0, 16) : "",
+        effective_to: tariff.effective_to ? String(tariff.effective_to).slice(0, 16) : "",
+        notes: tariff.notes || ""
+      });
+    }
+  }, [tariff]);
+  if (!tariff) return null;
+  const submit = (event) => {
+    event.preventDefault();
+    onSave(form);
+  };
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+      <form onSubmit={submit} className="w-full max-w-3xl rounded-md border border-border bg-card p-4 shadow-xl">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold">Edit Tariff Version</div>
+            <div className="mt-1 font-mono text-xs text-muted-foreground">{tariff.tariff_version_reference}</div>
+          </div>
+          <button type="button" onClick={onClose} className="rounded border border-border px-2 py-1 text-xs font-semibold">Close</button>
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <FormInput label="Tariff Name" value={form.tariff_name || ""} onChange={(value) => setForm((current) => ({ ...current, tariff_name: value }))} required />
+          <FormInput label="Cargo Type" value={form.cargo_type || ""} onChange={(value) => setForm((current) => ({ ...current, cargo_type: value }))} required />
+          <SelectField label="Charging Unit" value={form.charging_unit || "per_cargo_per_day"} onChange={(value) => setForm((current) => ({ ...current, charging_unit: value }))} options={["per_cargo_per_day", "per_kilogram_per_day", "per_tonne_per_day", "per_cubic_metre_per_day", "fixed_daily_charge"]} />
+          <FormInput label="Daily Rate" type="number" value={form.daily_rate || ""} onChange={(value) => setForm((current) => ({ ...current, daily_rate: value }))} required />
+          <FormInput label="Minimum Days" type="number" value={form.minimum_billable_days || 1} onChange={(value) => setForm((current) => ({ ...current, minimum_billable_days: value }))} />
+          <FormInput label="Grace Days" type="number" value={form.grace_period_days || 0} onChange={(value) => setForm((current) => ({ ...current, grace_period_days: value }))} />
+          <FormInput label="Effective From" type="datetime-local" value={form.effective_from || ""} onChange={(value) => setForm((current) => ({ ...current, effective_from: value }))} required />
+          <FormInput label="Effective To" type="datetime-local" value={form.effective_to || ""} onChange={(value) => setForm((current) => ({ ...current, effective_to: value }))} />
+          <FormInput label="Notes" value={form.notes || ""} onChange={(value) => setForm((current) => ({ ...current, notes: value }))} />
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="rounded border border-border px-3 py-2 text-xs font-semibold">Cancel</button>
+          <button type="submit" className="rounded bg-info px-3 py-2 text-xs font-semibold text-info-foreground">Save Tariff</button>
+        </div>
+      </form>
+    </div>
   );
 }
 
@@ -580,19 +731,23 @@ function FormInput({ label, value, onChange, type = "text", required = false }) 
 
 function ReportsPage() {
   const reports = useLoad(() => getFinanceReports(), "reports");
+  const revenueRows = reports.data?.revenue_by_date || [];
+  const chargeRows = reports.data?.charges_by_cargo_type || [];
   return (
     <>
       <PageHeader eyebrow="Finance" title="Financial Reports" description="Revenue by date range and charges grouped by cargo type." />
       <div className="flex-1 overflow-auto p-4">
         <div className="grid gap-3 xl:grid-cols-2">
           <SectionCard title="Revenue By Date" icon={BarChart3}>
-            <DataTable loading={reports.loading} error={reports.error} rows={reports.data?.revenue_by_date || []} emptyTitle="No revenue data" columns={[
+            <ReportBarChart data={revenueRows} xKey="date" yKey="amount" />
+            <DataTable loading={reports.loading} error={reports.error} rows={revenueRows} emptyTitle="No revenue data" columns={[
               { key: "date", label: "Date", render: (row) => formatDateTime(row.date) },
               { key: "amount", label: "Revenue", render: (row) => formatMoney(row.amount) }
             ]} />
           </SectionCard>
           <SectionCard title="Charges By Cargo Type" icon={PackageSearch}>
-            <DataTable loading={reports.loading} error={reports.error} rows={reports.data?.charges_by_cargo_type || []} emptyTitle="No charge data" columns={[
+            <ReportBarChart data={chargeRows} xKey="cargo_type" yKey="amount" />
+            <DataTable loading={reports.loading} error={reports.error} rows={chargeRows} emptyTitle="No charge data" columns={[
               { key: "cargo_type", label: "Cargo Type" },
               { key: "amount", label: "Charges", render: (row) => formatMoney(row.amount) }
             ]} />
@@ -600,6 +755,29 @@ function ReportsPage() {
         </div>
       </div>
     </>
+  );
+}
+
+function ReportBarChart({ data, xKey, yKey }) {
+  if (!data?.length) {
+    return <div className="mb-3 rounded border border-border bg-muted/20 p-4 text-xs text-muted-foreground">No chart data available.</div>;
+  }
+  const chartData = data.map((row) => ({
+    ...row,
+    [yKey]: Number(row[yKey] || 0)
+  }));
+  return (
+    <div className="mb-3 h-52 rounded border border-border bg-background p-2">
+      <ResponsiveContainer width="100%" height="100%">
+        <RechartsBarChart data={chartData}>
+          <CartesianGrid strokeDasharray="3 3" />
+          <XAxis dataKey={xKey} tick={{ fontSize: 10 }} />
+          <YAxis tick={{ fontSize: 10 }} />
+          <Tooltip formatter={(value) => formatMoney(value)} />
+          <Bar dataKey={yKey} fill="hsl(var(--info))" radius={[3, 3, 0, 0]} />
+        </RechartsBarChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 

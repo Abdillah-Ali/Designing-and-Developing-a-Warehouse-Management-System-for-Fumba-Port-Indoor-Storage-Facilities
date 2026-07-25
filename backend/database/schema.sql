@@ -1,6 +1,6 @@
 -- Run this file while connected to the fumbaport_wms database.
 -- Use `npm run init-db` for normal setup so environment-configured roles and
--- shifts are seeded after this structural schema is applied.
+-- operational shifts are configured by the System Admin after installation.
 
 CREATE SEQUENCE IF NOT EXISTS cargo_number_seq START 1;
 

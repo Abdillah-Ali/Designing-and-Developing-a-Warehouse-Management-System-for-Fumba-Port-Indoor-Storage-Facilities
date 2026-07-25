@@ -1,4 +1,4 @@
-import { getStoredAuthToken, setStoredAuthToken, clearStoredAuthToken } from "@/lib/portal-access";
+import { getStoredAuthToken, setStoredAuthToken, setStoredPermissions, clearStoredAuthToken } from "@/lib/portal-access";
 
 const getDefaultApiBaseUrl = () => {
   if (typeof window === "undefined") {
@@ -144,6 +144,7 @@ export const login = async (username, password) => {
 
   if (payload.data?.token) {
     setStoredAuthToken(payload.data.token);
+    setStoredPermissions(payload.data.permissions || []);
   }
 
   return payload;
@@ -280,8 +281,55 @@ export const deactivateUser = (id) => request(`/users/${encodeURIComponent(id)}/
 });
 
 export const getRoles = () => request("/roles");
-export const getWarehouses = () => request("/warehouses");
-export const getShifts = () => request("/shifts");
+export const getMe = () => request("/auth/me");
+export const getMyPermissions = () => request("/auth/me/permissions");
+export const getAdminRoles = () => request("/admin/roles");
+export const getAdminPermissions = () => request("/admin/permissions");
+export const getAdminRolePermissions = (roleReference) => request(`/admin/roles/${encodeURIComponent(roleReference)}/permissions`);
+export const updateAdminRolePermissions = (roleReference, permissionKeys) => request(
+  `/admin/roles/${encodeURIComponent(roleReference)}/permissions`,
+  {
+    method: "PUT",
+    body: { permission_keys: permissionKeys }
+  }
+);
+export const getNotificationEscalationSettings = () => request("/admin/notification-escalation");
+export const updateNotificationEscalationSettings = (payload) => request("/admin/notification-escalation", {
+  method: "PUT",
+  body: payload
+});
+export const getWarehouses = (params = {}) => request(`/warehouses${buildQuerySuffix(params)}`);
+export const getWarehouseAssignments = (params = {}) => request(`/warehouses/assignments${buildQuerySuffix(params)}`);
+export const getWarehouseAssignmentHistory = () => request("/warehouses/assignment-history");
+export const assignUserToWarehouse = (warehouseReference, payload) => request(
+  `/warehouses/${encodeURIComponent(warehouseReference)}/assignments`,
+  { method: "POST", body: payload }
+);
+export const removeUserFromWarehouse = (warehouseReference, username, reason = "") => request(
+  `/warehouses/${encodeURIComponent(warehouseReference)}/assignments/${encodeURIComponent(username)}`,
+  { method: "DELETE", body: { reason } }
+);
+export const getShifts = (params = {}) => request(`/shifts${buildQuerySuffix(params)}`);
+export const getShift = (reference) => request(`/shifts/${encodeURIComponent(reference)}`);
+export const createShift = (payload) => request("/shifts", { method: "POST", body: payload });
+export const updateShift = (reference, payload) => request(`/shifts/${encodeURIComponent(reference)}`, {
+  method: "PUT",
+  body: payload
+});
+export const updateShiftStatus = (reference, status) => request(`/shifts/${encodeURIComponent(reference)}/status`, {
+  method: "PATCH",
+  body: { status }
+});
+export const getShiftUsers = (reference) => request(`/shifts/${encodeURIComponent(reference)}/users`);
+export const assignUserToShift = (reference, payload) => request(`/shifts/${encodeURIComponent(reference)}/assignments`, {
+  method: "POST",
+  body: payload
+});
+export const removeUserFromShift = (reference, username, reason = "") => request(
+  `/shifts/${encodeURIComponent(reference)}/assignments/${encodeURIComponent(username)}`,
+  { method: "DELETE", body: { reason } }
+);
+export const getShiftAssignmentHistory = () => request("/shifts/assignment-history");
 
 export const getAuditLogs = (params = {}) => {
   return request(`/audit-logs${buildQuerySuffix(params)}`);

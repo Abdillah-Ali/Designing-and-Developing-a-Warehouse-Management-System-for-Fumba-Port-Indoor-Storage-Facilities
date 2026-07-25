@@ -1,3 +1,4 @@
+const crypto = require("node:crypto");
 const db = require("../config/db");
 const {
   closeUserSession,
@@ -20,6 +21,7 @@ const { buildError } = require("../utils/apiError");
 const { hashPassword, verifyPassword } = require("../utils/password");
 const { createToken, verifyToken } = require("../utils/token");
 const { roleNames } = require("../config/systemConfig");
+const { loadRolePermissions } = require("../services/permissionService");
 const {
   TRANSFER_BLOCKED_MESSAGE,
   getPendingWarehouseTaskSummary,
@@ -58,6 +60,62 @@ const passwordPattern = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$
 const cleanString = (value) => {
   if (value === undefined || value === null) return value;
   return String(value).trim();
+};
+
+const generateAssignmentReference = (prefix) => (
+  `${prefix}-${new Date().getFullYear()}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`
+);
+
+const recordWarehouseAssignmentHistory = async (client, {
+  userId,
+  previousWarehouseId = null,
+  warehouseId = null,
+  action,
+  reason = null,
+  assignedBy = null,
+  username = null
+}) => {
+  await client.query(
+    `INSERT INTO warehouse_assignment_history (
+       public_reference, user_id, warehouse_id, previous_warehouse_id, action, reason, assigned_by, metadata
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [
+      generateAssignmentReference("WHA"),
+      userId,
+      warehouseId,
+      previousWarehouseId,
+      action,
+      reason,
+      assignedBy,
+      JSON.stringify({ username })
+    ]
+  );
+};
+
+const recordShiftAssignmentHistory = async (client, {
+  userId,
+  previousShiftId = null,
+  shiftId = null,
+  action,
+  reason = null,
+  assignedBy = null,
+  username = null
+}) => {
+  await client.query(
+    `INSERT INTO shift_assignment_history (
+       public_reference, user_id, shift_id, previous_shift_id, action, reason, assigned_by, metadata
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [
+      generateAssignmentReference("SHA"),
+      userId,
+      shiftId,
+      previousShiftId,
+      action,
+      reason,
+      assignedBy,
+      JSON.stringify({ username })
+    ]
+  );
 };
 
 const readId = (value, fieldName, required = false) => {
@@ -170,21 +228,27 @@ const validateUserRecord = async (client, payload, existing = null) => {
 
   if (candidate.warehouse_id) {
     const warehouseResult = await client.query(
-      "SELECT id FROM warehouses WHERE id = $1",
+      "SELECT id, status FROM warehouses WHERE id = $1",
       [candidate.warehouse_id]
     );
     if (warehouseResult.rowCount === 0) {
       throw buildError("Selected warehouse was not found.", 400);
     }
+    if (warehouseResult.rows[0].status !== "active") {
+      throw buildError("Inactive warehouses cannot be assigned to users.", 400);
+    }
   }
 
   if (candidate.shift_id) {
     const shiftResult = await client.query(
-      "SELECT id FROM shifts WHERE id = $1",
+      "SELECT id, status FROM shifts WHERE id = $1",
       [candidate.shift_id]
     );
     if (shiftResult.rowCount === 0) {
       throw buildError("Selected shift was not found.", 400);
+    }
+    if (shiftResult.rows[0].status !== "active") {
+      throw buildError("Inactive shifts cannot be assigned to users.", 400);
     }
   }
 
@@ -637,6 +701,26 @@ const reassignUserPendingTasks = async (req, res, next) => {
       client
     );
 
+    if (payload.warehouse_id) {
+      await recordWarehouseAssignmentHistory(client, {
+        userId,
+        warehouseId: payload.warehouse_id,
+        action: "Assigned",
+        assignedBy: req.auth?.userId || null,
+        username: payload.username
+      });
+    }
+
+    if (payload.shift_id) {
+      await recordShiftAssignmentHistory(client, {
+        userId,
+        shiftId: payload.shift_id,
+        action: "Assigned",
+        assignedBy: req.auth?.userId || null,
+        username: payload.username
+      });
+    }
+
     const remaining = await getPendingWarehouseTaskSummary(client, sourceUserId, source.role_name);
     await client.query("COMMIT");
 
@@ -971,6 +1055,34 @@ const updateUser = async (req, res, next) => {
         },
         client
       );
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(payload, "warehouse_id")
+      && Number(existing.warehouse_id || 0) !== Number(payload.warehouse_id || 0)
+    ) {
+      await recordWarehouseAssignmentHistory(client, {
+        userId: id,
+        previousWarehouseId: existing.warehouse_id || null,
+        warehouseId: payload.warehouse_id || null,
+        action: payload.warehouse_id ? (existing.warehouse_id ? "Reassigned" : "Assigned") : "Removed",
+        assignedBy: req.auth?.userId || null,
+        username: existing.username
+      });
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(payload, "shift_id")
+      && Number(existing.shift_id || 0) !== Number(payload.shift_id || 0)
+    ) {
+      await recordShiftAssignmentHistory(client, {
+        userId: id,
+        previousShiftId: existing.shift_id || null,
+        shiftId: payload.shift_id || null,
+        action: payload.shift_id ? (existing.shift_id ? "Reassigned" : "Assigned") : "Removed",
+        assignedBy: req.auth?.userId || null,
+        username: existing.username
+      });
     }
 
     if (passwordReset) {
@@ -1373,6 +1485,7 @@ const login = async (req, res, next) => {
     );
     const loginRoleName = isScannerLogin ? roleNames.scanner : user.role_name;
     const loginRoleId = isScannerLogin ? user.scanner_role_id : user.role_id;
+    const permissions = await loadRolePermissions(loginRoleId, client);
 
     res.json({
       success: true,
@@ -1382,6 +1495,7 @@ const login = async (req, res, next) => {
       bootstrap_completed: isScannerLogin ? false : user.bootstrap_completed,
       data: {
         token,
+        permissions,
         must_change_password: isScannerLogin ? false : user.must_change_password,
         is_bootstrap_admin: isScannerLogin ? false : user.is_bootstrap_admin,
         bootstrap_completed: isScannerLogin ? false : user.bootstrap_completed,

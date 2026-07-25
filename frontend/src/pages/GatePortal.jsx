@@ -31,6 +31,7 @@ import {
   confirmGateOut,
   getEmergencyReleaseRequests,
   getGateDashboard,
+  getGateEligibility,
   getGateRecords,
   getGateReleaseQueue,
   logout,
@@ -224,11 +225,16 @@ function ReleaseQueuePage() {
 function GateOutDialog({ cargo, onClose, onSaved }) {
   const [form, setForm] = useState({ vehicle_number: "", driver_name: "", gate_notes: "", emergency_request_reference: "" });
   const [error, setError] = useState("");
+  const [eligibility, setEligibility] = useState({ loading: false, data: null, error: "" });
 
   useEffect(() => {
     if (cargo) {
       setForm({ vehicle_number: "", driver_name: "", gate_notes: "", emergency_request_reference: "" });
       setError("");
+      setEligibility({ loading: true, data: null, error: "" });
+      getGateEligibility(cargo.cargo_reference)
+        .then((response) => setEligibility({ loading: false, data: response.data, error: "" }))
+        .catch((eligibilityError) => setEligibility({ loading: false, data: null, error: getErrorMessage(eligibilityError) }));
     }
   }, [cargo]);
 
@@ -254,6 +260,35 @@ function GateOutDialog({ cargo, onClose, onSaved }) {
             <div className="mt-1 text-xs text-muted-foreground">{cargo.cargo_reference}</div>
           </div>
           <button type="button" onClick={onClose} className="rounded border border-border px-2 py-1 text-xs font-semibold">Close</button>
+        </div>
+        <div className="mt-4 rounded border border-border bg-muted/30 p-3 text-xs">
+          <div className="flex items-center justify-between gap-3">
+            <span className="font-semibold">Live Eligibility</span>
+            {eligibility.loading ? (
+              <StatusBadge tone="info">Checking</StatusBadge>
+            ) : eligibility.data?.eligible ? (
+              <StatusBadge tone="success">Ready</StatusBadge>
+            ) : (
+              <StatusBadge tone="destructive">Blocked</StatusBadge>
+            )}
+          </div>
+          {eligibility.error && <div className="mt-2 text-destructive">{eligibility.error}</div>}
+          {eligibility.data && (
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <div>Customs: <span className="font-semibold">{eligibility.data.customs_status}</span></div>
+              <div>Finance: <span className="font-semibold">{eligibility.data.financial_status}</span></div>
+              <div>Dispatch: <span className="font-semibold">{eligibility.data.supervisor_dispatch_approval}</span></div>
+              <div>Outstanding: <span className="font-semibold">{formatMoney(eligibility.data.outstanding_amount)}</span></div>
+              <div className="sm:col-span-2">Location: <span className="font-semibold">{eligibility.data.location || "Not placed"}</span></div>
+              {eligibility.data.blocked_requirements?.length > 0 && (
+                <ul className="sm:col-span-2 list-disc space-y-1 pl-4 text-destructive">
+                  {eligibility.data.blocked_requirements.map((item) => (
+                    <li key={`${item.requirement}-${item.message}`}>{item.message}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
         </div>
         <div className="mt-4 grid gap-3">
           <InputField label="Vehicle Number" value={form.vehicle_number} onChange={(value) => setForm((current) => ({ ...current, vehicle_number: value }))} required />

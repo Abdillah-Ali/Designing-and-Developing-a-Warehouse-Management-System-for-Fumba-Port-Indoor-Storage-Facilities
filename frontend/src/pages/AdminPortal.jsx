@@ -82,6 +82,7 @@ import {
   createLevel,
   createRack,
   createScanner,
+  createShift,
   createZone,
   createUser,
   deactivateUser,
@@ -91,22 +92,30 @@ import {
   deleteWarehouse,
   deleteZone,
   getAuditLogs,
+  getAdminPermissions,
+  getAdminRolePermissions,
+  getAdminRoles,
   getBins,
   getBinRules,
   getCapacityConfigurations,
   getCargo,
   getCargoById,
   getLevels,
+  getPlacementFailures,
   getPlacementLogs,
   getRacks,
   getRoles,
   getShifts,
+  getShiftAssignmentHistory,
+  getShiftUsers,
   getSupervisorApprovals,
   getSupervisorReviewConfiguration,
   getUserPendingTasks,
   getUserSessions,
   getUsers,
   getWarehouses,
+  getWarehouseAssignments,
+  getWarehouseAssignmentHistory,
   getZones,
   logout,
   printBinBarcode,
@@ -117,6 +126,13 @@ import {
   updateBinRule,
   updateBinStatus,
   updateCapacityConfiguration,
+  updateAdminRolePermissions,
+  updateShift,
+  updateShiftStatus,
+  assignUserToShift,
+  removeUserFromShift,
+  assignUserToWarehouse,
+  removeUserFromWarehouse,
   updateLevel,
   updateLevelStatus,
   updateRack,
@@ -233,57 +249,6 @@ const adminNavigation = [
     ]
   },
   { label: "Profile", icon: UserCircle2, to: "/admin/profile" }
-];
-
-const permissionRows = [
-  {
-    module: "System Configuration",
-    systemAdmin: "Full access",
-    warehouseStaff: "No access",
-    supervisor: "Read only",
-    customsOfficer: "No access",
-    billingOfficer: "No access"
-  },
-  {
-    module: "User Management",
-    systemAdmin: "Create, update, activate, deactivate",
-    warehouseStaff: "No access",
-    supervisor: "Read assigned team",
-    customsOfficer: "No access",
-    billingOfficer: "No access"
-  },
-  {
-    module: "Cargo Operations",
-    systemAdmin: "Full oversight",
-    warehouseStaff: "Cargo registration, placement scanning, cargo tracking",
-    supervisor: "Read, approve exceptions",
-    customsOfficer: "Inspection review",
-    billingOfficer: "Release documentation review"
-  },
-  {
-    module: "Warehouse Structure",
-    systemAdmin: "Configure zones, racks, levels, bins",
-    warehouseStaff: "Read storage structure",
-    supervisor: "Read storage structure",
-    customsOfficer: "Read restricted zones",
-    billingOfficer: "No access"
-  },
-  {
-    module: "Dispatch Oversight",
-    systemAdmin: "Full oversight",
-    warehouseStaff: "Dispatch preparation",
-    supervisor: "Dispatch review",
-    customsOfficer: "Customs clearance review",
-    billingOfficer: "Release readiness review"
-  },
-  {
-    module: "Audit & Security",
-    systemAdmin: "Read audit and security events",
-    warehouseStaff: "No access",
-    supervisor: "Read team activity",
-    customsOfficer: "Read own sessions",
-    billingOfficer: "Read own sessions"
-  }
 ];
 
 const binRuleCards = [
@@ -1730,15 +1695,70 @@ function ResetUserPasswordForm({ user, onCancel, onSave }) {
 }
 
 function RolesPermissionsPage() {
-  const roles = useApiCollection(() => getRoles(), "roles-permissions");
+  const roles = useApiCollection(() => getAdminRoles(), "roles-permissions");
+  const permissions = useApiCollection(() => getAdminPermissions(), "permissions-catalog");
   const roleRows = roles.rows;
+  const [selectedRole, setSelectedRole] = useState("");
+  const [assigned, setAssigned] = useState([]);
+  const [loadingAssigned, setLoadingAssigned] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!selectedRole && roleRows[0]?.public_reference) {
+      setSelectedRole(roleRows[0].public_reference);
+    }
+  }, [roleRows, selectedRole]);
+
+  useEffect(() => {
+    if (!selectedRole) return;
+    let cancelled = false;
+    setLoadingAssigned(true);
+    setError("");
+    getAdminRolePermissions(selectedRole)
+      .then((response) => {
+        if (!cancelled) setAssigned(response.data?.permission_keys || []);
+      })
+      .catch((loadError) => {
+        if (!cancelled) setError(getErrorMessage(loadError));
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingAssigned(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRole]);
+
+  const togglePermission = (permissionKey) => {
+    setAssigned((current) => (
+      current.includes(permissionKey)
+        ? current.filter((key) => key !== permissionKey)
+        : [...current, permissionKey]
+    ));
+  };
+
+  const savePermissions = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      await updateAdminRolePermissions(selectedRole, assigned);
+      toast.success("Role permissions updated.");
+    } catch (saveError) {
+      setError(getErrorMessage(saveError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const selectedRoleName = roleRows.find((role) => role.public_reference === selectedRole)?.role_name || "role";
 
   return (
     <>
       <PageHeader
         eyebrow="System Management"
         title="Roles & Permissions"
-        description="Readonly role access matrix for WMS modules and operational actions."
+        description="Database-backed role permissions for WMS modules and operational actions."
       />
       <div className="flex-1 overflow-auto p-4">
         <div className="grid gap-3 xl:grid-cols-[280px_1fr]">
@@ -1750,28 +1770,55 @@ function RolesPermissionsPage() {
             ) : (
               <div className="space-y-2">
                 {roleRows.map((role) => (
-                  <div key={role.id || role.role_name} className="rounded border border-border bg-muted/20 px-3 py-2 text-xs">
+                  <button
+                    type="button"
+                    key={role.public_reference || role.role_name}
+                    onClick={() => setSelectedRole(role.public_reference)}
+                    className={cn(
+                      "w-full rounded border border-border bg-muted/20 px-3 py-2 text-left text-xs",
+                      selectedRole === role.public_reference && "border-info bg-info/10"
+                    )}
+                  >
                     <div className="font-semibold">{role.role_name}</div>
                     <div className="mt-1 text-[11px] text-muted-foreground">{role.role_description || "Scoped system access"}</div>
                     {role.user_count !== undefined && <div className="mt-1 text-[11px] text-muted-foreground">{formatCount(role.user_count)} assigned users</div>}
-                  </div>
+                  </button>
                 ))}
               </div>
             )}
           </SectionCard>
-          <SectionCard title="Permission Matrix" icon={KeyRound}>
+          <SectionCard title={`Permissions for ${selectedRoleName}`} icon={KeyRound}>
+            {error && <div className="mb-3"><ErrorState message={error} /></div>}
             <DataTable
-              rows={permissionRows}
+              loading={permissions.loading || loadingAssigned}
+              error={permissions.error}
+              rows={permissions.rows}
               emptyTitle="No permissions configured"
               columns={[
                 { key: "module", label: "Module", className: "font-semibold" },
-                { key: "systemAdmin", label: "System Admin" },
-                { key: "warehouseStaff", label: "Warehouse Staff" },
-                { key: "supervisor", label: "Supervisor" },
-                { key: "customsOfficer", label: "Customs Officer" },
-                { key: "billingOfficer", label: "Billing Officer" }
+                { key: "permission_key", label: "Permission", className: "font-mono" },
+                { key: "description", label: "Description" },
+                { key: "system_protected", label: "Protected", render: (row) => row.system_protected ? <StatusBadge tone="warning">Protected</StatusBadge> : <StatusBadge tone="muted">Configurable</StatusBadge> },
+                {
+                  key: "assigned",
+                  label: "Assigned",
+                  render: (row) => (
+                    <input
+                      type="checkbox"
+                      checked={assigned.includes(row.permission_key)}
+                      disabled={row.system_protected && assigned.includes(row.permission_key)}
+                      onChange={() => togglePermission(row.permission_key)}
+                      aria-label={`Toggle ${row.permission_key}`}
+                    />
+                  )
+                }
               ]}
             />
+            <div className="mt-3 flex justify-end">
+              <ToolbarButton icon={saving ? Loader2 : Save} onClick={savePermissions} disabled={!selectedRole || saving}>
+                {saving ? "Saving..." : "Save Permissions"}
+              </ToolbarButton>
+            </div>
           </SectionCard>
         </div>
       </div>
@@ -1780,49 +1827,205 @@ function RolesPermissionsPage() {
 }
 
 function ShiftAssignmentPage() {
-  const shifts = useApiCollection(() => getShifts(), "shift-assignment");
-  const users = useApiCollection(() => getUsers(), "shift-users");
+  const [refreshKey, setRefreshKey] = useState(0);
+  const shifts = useApiCollection(() => getShifts(), `shift-assignment-${refreshKey}`);
+  const users = useApiCollection(() => getUsers(), `shift-users-${refreshKey}`);
+  const [selectedShift, setSelectedShift] = useState("");
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({
+    shift_name: "",
+    shift_code: "",
+    start_time: "",
+    end_time: "",
+    description: "",
+    grace_period_minutes: "",
+    effective_date: "",
+    status: "active"
+  });
+  const [assignUsername, setAssignUsername] = useState("");
+  const [message, setMessage] = useState("");
+  const selectedUsers = useApiCollection(
+    () => selectedShift ? getShiftUsers(selectedShift) : Promise.resolve({ data: [] }),
+    `shift-users-${selectedShift}-${refreshKey}`
+  );
+  const history = useApiCollection(() => getShiftAssignmentHistory(), `shift-history-${refreshKey}`);
   const shiftRows = shifts.rows;
+
+  useEffect(() => {
+    if (!selectedShift && shiftRows[0]?.public_reference) setSelectedShift(shiftRows[0].public_reference);
+  }, [selectedShift, shiftRows]);
+
+  const resetForm = () => {
+    setEditing(null);
+    setForm({
+      shift_name: "",
+      shift_code: "",
+      start_time: "",
+      end_time: "",
+      description: "",
+      grace_period_minutes: "",
+      effective_date: "",
+      status: "active"
+    });
+  };
+
+  const editShift = (shift) => {
+    setEditing(shift);
+    setForm({
+      shift_name: shift.shift_name || "",
+      shift_code: shift.shift_code || "",
+      start_time: shift.start_time || "",
+      end_time: shift.end_time || "",
+      description: shift.description || "",
+      grace_period_minutes: shift.grace_period_minutes ?? "",
+      effective_date: shift.effective_date ? String(shift.effective_date).slice(0, 10) : "",
+      status: String(shift.status || "Active").toLowerCase()
+    });
+  };
+
+  const submitShift = async (event) => {
+    event.preventDefault();
+    setMessage("");
+    try {
+      if (editing) {
+        await updateShift(editing.public_reference, form);
+        setMessage("Shift updated.");
+      } else {
+        await createShift(form);
+        setMessage("Shift created.");
+      }
+      resetForm();
+      setRefreshKey((value) => value + 1);
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    }
+  };
+
+  const changeStatus = async (shift) => {
+    setMessage("");
+    try {
+      const nextStatus = shift.status === "Active" ? "inactive" : "active";
+      await updateShiftStatus(shift.public_reference, nextStatus);
+      setMessage(`Shift ${nextStatus === "active" ? "activated" : "deactivated"}.`);
+      setRefreshKey((value) => value + 1);
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    }
+  };
+
+  const assignUser = async () => {
+    if (!selectedShift || !assignUsername) return;
+    setMessage("");
+    try {
+      await assignUserToShift(selectedShift, { username: assignUsername });
+      setAssignUsername("");
+      setMessage("User assigned to shift.");
+      setRefreshKey((value) => value + 1);
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    }
+  };
+
+  const removeAssignment = async (username) => {
+    setMessage("");
+    try {
+      await removeUserFromShift(selectedShift, username, "Removed by System Admin.");
+      setMessage("Shift assignment removed.");
+      setRefreshKey((value) => value + 1);
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    }
+  };
 
   return (
     <>
       <PageHeader
         eyebrow="System Management"
         title="Shift Assignment"
-        description="Current user-to-shift coverage from the user management records."
+        description="Create shifts, manage activation, assign users, and preserve assignment history."
       />
       <div className="flex-1 overflow-auto p-4">
-        <div className="grid gap-3 lg:grid-cols-3">
-          {shiftRows.map((shift) => {
-            const assignedUsers = users.rows.filter((user) => String(user.shift_id || "") === String(shift.id || ""));
-
-            return (
-              <SectionCard
-                key={shift.id || shift.shift_name}
-                title={formatShiftHours(shift) ? `${shift.shift_name} (${formatShiftHours(shift)})` : shift.shift_name}
-                icon={CalendarClock}
-              >
-                <DataTable
-                  loading={shifts.loading || users.loading}
-                  error={shifts.error || users.error}
-                  rows={assignedUsers}
-                  emptyTitle="No active shift assignment"
-                  emptyBody="Assign a shift from the Users screen to populate this list."
-                  columns={[
-                    { key: "full_name", label: "User", className: "font-semibold" },
-                    { key: "role_name", label: "Role", render: (row) => row.role_name || "No role" },
-                    { key: "warehouse_name", label: "Warehouse", render: (row) => row.warehouse_code ? `${row.warehouse_code} - ${row.warehouse_name}` : "All warehouses" },
-                    { key: "status", label: "Status", render: (row) => <StatusBadge tone={accountStatusTone(row.status)}>{formatAccountStatus(row.status)}</StatusBadge> }
-                  ]}
-                />
-              </SectionCard>
-            );
-          })}
-          {!shiftRows.length && (
-            <SectionCard title="Shift Assignment" icon={CalendarClock}>
-              <EmptyState title="No shifts loaded" />
+        {message && <div className="mb-3 rounded border border-info/30 bg-info/10 px-3 py-2 text-xs font-semibold text-info">{message}</div>}
+        <div className="grid gap-3 xl:grid-cols-[360px_1fr]">
+          <SectionCard title={editing ? "Edit Shift" : "Create Shift"} icon={CalendarClock}>
+            <form className="grid gap-3" onSubmit={submitShift}>
+              <FormField label="Shift Name"><input className={inputClass} value={form.shift_name} onChange={(event) => setForm((current) => ({ ...current, shift_name: event.target.value }))} required /></FormField>
+              <FormField label="Shift Code"><input className={inputClass} value={form.shift_code} onChange={(event) => setForm((current) => ({ ...current, shift_code: event.target.value.toUpperCase() }))} required /></FormField>
+              <div className="grid grid-cols-2 gap-3">
+                <FormField label="Start Time"><input className={inputClass} type="time" value={form.start_time} onChange={(event) => setForm((current) => ({ ...current, start_time: event.target.value }))} required /></FormField>
+                <FormField label="End Time"><input className={inputClass} type="time" value={form.end_time} onChange={(event) => setForm((current) => ({ ...current, end_time: event.target.value }))} required /></FormField>
+              </div>
+              <FormField label="Grace Minutes"><input className={inputClass} type="number" min="0" value={form.grace_period_minutes} onChange={(event) => setForm((current) => ({ ...current, grace_period_minutes: event.target.value }))} /></FormField>
+              <FormField label="Effective Date"><input className={inputClass} type="date" value={form.effective_date} onChange={(event) => setForm((current) => ({ ...current, effective_date: event.target.value }))} /></FormField>
+              <FormField label="Description"><input className={inputClass} value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} /></FormField>
+              <div className="flex justify-end gap-2">
+                {editing && <ToolbarButton variant="secondary" onClick={resetForm}>Cancel</ToolbarButton>}
+                <ToolbarButton icon={Save} type="submit">{editing ? "Save Shift" : "Create Shift"}</ToolbarButton>
+              </div>
+            </form>
+          </SectionCard>
+          <div className="space-y-3">
+            <SectionCard title="Configured Shifts" icon={CalendarClock}>
+              <DataTable
+                loading={shifts.loading}
+                error={shifts.error}
+                rows={shiftRows}
+                emptyTitle="No shifts configured"
+                emptyBody="Create the first operational shift before assigning Warehouse Staff users."
+                columns={[
+                  { key: "shift_code", label: "Code", className: "font-mono font-semibold" },
+                  { key: "shift_name", label: "Name" },
+                  { key: "hours", label: "Hours", render: (row) => formatShiftHours(row) },
+                  { key: "status", label: "Status", render: (row) => <StatusBadge tone={row.status === "Active" ? "success" : "muted"}>{row.status}</StatusBadge> },
+                  { key: "assigned_user_count", label: "Users" },
+                  { key: "actions", label: "Actions", render: (row) => (
+                    <div className="flex flex-wrap gap-1">
+                      <button type="button" onClick={() => setSelectedShift(row.public_reference)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">Users</button>
+                      <button type="button" onClick={() => editShift(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">Edit</button>
+                      <button type="button" onClick={() => changeStatus(row)} className="rounded border border-warning/40 bg-warning/10 px-2 py-1 text-[11px] font-semibold text-warning">{row.status === "Active" ? "Deactivate" : "Activate"}</button>
+                    </div>
+                  ) }
+                ]}
+              />
             </SectionCard>
-          )}
+            <SectionCard title="Assigned Users" icon={Users}>
+              <div className="mb-3 grid gap-2 md:grid-cols-[1fr_auto]">
+                <select className={inputClass} value={assignUsername} onChange={(event) => setAssignUsername(event.target.value)}>
+                  <option value="">Select user to assign</option>
+                  {users.rows.map((user) => <option key={user.username} value={user.username}>{user.full_name} ({user.username})</option>)}
+                </select>
+                <ToolbarButton icon={UserPlus} onClick={assignUser} disabled={!selectedShift || !assignUsername}>Assign</ToolbarButton>
+              </div>
+              <DataTable
+                loading={selectedUsers.loading}
+                error={selectedUsers.error}
+                rows={selectedUsers.rows}
+                emptyTitle="No users assigned"
+                columns={[
+                  { key: "full_name", label: "User", className: "font-semibold" },
+                  { key: "username", label: "Username" },
+                  { key: "role_name", label: "Role" },
+                  { key: "status", label: "Status", render: (row) => <StatusBadge tone={accountStatusTone(row.status)}>{formatAccountStatus(row.status)}</StatusBadge> },
+                  { key: "actions", label: "Actions", render: (row) => <button type="button" onClick={() => removeAssignment(row.username)} className="rounded border border-destructive/30 bg-destructive/10 px-2 py-1 text-[11px] font-semibold text-destructive">Remove</button> }
+                ]}
+              />
+            </SectionCard>
+            <SectionCard title="Shift Assignment History" icon={Activity}>
+              <DataTable
+                loading={history.loading}
+                error={history.error}
+                rows={history.rows}
+                emptyTitle="No shift assignment history"
+                columns={[
+                  { key: "public_reference", label: "History Ref", className: "font-mono font-semibold" },
+                  { key: "username", label: "User" },
+                  { key: "action", label: "Action" },
+                  { key: "shift_code", label: "Shift" },
+                  { key: "created_at", label: "Time", render: (row) => formatDateTime(row.created_at) }
+                ]}
+              />
+            </SectionCard>
+          </div>
         </div>
       </div>
     </>
@@ -1830,21 +2033,59 @@ function ShiftAssignmentPage() {
 }
 
 function WarehouseAssignmentPage() {
-  const users = useApiCollection(() => getUsers(), "warehouse-assignment-users");
-  const warehouses = useApiCollection(() => getWarehouses(), "warehouse-assignment-warehouses");
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [selectedWarehouse, setSelectedWarehouse] = useState("");
+  const [assignUsername, setAssignUsername] = useState("");
+  const [message, setMessage] = useState("");
+  const users = useApiCollection(() => getUsers(), `warehouse-assignment-users-${refreshKey}`);
+  const warehouses = useApiCollection(() => getWarehouses(), `warehouse-assignment-warehouses-${refreshKey}`);
+  const assignments = useApiCollection(() => getWarehouseAssignments(), `warehouse-assignments-${refreshKey}`);
+  const history = useApiCollection(() => getWarehouseAssignmentHistory(), `warehouse-assignment-history-${refreshKey}`);
+
+  useEffect(() => {
+    if (!selectedWarehouse) {
+      const active = warehouses.rows.find((warehouse) => formatAccountStatus(warehouse.status) === "Active");
+      if (active?.warehouse_code) setSelectedWarehouse(active.warehouse_code);
+    }
+  }, [selectedWarehouse, warehouses.rows]);
+
+  const assignUser = async () => {
+    if (!selectedWarehouse || !assignUsername) return;
+    setMessage("");
+    try {
+      await assignUserToWarehouse(selectedWarehouse, { username: assignUsername });
+      setAssignUsername("");
+      setMessage("Warehouse assignment updated.");
+      setRefreshKey((value) => value + 1);
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    }
+  };
+
+  const removeAssignment = async (username, warehouseReference = selectedWarehouse) => {
+    setMessage("");
+    try {
+      await removeUserFromWarehouse(warehouseReference, username, "Removed by System Admin.");
+      setMessage("Warehouse assignment removed.");
+      setRefreshKey((value) => value + 1);
+    } catch (error) {
+      setMessage(getErrorMessage(error));
+    }
+  };
 
   return (
     <>
       <PageHeader
         eyebrow="System Management"
         title="Warehouse Assignment"
-        description="Current user warehouse scope and operational coverage from account records."
+        description="Assign users to warehouses, remove assignments, and preserve assignment history."
       />
       <div className="flex-1 overflow-auto p-4">
+        {message && <div className="mb-3 rounded border border-info/30 bg-info/10 px-3 py-2 text-xs font-semibold text-info">{message}</div>}
         <div className="space-y-3">
           <div className="grid gap-3 md:grid-cols-2">
             {warehouses.rows.map((warehouse) => (
-              <SectionCard key={warehouse.id} title={`${warehouse.warehouse_code} - ${warehouse.warehouse_name}`} icon={Warehouse}>
+              <SectionCard key={warehouse.warehouse_code} title={`${warehouse.warehouse_code} - ${warehouse.warehouse_name}`} icon={Warehouse}>
                 <div className="flex items-center justify-between gap-3 text-xs">
                   <StatusBadge tone={accountStatusTone(warehouse.status)}>{formatAccountStatus(warehouse.status)}</StatusBadge>
                   <span className="text-muted-foreground">{formatCount(warehouse.assigned_user_count)} assigned users</span>
@@ -1852,20 +2093,51 @@ function WarehouseAssignmentPage() {
               </SectionCard>
             ))}
           </div>
+          <SectionCard title="Assign User" icon={UserPlus}>
+            <div className="grid gap-2 md:grid-cols-[1fr_1fr_auto]">
+              <select className={inputClass} value={selectedWarehouse} onChange={(event) => setSelectedWarehouse(event.target.value)}>
+                <option value="">Select warehouse</option>
+                {warehouses.rows
+                  .filter((warehouse) => formatAccountStatus(warehouse.status) === "Active")
+                  .map((warehouse) => <option key={warehouse.warehouse_code} value={warehouse.warehouse_code}>{warehouse.warehouse_code} - {warehouse.warehouse_name}</option>)}
+              </select>
+              <select className={inputClass} value={assignUsername} onChange={(event) => setAssignUsername(event.target.value)}>
+                <option value="">Select user</option>
+                {users.rows.map((user) => <option key={user.username} value={user.username}>{user.full_name} ({user.username})</option>)}
+              </select>
+              <ToolbarButton icon={UserPlus} onClick={assignUser} disabled={!selectedWarehouse || !assignUsername}>Assign</ToolbarButton>
+            </div>
+          </SectionCard>
           <SectionCard title="Warehouse Scope Assignments" icon={Warehouse}>
             <DataTable
-              loading={users.loading}
-              error={users.error}
-              rows={users.rows}
+              loading={assignments.loading}
+              error={assignments.error}
+              rows={assignments.rows}
               emptyTitle="No warehouse assignments loaded"
-              emptyBody="Assign a warehouse from the Users screen to populate this list."
+              emptyBody="Assign users to active warehouses to populate this list."
               columns={[
                 { key: "full_name", label: "User", className: "font-semibold" },
                 { key: "role", label: "Role", render: (row) => row.role_name || "No role" },
-                { key: "warehouse", label: "Assigned Warehouse", render: (row) => row.warehouse_code ? `${row.warehouse_code} - ${row.warehouse_name}` : "All warehouses" },
-                { key: "zones", label: "Zone Scope", render: () => "All assigned warehouse zones" },
-                { key: "shift", label: "Shift", render: (row) => row.shift_name || "No shift" },
-                { key: "status", label: "Status", render: (row) => <StatusBadge tone={accountStatusTone(row.status)}>{formatAccountStatus(row.status)}</StatusBadge> }
+                { key: "warehouse", label: "Assigned Warehouse", render: (row) => row.warehouse_reference ? `${row.warehouse_reference} - ${row.warehouse_name}` : "No warehouse" },
+                { key: "status", label: "Status", render: (row) => <StatusBadge tone={accountStatusTone(row.user_status)}>{formatAccountStatus(row.user_status)}</StatusBadge> },
+                { key: "actions", label: "Actions", render: (row) => row.warehouse_reference && (
+                  <button type="button" onClick={() => removeAssignment(row.username, row.warehouse_reference)} className="rounded border border-destructive/30 bg-destructive/10 px-2 py-1 text-[11px] font-semibold text-destructive">Remove</button>
+                ) }
+              ]}
+            />
+          </SectionCard>
+          <SectionCard title="Warehouse Assignment History" icon={Activity}>
+            <DataTable
+              loading={history.loading}
+              error={history.error}
+              rows={history.rows}
+              emptyTitle="No warehouse assignment history"
+              columns={[
+                { key: "public_reference", label: "History Ref", className: "font-mono font-semibold" },
+                { key: "username", label: "User" },
+                { key: "action", label: "Action" },
+                { key: "warehouse_reference", label: "Warehouse" },
+                { key: "created_at", label: "Time", render: (row) => formatDateTime(row.created_at) }
               ]}
             />
           </SectionCard>
@@ -3736,7 +4008,10 @@ function DispatchOversightPage({ mode }) {
 }
 
 function ValidationLogsPage({ logs: providedLogs, mode = "validation" } = {}) {
-  const ownLogs = useApiCollection(() => getPlacementLogs(), "placement-logs");
+  const ownLogs = useApiCollection(
+    () => (mode === "placement" ? getPlacementLogs() : getPlacementFailures()),
+    `${mode}-logs`
+  );
   const logs = providedLogs || ownLogs;
   const content = mode === "placement"
     ? {
@@ -3767,11 +4042,11 @@ function ValidationLogsPage({ logs: providedLogs, mode = "validation" } = {}) {
               { key: "created_at", label: "Timestamp", render: (row) => formatDateTime(row.created_at), className: "font-mono text-muted-foreground" },
               { key: "attempt_stage", label: "Stage", render: (row) => row.attempt_stage || "validation" },
               { key: "placement_mode", label: "Mode", render: (row) => row.placement_mode || "scan" },
-              { key: "event", label: "Event", render: (row) => row.reason || "Validation event" },
+              { key: "event", label: "Event", render: (row) => row.reason || row.failure_reason || row.result || "Validation event" },
               { key: "result", label: "Result", render: (row) => <StatusBadge tone={row.approved ? "success" : "destructive"}>{row.approved ? "Passed" : "Rejected"}</StatusBadge> },
-              { key: "cargo_barcode", label: "Cargo", render: (row) => row.cargo_barcode || "Not recorded" },
-              { key: "bin_barcode", label: "Bin", render: (row) => row.bin_barcode || "Not recorded" },
-              { key: "detail", label: "Detail", render: (row) => row.detail || "No detail recorded" }
+              { key: "cargo_barcode", label: "Cargo", render: (row) => row.cargo_identifier || row.cargo_barcode || "Not recorded" },
+              { key: "bin_barcode", label: "Bin", render: (row) => row.bin_identifier || row.bin_barcode || "Not recorded" },
+              { key: "detail", label: "Detail", render: (row) => row.detail || row.validation_message || row.message || "No detail recorded" }
             ]}
           />
         </SectionCard>

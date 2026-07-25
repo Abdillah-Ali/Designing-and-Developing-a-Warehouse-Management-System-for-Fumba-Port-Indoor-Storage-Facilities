@@ -4,6 +4,13 @@ const fs = require("fs");
 const { Client } = require("pg");
 const path = require("path");
 const { roleNames } = require("../config/systemConfig");
+const {
+  applySqlMigration,
+  checksum,
+  ensureSchemaMigrationsTable,
+  isMigrationApplied,
+  recordMigration
+} = require("./migrationRunner");
 
 dotenv.config({ path: path.join(__dirname, "../.env") });
 
@@ -29,9 +36,20 @@ const generateNotificationReference = (createdAt = new Date()) => {
 const runUpdates = async () => {
   const client = new Client(clientConfig);
   await client.connect();
+  let transactionOpen = false;
+  let legacyStarted = false;
+  const legacyMigrationName = "000_legacy_update_schema_inline";
+  const legacyMigrationChecksum = checksum("legacy-update-schema-inline-20260725");
 
   try {
+    await ensureSchemaMigrationsTable(client);
+
+    const legacyAlreadyApplied = await isMigrationApplied(client, legacyMigrationName, legacyMigrationChecksum);
+
+    if (!legacyAlreadyApplied) {
     await client.query("BEGIN");
+    transactionOpen = true;
+    legacyStarted = true;
     console.log("Starting database schema updates...");
 
     await client.query(`
@@ -692,10 +710,42 @@ const runUpdates = async () => {
     await client.query(financeCustomsGateMigration);
     console.log("✔ Finance, Customs, and Gate workflow schema checked/applied");
 
+    await recordMigration(client, legacyMigrationName, legacyMigrationChecksum, "applied");
     await client.query("COMMIT");
+    transactionOpen = false;
     console.log("All database updates applied successfully!");
+    } else {
+      console.log("✔ Legacy inline schema updates already applied");
+    }
+
+    const permissionCatalogMigration = fs.readFileSync(
+      path.join(__dirname, "migrations", "20260725_permission_catalog.sql"),
+      "utf8"
+    );
+    await applySqlMigration(client, "004_permission_catalog.sql", permissionCatalogMigration);
+
+    const integrityConstraintsMigration = fs.readFileSync(
+      path.join(__dirname, "migrations", "20260725_integrity_constraints.sql"),
+      "utf8"
+    );
+    await applySqlMigration(client, "005_integrity_constraints.sql", integrityConstraintsMigration);
+
+    const shiftWarehouseAssignmentsMigration = fs.readFileSync(
+      path.join(__dirname, "migrations", "20260725_shift_warehouse_assignments.sql"),
+      "utf8"
+    );
+    await applySqlMigration(client, "006_shift_warehouse_assignments.sql", shiftWarehouseAssignmentsMigration);
+
+    const notificationSchedulerMigration = fs.readFileSync(
+      path.join(__dirname, "migrations", "20260725_notification_scheduler_settings.sql"),
+      "utf8"
+    );
+    await applySqlMigration(client, "007_notification_scheduler_settings.sql", notificationSchedulerMigration);
   } catch (error) {
-    await client.query("ROLLBACK");
+    if (transactionOpen) await client.query("ROLLBACK").catch(() => {});
+    if (legacyStarted) {
+      await recordMigration(client, legacyMigrationName, legacyMigrationChecksum, "failed").catch(() => {});
+    }
     console.error("Failed to run database schema updates:");
     console.error(error.message);
     process.exit(1);

@@ -1,13 +1,11 @@
-const dotenv = require("dotenv");
 const { Pool } = require("pg");
-
-dotenv.config();
+const { readEnv } = require("./env");
 
 const pool = new Pool({
-  host: process.env.DB_HOST || "localhost",
-  port: Number(process.env.DB_PORT || 5432),
-  database: process.env.DB_NAME || "fumbaport_wms",
-  user: process.env.DB_USER || "postgres",
+  host: readEnv("DB_HOST", "localhost"),
+  port: Number(readEnv("DB_PORT", 5432)),
+  database: readEnv("DB_NAME", "fumbaport_wms"),
+  user: readEnv("DB_USER", "postgres"),
   password: process.env.DB_PASSWORD,
   max: Number(process.env.DB_POOL_MAX || 10),
   idleTimeoutMillis: Number(process.env.DB_IDLE_TIMEOUT_MS || 30000),
@@ -20,7 +18,11 @@ const testConnection = async () => {
   const client = await pool.connect();
   try {
     await client.query("SELECT 1");
-    console.log("PostgreSQL connected to fumbaport_wms");
+    console.log(JSON.stringify({
+      operation: "database_connectivity_check",
+      result: "success",
+      timestamp: new Date().toISOString()
+    }));
   } finally {
     client.release();
   }

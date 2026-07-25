@@ -12,6 +12,9 @@ const typeLabels = {
   dispatch_update: "Dispatch Update",
   customs_inspection: "Customs Inspection",
   invoice_pending: "Invoice Pending",
+  finance_charge_started: "Finance Charge Started",
+  finance_payment_update: "Payment Update",
+  gate_release_update: "Gate Release Update",
   warehouse_alert: "Warehouse Alert",
   system_announcement: "Announcement"
 };
@@ -41,6 +44,25 @@ function appendCargoRef(route, cargoRef) {
   return `${route}${separator}cargoRef=${encodeURIComponent(cargoRef)}`;
 }
 
+function isAllowedDestination(route, role) {
+  if (!route || typeof route !== "string") return false;
+  if (!route.startsWith("/")) return false;
+  if (/^\/\//.test(route) || /https?:/i.test(route)) return false;
+  const basePath = getPortalConfig(role)?.basePath;
+  return Boolean(basePath && (route === basePath || route.startsWith(`${basePath}/`)));
+}
+
+function actionFromDestination(notification, role, label) {
+  const destination = notification?.safe_destination || notification?.safeDestination;
+  if (!isAllowedDestination(destination, role)) return null;
+  return {
+    actionLabel: label,
+    targetRoute: destination,
+    recordIdentifier: getRecordIdentifier(notification),
+    actionRequired: true
+  };
+}
+
 function getNotificationAction(notification, role = getStoredAuthRole()) {
   const type = notification?.notification_type;
   const recordIdentifier = getRecordIdentifier(notification);
@@ -54,6 +76,9 @@ function getNotificationAction(notification, role = getStoredAuthRole()) {
   if (!notification || notification.status !== "pending") {
     return action;
   }
+
+  const destinationAction = actionFromDestination(notification, role, "Open Workflow");
+  if (destinationAction) return destinationAction;
 
   if (role === "warehouse-supervisor") {
     if (type === "pending_approval") {
@@ -111,6 +136,43 @@ function getNotificationAction(notification, role = getStoredAuthRole()) {
     };
   }
 
+  if (role === "finance-officer") {
+    if (type === "invoice_pending" || type === "finance_charge_started") {
+      return {
+        actionLabel: "Open Charges",
+        targetRoute: appendCargoRef("/finance/cargo-charges", recordIdentifier),
+        recordIdentifier,
+        actionRequired: true
+      };
+    }
+    if (type === "finance_payment_update") {
+      return {
+        actionLabel: "Open Payments",
+        targetRoute: "/finance/payments",
+        recordIdentifier,
+        actionRequired: true
+      };
+    }
+  }
+
+  if (role === "customs-officer" && (type === "customs_inspection" || type === "warehouse_alert")) {
+    return {
+      actionLabel: "Open Inspection",
+      targetRoute: appendCargoRef("/customs/inspection-queue", recordIdentifier),
+      recordIdentifier,
+      actionRequired: true
+    };
+  }
+
+  if (role === "gate-officer" && type === "gate_release_update") {
+    return {
+      actionLabel: "Open Release Queue",
+      targetRoute: appendCargoRef("/gate/release-queue", recordIdentifier),
+      recordIdentifier,
+      actionRequired: true
+    };
+  }
+
   return action;
 }
 
@@ -146,6 +208,21 @@ function getRelatedPath(notification) {
     if (type === "warehouse_alert" || module.includes("warehouse")) return "/admin/warehouse/bins";
     if (type === "pending_approval" || type === "placement_override") return "/admin/cargo/approval-overrides";
     if (notification?.related_entity_type === "cargo") return "/admin/cargo/records";
+  }
+
+  if (basePath === "/finance") {
+    if (type === "invoice_pending" || type === "finance_charge_started") return "/finance/cargo-charges";
+    if (type === "finance_payment_update") return "/finance/payments";
+  }
+
+  if (basePath === "/customs") {
+    if (type === "customs_inspection") return "/customs/inspection-queue";
+    if (module.includes("customs")) return "/customs/records";
+  }
+
+  if (basePath === "/gate") {
+    if (type === "gate_release_update") return "/gate/release-queue";
+    if (module.includes("gate")) return "/gate/gate-out-records";
   }
 
   return "";

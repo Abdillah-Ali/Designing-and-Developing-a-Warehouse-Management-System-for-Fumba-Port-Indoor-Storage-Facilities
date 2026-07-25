@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const crypto = require("node:crypto");
 const { writeAuditLog } = require("../models/adminModel");
 const { buildError } = require("../utils/apiError");
 const {
@@ -15,10 +16,13 @@ const {
 
 const formatWarehouse = (row) => row && ({
   ...row,
+  public_reference: row.warehouse_code,
   name: row.warehouse_name,
   code: row.warehouse_code,
   status: normalizeWarehouseStatusForApi(row.status)
 });
+
+const generateAssignmentReference = () => `WHA-${new Date().getFullYear()}-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
 
 const getWarehouses = async (req, res, next) => {
   try {
@@ -257,10 +261,194 @@ const deleteWarehouse = async (req, res, next) => {
   }
 };
 
+const listWarehouseAssignments = async (req, res, next) => {
+  try {
+    const values = [];
+    const clauses = [];
+    if (req.query.warehouse) {
+      values.push(req.query.warehouse);
+      clauses.push(`w.warehouse_code = $${values.length}`);
+    }
+    if (req.query.active_warehouses === "true") {
+      clauses.push("w.status = 'active'");
+    }
+    const result = await db.query(
+      `SELECT
+         u.username,
+         u.full_name,
+         u.email,
+         u.status AS user_status,
+         r.role_name,
+         w.warehouse_code AS warehouse_reference,
+         w.warehouse_name,
+         w.status AS warehouse_status
+       FROM users u
+       JOIN roles r ON r.id = u.role_id
+       LEFT JOIN warehouses w ON w.id = u.warehouse_id
+       ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""}
+       ORDER BY w.warehouse_code NULLS LAST, u.full_name`,
+      values
+    );
+    res.json({ success: true, count: result.rowCount, data: result.rows });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const resolveUserForWarehouseAssignment = async (client, body) => {
+  const username = textValue(body.username ?? body.user_reference);
+  if (username) {
+    const result = await client.query(
+      "SELECT id, username, full_name, warehouse_id FROM users WHERE LOWER(username) = LOWER($1) FOR UPDATE",
+      [username]
+    );
+    return result.rows[0] || null;
+  }
+  if (body.user_id) {
+    const result = await client.query(
+      "SELECT id, username, full_name, warehouse_id FROM users WHERE id = $1 FOR UPDATE",
+      [Number(body.user_id)]
+    );
+    return result.rows[0] || null;
+  }
+  throw buildError("User username is required for warehouse assignment.", 400);
+};
+
+const assignUserToWarehouse = async (req, res, next) => {
+  const client = await db.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const warehouseResult = await client.query(
+      "SELECT id, warehouse_code, warehouse_name, status FROM warehouses WHERE warehouse_code = $1 FOR UPDATE",
+      [req.params.reference]
+    );
+    if (!warehouseResult.rowCount) throw buildError("Warehouse not found.", 404);
+    const warehouse = warehouseResult.rows[0];
+    if (warehouse.status !== "active") throw buildError("Inactive warehouses cannot receive new assignments.", 409);
+
+    const user = await resolveUserForWarehouseAssignment(client, req.body || {});
+    if (!user) throw buildError("User not found.", 404);
+    if (Number(user.warehouse_id) === Number(warehouse.id)) {
+      throw buildError("User is already assigned to this warehouse.", 409);
+    }
+
+    const action = user.warehouse_id ? "Reassigned" : "Assigned";
+    await client.query(
+      "UPDATE users SET warehouse_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+      [warehouse.id, user.id]
+    );
+    await client.query(
+      `INSERT INTO warehouse_assignment_history (
+         public_reference, user_id, warehouse_id, previous_warehouse_id,
+         action, reason, assigned_by, metadata
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [
+        generateAssignmentReference(),
+        user.id,
+        warehouse.id,
+        user.warehouse_id || null,
+        action,
+        textValue(req.body.reason),
+        req.auth?.userId || null,
+        JSON.stringify({ warehouse_reference: warehouse.warehouse_code, username: user.username })
+      ]
+    );
+    await writeAuditLog({
+      user_id: req.auth?.userId,
+      target_user_id: user.id,
+      action: `${action.toUpperCase()}_USER_WAREHOUSE`,
+      module: "Warehouse Assignment",
+      description: `${action} ${user.username} to ${warehouse.warehouse_code}.`,
+      metadata: { warehouse_reference: warehouse.warehouse_code, username: user.username }
+    }, client);
+    await client.query("COMMIT");
+    res.json({ success: true, message: "Warehouse assignment updated." });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    next(error);
+  } finally {
+    client.release();
+  }
+};
+
+const removeUserFromWarehouse = async (req, res, next) => {
+  const client = await db.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const user = await resolveUserForWarehouseAssignment(client, { username: req.params.username });
+    if (!user) throw buildError("User not found.", 404);
+    if (!user.warehouse_id) throw buildError("User does not have an active warehouse assignment.", 409);
+    const previousWarehouseId = user.warehouse_id;
+    await client.query("UPDATE users SET warehouse_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1", [user.id]);
+    await client.query(
+      `INSERT INTO warehouse_assignment_history (
+         public_reference, user_id, previous_warehouse_id, action, reason, assigned_by, metadata
+       ) VALUES ($1,$2,$3,'Removed',$4,$5,$6)`,
+      [
+        generateAssignmentReference(),
+        user.id,
+        previousWarehouseId,
+        textValue(req.body?.reason),
+        req.auth?.userId || null,
+        JSON.stringify({ username: user.username })
+      ]
+    );
+    await writeAuditLog({
+      user_id: req.auth?.userId,
+      target_user_id: user.id,
+      action: "REMOVE_USER_WAREHOUSE",
+      module: "Warehouse Assignment",
+      description: `Removed warehouse assignment for ${user.username}.`,
+      metadata: { username: user.username }
+    }, client);
+    await client.query("COMMIT");
+    res.json({ success: true, message: "Warehouse assignment removed." });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    next(error);
+  } finally {
+    client.release();
+  }
+};
+
+const listWarehouseAssignmentHistory = async (req, res, next) => {
+  try {
+    const result = await db.query(
+      `SELECT
+         wah.public_reference,
+         wah.action,
+         wah.reason,
+         wah.effective_from,
+         wah.effective_to,
+         wah.created_at,
+         u.username,
+         u.full_name,
+         w.warehouse_code AS warehouse_reference,
+         w.warehouse_name,
+         previous.warehouse_code AS previous_warehouse_reference,
+         actor.username AS assigned_by_username
+       FROM warehouse_assignment_history wah
+       JOIN users u ON u.id = wah.user_id
+       LEFT JOIN warehouses w ON w.id = wah.warehouse_id
+       LEFT JOIN warehouses previous ON previous.id = wah.previous_warehouse_id
+       LEFT JOIN users actor ON actor.id = wah.assigned_by
+       ORDER BY wah.created_at DESC
+       LIMIT 300`
+    );
+    res.json({ success: true, count: result.rowCount, data: result.rows });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
+  assignUserToWarehouse,
   createWarehouse,
   deleteWarehouse,
   getWarehouses,
+  listWarehouseAssignmentHistory,
+  listWarehouseAssignments,
+  removeUserFromWarehouse,
   updateWarehouse,
   updateWarehouseStatus
 };

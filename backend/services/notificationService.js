@@ -45,7 +45,13 @@ const publicNotificationFields = `
   n.read_at,
   n.created_at,
   n.expires_at,
-  n.archived_at
+  n.archived_at,
+  n.notification_type AS safe_action_type,
+  CASE
+    WHEN n.metadata->>'deep_link' ~ '^/(admin|staff|supervisor|finance|customs|gate)(/|\\?|$)'
+      THEN n.metadata->>'deep_link'
+    ELSE NULL
+  END AS safe_destination
 `;
 
 const normalizePriority = (priority) => {
@@ -849,7 +855,7 @@ const getPendingReviewEscalationThresholdHours = async (executor = db) => {
   return Number.isFinite(configured) && configured > 0 ? configured : 2;
 };
 
-const notifyPendingReviewEscalations = async ({ thresholdHours } = {}, executor = db) => {
+const notifyPendingReviewEscalations = async ({ thresholdHours, targetRoleName } = {}, executor = db) => {
   const hours = Number.isFinite(Number(thresholdHours)) && Number(thresholdHours) > 0
     ? Number(thresholdHours)
     : await getPendingReviewEscalationThresholdHours(executor);
@@ -914,7 +920,7 @@ const notifyPendingReviewEscalations = async ({ thresholdHours } = {}, executor 
           priority: "high"
         }
       },
-      { roleName: roleNames.systemAdmin },
+      { roleName: targetRoleName || roleNames.systemAdmin },
       executor,
       { fallbackBroadTarget: true }
     );

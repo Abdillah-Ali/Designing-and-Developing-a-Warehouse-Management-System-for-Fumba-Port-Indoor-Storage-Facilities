@@ -8,6 +8,7 @@
     "dev": "nodemon server.js",
     "init-db": "node database/initDb.js",
     "migrate": "node database/updateSchema.js",
+    "verify-schema": "node database/verifySchema.js",
     "test": "node --test tests/*.test.js"
   },
   "keywords": [

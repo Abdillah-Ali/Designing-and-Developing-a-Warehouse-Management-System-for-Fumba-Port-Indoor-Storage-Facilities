@@ -26,8 +26,8 @@ router.post("/approvals/:id/approve", approveApproval);
 router.post("/approvals/:id/emergency-approve", emergencyApproveApproval);
 router.post("/approvals/:id/reject", rejectApproval);
 router.post("/approvals/:id/request-correction", requestCorrection);
-router.get("/staff-activity", requireRole("System Admin"), getStaffActivity);
-router.get("/placement-monitoring", requireRole("System Admin"), getPlacementMonitoring);
+router.get("/staff-activity", requireRole("System Admin", "Supervisor"), getStaffActivity);
+router.get("/placement-monitoring", requireRole("System Admin", "Supervisor"), getPlacementMonitoring);
 router.get("/placement-summary", getPlacementSummary);
 
 module.exports = router;

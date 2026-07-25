@@ -5,9 +5,12 @@ const { Client } = require("pg");
 const bcrypt = require("bcryptjs");
 const {
   defaultRoleDefinitions,
-  defaultShifts,
   roleNames
 } = require("../config/systemConfig");
+const {
+  applySqlMigration,
+  ensureSchemaMigrationsTable
+} = require("./migrationRunner");
 
 dotenv.config({ path: path.join(__dirname, "../.env") });
 
@@ -97,22 +100,58 @@ const applySchema = async () => {
     "migrations",
     "finance_customs_gate_workflows.sql"
   );
+  const zoneWarehouseScopeMigrationPath = path.join(
+    __dirname,
+    "migrations",
+    "update_zones_warehouse_scoped.sql"
+  );
   const warehouseConfigurationMigrationPath = path.join(
     __dirname,
     "migrations",
     "warehouse_configuration_srs.sql"
   );
+  const permissionCatalogMigrationPath = path.join(
+    __dirname,
+    "migrations",
+    "20260725_permission_catalog.sql"
+  );
+  const integrityConstraintsMigrationPath = path.join(
+    __dirname,
+    "migrations",
+    "20260725_integrity_constraints.sql"
+  );
+  const shiftWarehouseAssignmentsMigrationPath = path.join(
+    __dirname,
+    "migrations",
+    "20260725_shift_warehouse_assignments.sql"
+  );
+  const notificationSchedulerMigrationPath = path.join(
+    __dirname,
+    "migrations",
+    "20260725_notification_scheduler_settings.sql"
+  );
   const financeCustomsGateMigration = await fs.readFile(financeCustomsGateMigrationPath, "utf8");
+  const zoneWarehouseScopeMigration = await fs.readFile(zoneWarehouseScopeMigrationPath, "utf8");
   const warehouseConfigurationMigration = await fs.readFile(warehouseConfigurationMigrationPath, "utf8");
+  const permissionCatalogMigration = await fs.readFile(permissionCatalogMigrationPath, "utf8");
+  const integrityConstraintsMigration = await fs.readFile(integrityConstraintsMigrationPath, "utf8");
+  const shiftWarehouseAssignmentsMigration = await fs.readFile(shiftWarehouseAssignmentsMigrationPath, "utf8");
+  const notificationSchedulerMigration = await fs.readFile(notificationSchedulerMigrationPath, "utf8");
 
   try {
     await moveIncompatibleTables(client);
-    await client.query(schema);
+    await ensureSchemaMigrationsTable(client);
+    await applySqlMigration(client, "000_base_schema.sql", schema);
     await seedOperationalConfiguration(client);
-    await client.query(warehouseConfigurationMigration);
-    await client.query(financeCustomsGateMigration);
+    await applySqlMigration(client, "001_update_zones_warehouse_scoped.sql", zoneWarehouseScopeMigration);
+    await applySqlMigration(client, "002_warehouse_configuration_srs.sql", warehouseConfigurationMigration);
+    await applySqlMigration(client, "003_finance_customs_gate_workflows.sql", financeCustomsGateMigration);
+    await applySqlMigration(client, "004_permission_catalog.sql", permissionCatalogMigration);
+    await applySqlMigration(client, "005_integrity_constraints.sql", integrityConstraintsMigration);
+    await applySqlMigration(client, "006_shift_warehouse_assignments.sql", shiftWarehouseAssignmentsMigration);
+    await applySqlMigration(client, "007_notification_scheduler_settings.sql", notificationSchedulerMigration);
     console.log("✔ Roles seeded");
-    console.log("✔ Shifts seeded");
+    console.log("✔ Shifts are not seeded; configure them in the Admin portal");
     await seedBootstrapAdmin(client);
     console.log("Database schema applied successfully");
   } finally {
@@ -131,25 +170,14 @@ const seedOperationalConfiguration = async (client) => {
     );
   }
 
-  for (const shift of defaultShifts) {
-    await client.query(
-      `INSERT INTO shifts (shift_name, start_time, end_time)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (shift_name) DO UPDATE
-       SET start_time = EXCLUDED.start_time,
-           end_time = EXCLUDED.end_time`,
-      [shift.name, shift.start, shift.end]
-    );
-  }
-
   await client.query(
     `INSERT INTO audit_logs (action, module, description, metadata)
      VALUES ('APPLY_SYSTEM_CONFIGURATION', 'System Configuration', $1, $2)`,
     [
-      "Applied configured portal role definitions and warehouse shift definitions.",
+      "Applied configured portal role definitions. Operational shifts are configured by the System Admin in the application.",
       JSON.stringify({
         roles: defaultRoleDefinitions.map((role) => role.name),
-        shifts: defaultShifts.map((shift) => shift.name)
+        shifts_seeded: false
       })
     ]
   );
@@ -164,8 +192,7 @@ const readBootstrapAdminConfig = () => {
     password: "BOOTSTRAP_ADMIN_PASSWORD"
   };
   const optionalFields = {
-    warehouse: "BOOTSTRAP_ADMIN_WAREHOUSE",
-    shift: "BOOTSTRAP_ADMIN_SHIFT"
+    warehouse: "BOOTSTRAP_ADMIN_WAREHOUSE"
   };
   const config = {};
   const missing = [];
@@ -251,19 +278,6 @@ const seedBootstrapAdmin = async (client) => {
       }
     }
 
-    let shiftId = null;
-    if (config.shift) {
-      const shiftResult = await client.query(
-        "SELECT id FROM shifts WHERE LOWER(shift_name) = LOWER($1)",
-        [config.shift]
-      );
-      if (shiftResult.rowCount > 0) {
-        shiftId = shiftResult.rows[0].id;
-      } else {
-        console.log(`Configured bootstrap shift was not found: ${config.shift}. Defaulting to NULL.`);
-      }
-    }
-
     const insertResult = await client.query(
       `INSERT INTO users (
         full_name,
@@ -289,7 +303,7 @@ const seedBootstrapAdmin = async (client) => {
         passwordHash,
         roleId,
         warehouseId,
-        shiftId
+        null
       ]
     );
     const newUserId = insertResult.rows[0].id;

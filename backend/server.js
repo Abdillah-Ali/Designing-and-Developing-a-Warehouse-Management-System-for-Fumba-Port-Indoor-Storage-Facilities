@@ -1,24 +1,34 @@
-const dotenv = require("dotenv");
 const http = require("http");
 const app = require("./app");
+const { validateEnvironment } = require("./config/env");
 const { testConnection } = require("./config/db");
 const { initSocketServer } = require("./realtime/socketServer");
-
-dotenv.config();
+const { startNotificationSchedulers } = require("./services/notificationScheduler");
 
 const PORT = Number(process.env.PORT || 5000);
 
 const startServer = async () => {
   try {
+    validateEnvironment();
     await testConnection();
     const server = http.createServer(app);
     initSocketServer(server);
+    await startNotificationSchedulers();
 
     server.listen(PORT, () => {
-      console.log(`Fumba Port WMS backend running on port ${PORT}`);
+      console.log(JSON.stringify({
+        operation: "backend_startup",
+        result: "success",
+        timestamp: new Date().toISOString()
+      }));
     });
   } catch (error) {
-    console.error("Unable to start backend server:", error.message);
+    console.error(JSON.stringify({
+      operation: "backend_startup",
+      result: "failure",
+      error_category: error.code || error.name || "startup_error",
+      timestamp: new Date().toISOString()
+    }));
     process.exit(1);
   }
 };

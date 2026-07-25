@@ -1,5 +1,6 @@
 const PORTAL_SESSION_KEY = "fumba-wms-active-portal-role";
 const AUTH_TOKEN_KEY = "fumba-wms-auth-token";
+const AUTH_PERMISSIONS_KEY = "fumba-wms-auth-permissions";
 
 export const PORTAL_ROLES = Object.freeze({
   SYSTEM_ADMIN: "system-admin",
@@ -360,10 +361,36 @@ export function clearStoredAuthToken(storage = canUseSessionStorage() ? window.s
 
   try {
     storage.removeItem(AUTH_TOKEN_KEY);
+    storage.removeItem(AUTH_PERMISSIONS_KEY);
     // Also clear the old portal role key for backward compatibility
     storage.removeItem(PORTAL_SESSION_KEY);
   } catch {
   }
+}
+
+export function setStoredPermissions(permissions, storage = canUseSessionStorage() ? window.sessionStorage : null) {
+  if (!storage || !Array.isArray(permissions)) return;
+
+  try {
+    storage.setItem(AUTH_PERMISSIONS_KEY, JSON.stringify(permissions));
+  } catch {
+  }
+}
+
+export function getStoredPermissions(storage = canUseSessionStorage() ? window.sessionStorage : null) {
+  if (!storage) return [];
+
+  try {
+    const parsed = JSON.parse(storage.getItem(AUTH_PERMISSIONS_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function hasStoredPermission(permissionKey, storage = canUseSessionStorage() ? window.sessionStorage : null) {
+  const permissions = getStoredPermissions(storage);
+  return permissions.includes("*") || permissions.includes(permissionKey);
 }
 
 export function extractRoleFromToken(token) {

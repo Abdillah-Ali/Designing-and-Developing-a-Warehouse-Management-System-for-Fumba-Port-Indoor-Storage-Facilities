@@ -1,5 +1,6 @@
 const db = require("../config/db");
 const { roleNames } = require("../config/systemConfig");
+const { loadRolePermissions } = require("../services/permissionService");
 const { verifyToken } = require("../utils/token");
 
 const PORTAL_ROLES = Object.freeze({
@@ -79,6 +80,9 @@ const rolePermissionKeys = Object.freeze({
 });
 
 const hasPermission = (authOrRole, permissionKey) => {
+  if (authOrRole && typeof authOrRole === "object" && Array.isArray(authOrRole.permissions)) {
+    return authOrRole.permissions.includes("*") || authOrRole.permissions.includes(permissionKey);
+  }
   const role = typeof authOrRole === "string" ? normalizeRole(authOrRole) : normalizeRole(authOrRole?.role);
   const permissions = rolePermissionKeys[role] || [];
   return permissions.includes("*") || permissions.includes(permissionKey);
@@ -117,6 +121,7 @@ const portalPermissions = Object.freeze({
     { methods: ["GET"], pattern: /^\/placement\/failures$/ },
     { methods: ["GET"], pattern: /^\/placement\/activity$/ },
     { methods: ["GET"], pattern: /^\/placement\/activity\/summary$/ },
+    { methods: ["GET"], pattern: /^\/placement\/failures$/ },
     { methods: ["GET", "PUT"], pattern: /^\/placement\/settings$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/dashboard$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/my\/review-history$/ },
@@ -126,7 +131,10 @@ const portalPermissions = Object.freeze({
     { methods: ["GET"], pattern: /^\/supervisor\/staff-activity$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/placement-monitoring$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/placement-summary$/ },
+    { methods: ["GET"], pattern: /^\/supervisor\/staff-activity$/ },
+    { methods: ["GET"], pattern: /^\/supervisor\/placement-monitoring$/ },
     { methods: ["GET"], pattern: /^\/dispatch\/authorization-requests$/ },
+    { methods: ["GET", "PUT"], pattern: /^\/admin(?:\/.*)?$/ },
     { methods: ["GET", "POST", "PUT"], pattern: /^\/finance(?:\/.*)?$/ },
     { methods: ["GET", "POST"], pattern: /^\/customs(?:\/.*)?$/ },
     { methods: ["GET", "POST"], pattern: /^\/gate(?:\/.*)?$/ },
@@ -140,9 +148,17 @@ const portalPermissions = Object.freeze({
     { methods: ["PATCH"], pattern: /^\/users\/[^/]+\/deactivate$/ },
     { methods: ["GET"], pattern: /^\/roles$/ },
     { methods: ["GET", "POST"], pattern: /^\/warehouses$/ },
+    { methods: ["GET"], pattern: /^\/warehouses\/assignments$/ },
+    { methods: ["GET"], pattern: /^\/warehouses\/assignment-history$/ },
+    { methods: ["POST", "DELETE"], pattern: /^\/warehouses\/[^/]+\/assignments(?:\/[^/]+)?$/ },
     { methods: ["PUT", "PATCH", "DELETE"], pattern: /^\/warehouses\/[^/]+$/ },
     { methods: ["PATCH"], pattern: /^\/warehouses\/[^/]+\/status$/ },
-    { methods: ["GET"], pattern: /^\/shifts$/ },
+    { methods: ["GET", "POST"], pattern: /^\/shifts$/ },
+    { methods: ["GET"], pattern: /^\/shifts\/assignment-history$/ },
+    { methods: ["GET", "PUT"], pattern: /^\/shifts\/[^/]+$/ },
+    { methods: ["PATCH"], pattern: /^\/shifts\/[^/]+\/status$/ },
+    { methods: ["GET"], pattern: /^\/shifts\/[^/]+\/users$/ },
+    { methods: ["POST", "DELETE"], pattern: /^\/shifts\/[^/]+\/assignments(?:\/[^/]+)?$/ },
     { methods: ["GET"], pattern: /^\/audit-logs$/ },
     { methods: ["GET"], pattern: /^\/user-sessions$/ },
     { methods: ["GET", "PATCH", "DELETE"], pattern: /^\/notifications(?:\/.*)?$/ },
@@ -412,9 +428,12 @@ const requireAuthenticated = async (req, res, next) => {
       return;
     }
 
+    const permissionKeys = await loadRolePermissions(account.role_id);
+
     req.auth = {
       ...context.auth,
       role: normalizeRole(account.role_name),
+      permissions: permissionKeys,
       roleId: account.role_id,
       warehouseId: account.warehouse_id,
       shiftId: account.shift_id,
@@ -451,6 +470,7 @@ const requirePortalAccess = async (req, res, next) => {
     }
 
     const role = normalizeRole(account.role_name);
+    const permissionKeys = await loadRolePermissions(account.role_id);
     const path = req.path.replace(/\/+$/, "") || "/";
 
     if (account.is_bootstrap_admin) {
@@ -497,6 +517,7 @@ const requirePortalAccess = async (req, res, next) => {
     req.auth = {
       ...context.auth,
       role,
+      permissions: permissionKeys,
       roleId: account.role_id,
       warehouseId: account.warehouse_id,
       shiftId: account.shift_id,
@@ -538,7 +559,7 @@ const requireRole = (...roles) => {
   };
 };
 
-const requirePermission = (permissionKey) => (req, res, next) => {
+const requirePermission = (permissionKey) => async (req, res, next) => {
   if (!req.auth) {
     res.status(401).json({
       success: false,
@@ -547,15 +568,24 @@ const requirePermission = (permissionKey) => (req, res, next) => {
     return;
   }
 
-  if (!hasPermission(req.auth, permissionKey)) {
-    res.status(403).json({
-      success: false,
-      message: "This action requires a permission that your portal role does not have."
-    });
-    return;
-  }
+  try {
+    const permissions = Array.isArray(req.auth.permissions)
+      ? req.auth.permissions
+      : await loadRolePermissions(req.auth.roleId);
+    req.auth.permissions = permissions;
 
-  next();
+    if (!hasPermission({ ...req.auth, permissions }, permissionKey)) {
+      res.status(403).json({
+        success: false,
+        message: "This action requires a permission that your portal role does not have."
+      });
+      return;
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
 };
 
 const requireNonScanner = (req, res, next) => {
