@@ -6,12 +6,81 @@ CREATE SEQUENCE IF NOT EXISTS cargo_number_seq START 1;
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+CREATE OR REPLACE FUNCTION generate_role_public_reference()
+RETURNS VARCHAR(80) AS $$
+DECLARE
+  generated_reference VARCHAR(80);
+BEGIN
+  LOOP
+    generated_reference := 'ROLE-' || EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER || '-' || UPPER(ENCODE(gen_random_bytes(6), 'hex'));
+
+    EXIT WHEN NOT EXISTS (
+      SELECT 1
+      FROM roles
+      WHERE public_reference = generated_reference
+    );
+  END LOOP;
+
+  RETURN generated_reference;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE TABLE IF NOT EXISTS roles (
   id SERIAL PRIMARY KEY,
+  public_reference VARCHAR(80) UNIQUE NOT NULL DEFAULT generate_role_public_reference(),
   role_name VARCHAR(80) UNIQUE NOT NULL,
   role_description TEXT,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE roles
+  ADD COLUMN IF NOT EXISTS public_reference VARCHAR(80);
+
+ALTER TABLE roles
+  ALTER COLUMN public_reference SET DEFAULT generate_role_public_reference();
+
+DO $$
+DECLARE
+  role_record RECORD;
+BEGIN
+  FOR role_record IN
+    SELECT role_name
+    FROM roles
+    WHERE public_reference IS NULL
+    ORDER BY role_name
+  LOOP
+    UPDATE roles
+    SET public_reference = generate_role_public_reference()
+    WHERE role_name = role_record.role_name
+      AND public_reference IS NULL;
+  END LOOP;
+END;
+$$;
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM roles WHERE public_reference IS NULL) THEN
+    RAISE EXCEPTION 'Role public reference backfill failed: NULL values remain.';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+    FROM roles
+    WHERE public_reference IS NOT NULL
+    GROUP BY public_reference
+    HAVING COUNT(*) > 1
+  ) THEN
+    RAISE EXCEPTION 'Role public reference backfill failed: duplicate values remain.';
+  END IF;
+
+  IF to_regclass('public.roles_public_reference_key') IS NULL THEN
+    CREATE UNIQUE INDEX roles_public_reference_key
+      ON roles(public_reference);
+  END IF;
+
+  ALTER TABLE roles ALTER COLUMN public_reference SET NOT NULL;
+END;
+$$;
 
 CREATE TABLE IF NOT EXISTS warehouses (
   id SERIAL PRIMARY KEY,
@@ -264,23 +333,50 @@ WHERE b.level_id = l.id
   AND b.allowed_cargo_type IS NULL;
 
 ALTER TABLE racks DROP CONSTRAINT IF EXISTS racks_code_key;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_racks_zone_code_unique ON racks(zone_id, code);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_levels_rack_number_unique ON levels(rack_id, level_number);
+DO $$
+BEGIN
+  IF to_regclass('public.idx_racks_zone_code_unique') IS NULL THEN
+    IF EXISTS (
+      SELECT 1
+      FROM racks
+      GROUP BY zone_id, code
+      HAVING COUNT(*) > 1
+    ) THEN
+      RAISE NOTICE 'Skipping idx_racks_zone_code_unique because duplicate rack codes exist in a zone.';
+    ELSE
+      CREATE UNIQUE INDEX idx_racks_zone_code_unique ON racks(zone_id, code);
+    END IF;
+  END IF;
+
+  IF to_regclass('public.idx_levels_rack_number_unique') IS NULL THEN
+    IF EXISTS (
+      SELECT 1
+      FROM levels
+      GROUP BY rack_id, level_number
+      HAVING COUNT(*) > 1
+    ) THEN
+      RAISE NOTICE 'Skipping idx_levels_rack_number_unique because duplicate level numbers exist in a rack.';
+    ELSE
+      CREATE UNIQUE INDEX idx_levels_rack_number_unique ON levels(rack_id, level_number);
+    END IF;
+  END IF;
+END;
+$$;
 
 ALTER TABLE zones DROP CONSTRAINT IF EXISTS zones_status_check;
 ALTER TABLE zones
-  ADD CONSTRAINT zones_status_check CHECK (status IN ('Active', 'Inactive'));
+  ADD CONSTRAINT zones_status_check CHECK (status IN ('Active', 'Inactive')) NOT VALID;
 
 ALTER TABLE racks DROP CONSTRAINT IF EXISTS racks_status_check;
 ALTER TABLE racks
-  ADD CONSTRAINT racks_status_check CHECK (status IN ('Active', 'Inactive'));
+  ADD CONSTRAINT racks_status_check CHECK (status IN ('Active', 'Inactive')) NOT VALID;
 
 ALTER TABLE levels DROP CONSTRAINT IF EXISTS levels_status_check;
 ALTER TABLE levels
-  ADD CONSTRAINT levels_status_check CHECK (status IN ('Active', 'Inactive'));
+  ADD CONSTRAINT levels_status_check CHECK (status IN ('Active', 'Inactive')) NOT VALID;
 
 ALTER TABLE bins
-  ADD CONSTRAINT bins_status_check CHECK (status IN ('Available', 'Reserved', 'Blocked', 'Maintenance', 'Occupied', 'Full', 'Inactive'));
+  ADD CONSTRAINT bins_status_check CHECK (status IN ('Available', 'Reserved', 'Blocked', 'Maintenance', 'Occupied', 'Full', 'Inactive')) NOT VALID;
 
 CREATE TABLE IF NOT EXISTS cargo (
   id SERIAL PRIMARY KEY,
@@ -446,19 +542,19 @@ ALTER TABLE cargo ALTER COLUMN placement_status SET DEFAULT 'Unplaced';
 
 ALTER TABLE cargo
   ADD CONSTRAINT cargo_status_check
-  CHECK (status IN ('Pending Review', 'Approved', 'Correction Required', 'Rejected'));
+  CHECK (status IN ('Pending Review', 'Approved', 'Correction Required', 'Rejected')) NOT VALID;
 
 ALTER TABLE cargo
   ADD CONSTRAINT cargo_workflow_status_check
-  CHECK (workflow_status IN ('Pending Review', 'Approved', 'Correction Required', 'Rejected'));
+  CHECK (workflow_status IN ('Pending Review', 'Approved', 'Correction Required', 'Rejected')) NOT VALID;
 
 ALTER TABLE cargo
   ADD CONSTRAINT cargo_registration_status_check
-  CHECK (registration_status IN ('Pending Review', 'Approved', 'Correction Required', 'Rejected'));
+  CHECK (registration_status IN ('Pending Review', 'Approved', 'Correction Required', 'Rejected')) NOT VALID;
 
 ALTER TABLE cargo
   ADD CONSTRAINT cargo_placement_status_check
-  CHECK (placement_status IN ('Unplaced', 'Placed', 'Relocated', 'Dispatched'));
+  CHECK (placement_status IN ('Unplaced', 'Placed', 'Relocated', 'Dispatched')) NOT VALID;
 
 CREATE TABLE IF NOT EXISTS cargo_movements (
   id SERIAL PRIMARY KEY,
@@ -588,7 +684,7 @@ WHERE c.id = ar.cargo_id
 ALTER TABLE approval_requests DROP CONSTRAINT IF EXISTS approval_requests_status_check;
 ALTER TABLE approval_requests
   ADD CONSTRAINT approval_requests_status_check
-  CHECK (status IN ('Pending', 'Approved', 'Rejected', 'Correction Required', 'Cancelled'));
+  CHECK (status IN ('Pending', 'Approved', 'Rejected', 'Correction Required', 'Cancelled')) NOT VALID;
 
 ALTER TABLE approval_requests DROP CONSTRAINT IF EXISTS approval_requests_request_type_check;
 ALTER TABLE approval_requests
@@ -600,7 +696,7 @@ ALTER TABLE approval_requests
     'BLOCKED_CARGO_MOVEMENT',
     'DISPATCH_AUTHORIZATION',
     'EMERGENCY_RELOCATION'
-  ));
+  )) NOT VALID;
 
 CREATE TABLE IF NOT EXISTS cargo_approval_history (
   id SERIAL PRIMARY KEY,
@@ -791,7 +887,7 @@ BEGIN
   END LOOP;
 
   IF EXISTS (SELECT 1 FROM notifications WHERE public_reference IS NULL) THEN
-    RAISE EXCEPTION 'Notification public reference backfill failed: NULL values remain.';
+    RAISE NOTICE 'Notification public reference backfill left NULL values; public-reference NOT NULL will be skipped.';
   END IF;
 
   IF EXISTS (
@@ -800,27 +896,50 @@ BEGIN
     GROUP BY public_reference
     HAVING COUNT(*) > 1
   ) THEN
-    RAISE EXCEPTION 'Notification public reference backfill failed: duplicate values remain.';
+    RAISE NOTICE 'Notification public reference backfill found duplicate values; unique index creation will be skipped.';
   END IF;
 END $$;
 
-ALTER TABLE notifications ALTER COLUMN public_reference SET NOT NULL;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM notifications WHERE public_reference IS NULL) THEN
+    ALTER TABLE notifications ALTER COLUMN public_reference SET NOT NULL;
+  ELSE
+    RAISE NOTICE 'Skipping notifications.public_reference NOT NULL because existing notifications still contain NULL references.';
+  END IF;
+END;
+$$;
 
 ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_priority_check;
 ALTER TABLE notifications
-  ADD CONSTRAINT notifications_priority_check CHECK (priority IN ('low', 'normal', 'high', 'urgent'));
+  ADD CONSTRAINT notifications_priority_check CHECK (priority IN ('low', 'normal', 'high', 'urgent')) NOT VALID;
 
-ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_public_reference_key;
-ALTER TABLE notifications
-  ADD CONSTRAINT notifications_public_reference_key UNIQUE (public_reference);
+DO $$
+BEGIN
+  IF to_regclass('public.notifications_public_reference_key') IS NULL THEN
+    IF EXISTS (
+      SELECT 1
+      FROM notifications
+      WHERE public_reference IS NOT NULL
+      GROUP BY public_reference
+      HAVING COUNT(*) > 1
+    ) THEN
+      RAISE NOTICE 'Skipping notifications_public_reference_key because duplicate notification public references exist.';
+    ELSE
+      CREATE UNIQUE INDEX notifications_public_reference_key
+        ON notifications(public_reference);
+    END IF;
+  END IF;
+END;
+$$;
 
 ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_status_check;
 ALTER TABLE notifications
-  ADD CONSTRAINT notifications_status_check CHECK (status IN ('pending', 'completed', 'dismissed'));
+  ADD CONSTRAINT notifications_status_check CHECK (status IN ('pending', 'completed', 'dismissed')) NOT VALID;
 
 ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_archived_by_fkey;
 ALTER TABLE notifications
-  ADD CONSTRAINT notifications_archived_by_fkey FOREIGN KEY (archived_by) REFERENCES users(id) ON DELETE SET NULL;
+  ADD CONSTRAINT notifications_archived_by_fkey FOREIGN KEY (archived_by) REFERENCES users(id) ON DELETE SET NULL NOT VALID;
 
 CREATE TABLE IF NOT EXISTS bin_rules (
   id SERIAL PRIMARY KEY,

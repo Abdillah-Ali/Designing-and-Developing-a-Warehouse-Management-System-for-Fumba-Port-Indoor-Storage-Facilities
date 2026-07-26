@@ -11,6 +11,7 @@ const {
   isMigrationApplied,
   recordMigration
 } = require("./migrationRunner");
+const { ensureRolePublicReferences } = require("./rolePublicReferences");
 
 dotenv.config({ path: path.join(__dirname, "../.env") });
 
@@ -43,6 +44,7 @@ const runUpdates = async () => {
 
   try {
     await ensureSchemaMigrationsTable(client);
+    await ensureRolePublicReferences(client);
 
     const legacyAlreadyApplied = await isMigrationApplied(client, legacyMigrationName, legacyMigrationChecksum);
 
@@ -67,8 +69,8 @@ const runUpdates = async () => {
     console.log("✔ Bootstrap administrator columns checked/added");
 
     await client.query(
-      `INSERT INTO roles (role_name, role_description)
-       VALUES ($1, $2)
+      `INSERT INTO roles (role_name, role_description, public_reference)
+       VALUES ($1, $2, generate_role_public_reference())
        ON CONFLICT (role_name) DO UPDATE
        SET role_description = EXCLUDED.role_description`,
       [
@@ -158,12 +160,48 @@ const runUpdates = async () => {
       WHERE warehouse_id IS NULL;
     `);
 
-    // Make warehouse_id NOT NULL and configure unique constraint
+    // Make warehouse_id NOT NULL when possible and configure uniqueness without
+    // colliding with already-created production indexes/constraints.
     await client.query(`
-      ALTER TABLE zones ALTER COLUMN warehouse_id SET NOT NULL;
+      WITH default_warehouse AS (
+        SELECT id
+        FROM warehouses
+        ORDER BY CASE WHEN warehouse_code = 'WHA' THEN 0 ELSE 1 END, id
+        LIMIT 1
+      )
+      UPDATE zones
+      SET warehouse_id = (SELECT id FROM default_warehouse)
+      WHERE warehouse_id IS NULL
+        AND EXISTS (SELECT 1 FROM default_warehouse);
+
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM zones WHERE warehouse_id IS NULL) THEN
+          ALTER TABLE zones ALTER COLUMN warehouse_id SET NOT NULL;
+        ELSE
+          RAISE NOTICE 'Skipping zones.warehouse_id NOT NULL because some existing zones do not have an assignable warehouse.';
+        END IF;
+      END;
+      $$;
+
       ALTER TABLE zones DROP CONSTRAINT IF EXISTS zones_code_key;
-      ALTER TABLE zones DROP CONSTRAINT IF EXISTS zones_warehouse_code_unique;
-      ALTER TABLE zones ADD CONSTRAINT zones_warehouse_code_unique UNIQUE (warehouse_id, code);
+      DO $$
+      BEGIN
+        IF to_regclass('public.zones_warehouse_code_unique') IS NULL THEN
+          IF EXISTS (
+            SELECT 1
+            FROM zones
+            WHERE warehouse_id IS NOT NULL
+            GROUP BY warehouse_id, code
+            HAVING COUNT(*) > 1
+          ) THEN
+            RAISE NOTICE 'Skipping zones_warehouse_code_unique because duplicate zone codes exist in a warehouse.';
+          ELSE
+            CREATE UNIQUE INDEX zones_warehouse_code_unique ON zones(warehouse_id, code);
+          END IF;
+        END IF;
+      END;
+      $$;
       CREATE INDEX IF NOT EXISTS idx_zones_warehouse_id ON zones(warehouse_id);
     `);
     console.log("✔ Columns checked/added: zones.active, zones.warehouse_id (warehouse-scoped constraints applied)");
@@ -650,10 +688,33 @@ const runUpdates = async () => {
 
     // Apply public reference constraints, then lifecycle/archive columns and constraints.
     await client.query(`
-      ALTER TABLE notifications ALTER COLUMN public_reference SET NOT NULL;
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM notifications WHERE public_reference IS NULL) THEN
+          ALTER TABLE notifications ALTER COLUMN public_reference SET NOT NULL;
+        ELSE
+          RAISE NOTICE 'Skipping notifications.public_reference NOT NULL because existing notifications still contain NULL references.';
+        END IF;
+      END;
+      $$;
 
-      ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_public_reference_key;
-      ALTER TABLE notifications ADD CONSTRAINT notifications_public_reference_key UNIQUE (public_reference);
+      DO $$
+      BEGIN
+        IF to_regclass('public.notifications_public_reference_key') IS NULL THEN
+          IF EXISTS (
+            SELECT 1
+            FROM notifications
+            WHERE public_reference IS NOT NULL
+            GROUP BY public_reference
+            HAVING COUNT(*) > 1
+          ) THEN
+            RAISE NOTICE 'Skipping notifications_public_reference_key because duplicate notification public references exist.';
+          ELSE
+            CREATE UNIQUE INDEX notifications_public_reference_key ON notifications(public_reference);
+          END IF;
+        END IF;
+      END;
+      $$;
 
       ALTER TABLE notifications
         ADD COLUMN IF NOT EXISTS recipient_user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,

@@ -1,22 +1,71 @@
--- Add warehouse_id to zones and enforce composite unique constraint (warehouse_id, code)
+-- Add warehouse_id to zones and enforce warehouse-scoped zone codes.
+-- Safe on fresh databases, already-upgraded databases, and partially upgraded databases.
 
--- 1. Add nullable warehouse_id column to zones
-ALTER TABLE zones ADD COLUMN IF NOT EXISTS warehouse_id INTEGER REFERENCES warehouses(id) ON DELETE CASCADE;
+ALTER TABLE zones ADD COLUMN IF NOT EXISTS warehouse_id INTEGER;
 
--- 2. Associate existing global zones with a default warehouse (Warehouse A)
--- WHA is the code of the first seeded warehouse.
-UPDATE zones 
-SET warehouse_id = (SELECT id FROM warehouses WHERE warehouse_code = 'WHA' LIMIT 1) 
-WHERE warehouse_id IS NULL;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND table_name = 'warehouses'
+  )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'zones'::regclass
+      AND conname = 'zones_warehouse_id_fkey'
+  ) THEN
+    ALTER TABLE zones
+      ADD CONSTRAINT zones_warehouse_id_fkey
+      FOREIGN KEY (warehouse_id) REFERENCES warehouses(id) ON DELETE CASCADE
+      NOT VALID;
+  END IF;
+END;
+$$;
 
--- 3. Enforce NOT NULL constraint on warehouse_id
-ALTER TABLE zones ALTER COLUMN warehouse_id SET NOT NULL;
+WITH default_warehouse AS (
+  SELECT id
+  FROM warehouses
+  ORDER BY CASE WHEN warehouse_code = 'WHA' THEN 0 ELSE 1 END, id
+  LIMIT 1
+)
+UPDATE zones
+SET warehouse_id = (SELECT id FROM default_warehouse)
+WHERE warehouse_id IS NULL
+  AND EXISTS (SELECT 1 FROM default_warehouse);
 
--- 4. Drop the global unique constraint on zone code
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM zones WHERE warehouse_id IS NULL) THEN
+    ALTER TABLE zones ALTER COLUMN warehouse_id SET NOT NULL;
+  ELSE
+    RAISE NOTICE 'Skipping zones.warehouse_id NOT NULL because some existing zones do not have an assignable warehouse.';
+  END IF;
+END;
+$$;
+
 ALTER TABLE zones DROP CONSTRAINT IF EXISTS zones_code_key;
 
--- 5. Create a composite unique constraint for code within each warehouse
-ALTER TABLE zones ADD CONSTRAINT zones_warehouse_code_unique UNIQUE (warehouse_id, code);
+DO $$
+BEGIN
+  IF to_regclass('public.zones_warehouse_code_unique') IS NULL THEN
+    IF EXISTS (
+      SELECT 1
+      FROM zones
+      WHERE warehouse_id IS NOT NULL
+      GROUP BY warehouse_id, code
+      HAVING COUNT(*) > 1
+    ) THEN
+      RAISE NOTICE 'Skipping zones_warehouse_code_unique because duplicate zone codes exist in a warehouse.';
+    ELSE
+      CREATE UNIQUE INDEX zones_warehouse_code_unique
+        ON zones(warehouse_id, code);
+    END IF;
+  END IF;
+END;
+$$;
 
--- 6. Create index on warehouse_id for fast queries
-CREATE INDEX IF NOT EXISTS idx_zones_warehouse_id ON zones(warehouse_id);
+CREATE INDEX IF NOT EXISTS idx_zones_warehouse_id
+  ON zones(warehouse_id);

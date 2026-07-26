@@ -94,35 +94,142 @@ WHERE bin_identifier IS NULL
    OR operational_status IS NULL;
 
 ALTER TABLE bins DROP CONSTRAINT IF EXISTS bins_status_check;
-ALTER TABLE bins
-  ADD CONSTRAINT bins_status_check
-  CHECK (status IN ('Available', 'Occupied', 'Full', 'Reserved', 'Restricted', 'Blocked', 'Maintenance', 'Damaged', 'Inactive'));
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'bins'::regclass
+      AND conname = 'bins_status_check'
+  ) THEN
+    ALTER TABLE bins
+      ADD CONSTRAINT bins_status_check
+      CHECK (status IN ('Available', 'Occupied', 'Full', 'Reserved', 'Restricted', 'Blocked', 'Maintenance', 'Damaged', 'Inactive'))
+      NOT VALID;
+  END IF;
+END;
+$$;
 
 ALTER TABLE bins DROP CONSTRAINT IF EXISTS bins_creation_status_check;
-ALTER TABLE bins
-  ADD CONSTRAINT bins_creation_status_check CHECK (creation_status IN ('Active', 'Inactive'));
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'bins'::regclass
+      AND conname = 'bins_creation_status_check'
+  ) THEN
+    ALTER TABLE bins
+      ADD CONSTRAINT bins_creation_status_check
+      CHECK (creation_status IN ('Active', 'Inactive'))
+      NOT VALID;
+  END IF;
+END;
+$$;
 
 ALTER TABLE bins DROP CONSTRAINT IF EXISTS bins_operational_status_check;
-ALTER TABLE bins
-  ADD CONSTRAINT bins_operational_status_check
-  CHECK (operational_status IN ('Available', 'Occupied', 'Full', 'Reserved', 'Restricted', 'Blocked', 'Maintenance', 'Damaged', 'Inactive'));
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'bins'::regclass
+      AND conname = 'bins_operational_status_check'
+  ) THEN
+    ALTER TABLE bins
+      ADD CONSTRAINT bins_operational_status_check
+      CHECK (operational_status IN ('Available', 'Occupied', 'Full', 'Reserved', 'Restricted', 'Blocked', 'Maintenance', 'Damaged', 'Inactive'))
+      NOT VALID;
+  END IF;
+END;
+$$;
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_warehouses_letter_unique
-  ON warehouses(UPPER(warehouse_letter))
-  WHERE warehouse_letter IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_warehouses_name_unique
-  ON warehouses(UPPER(warehouse_name));
-CREATE UNIQUE INDEX IF NOT EXISTS idx_zones_warehouse_name_unique
-  ON zones(warehouse_id, UPPER(name));
-CREATE UNIQUE INDEX IF NOT EXISTS idx_racks_zone_name_unique
-  ON racks(zone_id, UPPER(name))
-  WHERE name IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_levels_rack_name_unique
-  ON levels(rack_id, UPPER(name))
-  WHERE name IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_bins_level_name_unique
-  ON bins(level_id, UPPER(name))
-  WHERE name IS NOT NULL;
+DO $$
+BEGIN
+  IF to_regclass('public.idx_warehouses_letter_unique') IS NULL THEN
+    IF EXISTS (
+      SELECT 1 FROM warehouses
+      WHERE warehouse_letter IS NOT NULL
+      GROUP BY UPPER(warehouse_letter)
+      HAVING COUNT(*) > 1
+    ) THEN
+      RAISE NOTICE 'Skipping idx_warehouses_letter_unique because duplicate warehouse letters exist.';
+    ELSE
+      CREATE UNIQUE INDEX idx_warehouses_letter_unique
+        ON warehouses(UPPER(warehouse_letter))
+        WHERE warehouse_letter IS NOT NULL;
+    END IF;
+  END IF;
+
+  IF to_regclass('public.idx_warehouses_name_unique') IS NULL THEN
+    IF EXISTS (
+      SELECT 1 FROM warehouses
+      GROUP BY UPPER(warehouse_name)
+      HAVING COUNT(*) > 1
+    ) THEN
+      RAISE NOTICE 'Skipping idx_warehouses_name_unique because duplicate warehouse names exist.';
+    ELSE
+      CREATE UNIQUE INDEX idx_warehouses_name_unique
+        ON warehouses(UPPER(warehouse_name));
+    END IF;
+  END IF;
+
+  IF to_regclass('public.idx_zones_warehouse_name_unique') IS NULL THEN
+    IF EXISTS (
+      SELECT 1 FROM zones
+      GROUP BY warehouse_id, UPPER(name)
+      HAVING COUNT(*) > 1
+    ) THEN
+      RAISE NOTICE 'Skipping idx_zones_warehouse_name_unique because duplicate zone names exist in a warehouse.';
+    ELSE
+      CREATE UNIQUE INDEX idx_zones_warehouse_name_unique
+        ON zones(warehouse_id, UPPER(name));
+    END IF;
+  END IF;
+
+  IF to_regclass('public.idx_racks_zone_name_unique') IS NULL THEN
+    IF EXISTS (
+      SELECT 1 FROM racks
+      WHERE name IS NOT NULL
+      GROUP BY zone_id, UPPER(name)
+      HAVING COUNT(*) > 1
+    ) THEN
+      RAISE NOTICE 'Skipping idx_racks_zone_name_unique because duplicate rack names exist in a zone.';
+    ELSE
+      CREATE UNIQUE INDEX idx_racks_zone_name_unique
+        ON racks(zone_id, UPPER(name))
+        WHERE name IS NOT NULL;
+    END IF;
+  END IF;
+
+  IF to_regclass('public.idx_levels_rack_name_unique') IS NULL THEN
+    IF EXISTS (
+      SELECT 1 FROM levels
+      WHERE name IS NOT NULL
+      GROUP BY rack_id, UPPER(name)
+      HAVING COUNT(*) > 1
+    ) THEN
+      RAISE NOTICE 'Skipping idx_levels_rack_name_unique because duplicate level names exist in a rack.';
+    ELSE
+      CREATE UNIQUE INDEX idx_levels_rack_name_unique
+        ON levels(rack_id, UPPER(name))
+        WHERE name IS NOT NULL;
+    END IF;
+  END IF;
+
+  IF to_regclass('public.idx_bins_level_name_unique') IS NULL THEN
+    IF EXISTS (
+      SELECT 1 FROM bins
+      WHERE name IS NOT NULL
+      GROUP BY level_id, UPPER(name)
+      HAVING COUNT(*) > 1
+    ) THEN
+      RAISE NOTICE 'Skipping idx_bins_level_name_unique because duplicate bin names exist in a level.';
+    ELSE
+      CREATE UNIQUE INDEX idx_bins_level_name_unique
+        ON bins(level_id, UPPER(name))
+        WHERE name IS NOT NULL;
+    END IF;
+  END IF;
+END;
+$$;
 
 CREATE TABLE IF NOT EXISTS capacity_configurations (
   id SERIAL PRIMARY KEY,
@@ -201,17 +308,39 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS sync_bin_configuration_aliases_trigger ON bins;
-CREATE TRIGGER sync_bin_configuration_aliases_trigger
-BEFORE INSERT OR UPDATE ON bins
-FOR EACH ROW EXECUTE FUNCTION sync_bin_configuration_aliases();
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'sync_bin_configuration_aliases_trigger'
+      AND tgrelid = 'bins'::regclass
+      AND NOT tgisinternal
+  ) THEN
+    CREATE TRIGGER sync_bin_configuration_aliases_trigger
+    BEFORE INSERT OR UPDATE ON bins
+    FOR EACH ROW EXECUTE FUNCTION sync_bin_configuration_aliases();
+  END IF;
 
-DROP TRIGGER IF EXISTS set_warehouses_updated_at ON warehouses;
-CREATE TRIGGER set_warehouses_updated_at
-BEFORE UPDATE ON warehouses
-FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'set_warehouses_updated_at'
+      AND tgrelid = 'warehouses'::regclass
+      AND NOT tgisinternal
+  ) THEN
+    CREATE TRIGGER set_warehouses_updated_at
+    BEFORE UPDATE ON warehouses
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
 
-DROP TRIGGER IF EXISTS set_capacity_configurations_updated_at ON capacity_configurations;
-CREATE TRIGGER set_capacity_configurations_updated_at
-BEFORE UPDATE ON capacity_configurations
-FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'set_capacity_configurations_updated_at'
+      AND tgrelid = 'capacity_configurations'::regclass
+      AND NOT tgisinternal
+  ) THEN
+    CREATE TRIGGER set_capacity_configurations_updated_at
+    BEFORE UPDATE ON capacity_configurations
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END;
+$$;

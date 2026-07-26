@@ -11,6 +11,7 @@ const {
   applySqlMigration,
   ensureSchemaMigrationsTable
 } = require("./migrationRunner");
+const { ensureRolePublicReferences } = require("./rolePublicReferences");
 
 dotenv.config({ path: path.join(__dirname, "../.env") });
 
@@ -160,10 +161,12 @@ const applySchema = async () => {
 };
 
 const seedOperationalConfiguration = async (client) => {
+  await ensureRolePublicReferences(client);
+
   for (const role of defaultRoleDefinitions) {
     await client.query(
-      `INSERT INTO roles (role_name, role_description)
-       VALUES ($1, $2)
+      `INSERT INTO roles (role_name, role_description, public_reference)
+       VALUES ($1, $2, generate_role_public_reference())
        ON CONFLICT (role_name) DO UPDATE
        SET role_description = EXCLUDED.role_description`,
       [role.name, role.description || null]
@@ -401,4 +404,15 @@ const run = async () => {
   }
 };
 
-run();
+if (require.main === module) {
+  run();
+}
+
+module.exports = {
+  applySchema,
+  createDatabaseIfMissing,
+  readBootstrapAdminConfig,
+  run,
+  seedBootstrapAdmin,
+  seedOperationalConfiguration
+};

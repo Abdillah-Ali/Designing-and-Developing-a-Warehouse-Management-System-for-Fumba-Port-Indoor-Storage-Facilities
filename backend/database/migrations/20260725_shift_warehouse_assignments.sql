@@ -17,28 +17,123 @@ UPDATE shifts
 SET public_reference = 'SHIFT-' || UPPER(REGEXP_REPLACE(COALESCE(shift_code, shift_name), '[^A-Za-z0-9]+', '-', 'g'))
 WHERE public_reference IS NULL;
 
-ALTER TABLE shifts ALTER COLUMN public_reference SET NOT NULL;
-ALTER TABLE shifts ALTER COLUMN shift_code SET NOT NULL;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM shifts WHERE public_reference IS NULL) THEN
+    ALTER TABLE shifts ALTER COLUMN public_reference SET NOT NULL;
+  ELSE
+    RAISE NOTICE 'Skipping shifts.public_reference NOT NULL because existing shifts still contain NULL references.';
+  END IF;
 
-ALTER TABLE shifts DROP CONSTRAINT IF EXISTS shifts_public_reference_key;
-ALTER TABLE shifts ADD CONSTRAINT shifts_public_reference_key UNIQUE (public_reference);
+  IF NOT EXISTS (SELECT 1 FROM shifts WHERE shift_code IS NULL) THEN
+    ALTER TABLE shifts ALTER COLUMN shift_code SET NOT NULL;
+  ELSE
+    RAISE NOTICE 'Skipping shifts.shift_code NOT NULL because existing shifts still contain NULL codes.';
+  END IF;
+END;
+$$;
 
-ALTER TABLE shifts DROP CONSTRAINT IF EXISTS shifts_status_check;
-ALTER TABLE shifts ADD CONSTRAINT shifts_status_check CHECK (status IN ('active', 'inactive'));
+DO $$
+BEGIN
+  IF to_regclass('public.shifts_public_reference_key') IS NULL THEN
+    IF EXISTS (
+      SELECT 1
+      FROM shifts
+      WHERE public_reference IS NOT NULL
+      GROUP BY public_reference
+      HAVING COUNT(*) > 1
+    ) THEN
+      RAISE NOTICE 'Skipping shifts_public_reference_key because duplicate shift public references exist.';
+    ELSE
+      CREATE UNIQUE INDEX shifts_public_reference_key
+        ON shifts(public_reference);
+    END IF;
+  END IF;
+END;
+$$;
 
-ALTER TABLE shifts DROP CONSTRAINT IF EXISTS shifts_grace_period_check;
-ALTER TABLE shifts ADD CONSTRAINT shifts_grace_period_check CHECK (grace_period_minutes IS NULL OR grace_period_minutes >= 0);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'shifts'::regclass
+      AND conname = 'shifts_status_check'
+  ) THEN
+    ALTER TABLE shifts
+      ADD CONSTRAINT shifts_status_check CHECK (status IN ('active', 'inactive')) NOT VALID;
+  END IF;
+END;
+$$;
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_shifts_unique_code
-  ON shifts(LOWER(shift_code));
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'shifts'::regclass
+      AND conname = 'shifts_grace_period_check'
+  ) THEN
+    ALTER TABLE shifts
+      ADD CONSTRAINT shifts_grace_period_check
+      CHECK (grace_period_minutes IS NULL OR grace_period_minutes >= 0)
+      NOT VALID;
+  END IF;
+END;
+$$;
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_shifts_unique_name
-  ON shifts(LOWER(shift_name));
+DO $$
+BEGIN
+  IF to_regclass('public.idx_shifts_unique_code') IS NULL THEN
+    IF EXISTS (
+      SELECT 1
+      FROM shifts
+      WHERE shift_code IS NOT NULL
+      GROUP BY LOWER(shift_code)
+      HAVING COUNT(*) > 1
+    ) THEN
+      RAISE NOTICE 'Skipping idx_shifts_unique_code because duplicate shift codes exist.';
+    ELSE
+      CREATE UNIQUE INDEX idx_shifts_unique_code
+        ON shifts(LOWER(shift_code));
+    END IF;
+  END IF;
+END;
+$$;
 
-DROP TRIGGER IF EXISTS set_shifts_updated_at ON shifts;
-CREATE TRIGGER set_shifts_updated_at
-BEFORE UPDATE ON shifts
-FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DO $$
+BEGIN
+  IF to_regclass('public.idx_shifts_unique_name') IS NULL THEN
+    IF EXISTS (
+      SELECT 1
+      FROM shifts
+      GROUP BY LOWER(shift_name)
+      HAVING COUNT(*) > 1
+    ) THEN
+      RAISE NOTICE 'Skipping idx_shifts_unique_name because duplicate shift names exist.';
+    ELSE
+      CREATE UNIQUE INDEX idx_shifts_unique_name
+        ON shifts(LOWER(shift_name));
+    END IF;
+  END IF;
+END;
+$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_trigger
+    WHERE tgname = 'set_shifts_updated_at'
+      AND tgrelid = 'shifts'::regclass
+      AND NOT tgisinternal
+  ) THEN
+    CREATE TRIGGER set_shifts_updated_at
+    BEFORE UPDATE ON shifts
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END;
+$$;
 
 CREATE TABLE IF NOT EXISTS shift_assignment_history (
   id SERIAL PRIMARY KEY,

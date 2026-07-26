@@ -1,11 +1,56 @@
 -- Finance, Customs, and Gate workflow support.
 -- Additive and idempotent so existing warehouse workflows remain intact.
 
-INSERT INTO roles (role_name, role_description)
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE OR REPLACE FUNCTION generate_role_public_reference()
+RETURNS VARCHAR(80) AS $$
+DECLARE
+  generated_reference VARCHAR(80);
+BEGIN
+  LOOP
+    generated_reference := 'ROLE-' || EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER || '-' || UPPER(ENCODE(gen_random_bytes(6), 'hex'));
+
+    EXIT WHEN NOT EXISTS (
+      SELECT 1
+      FROM roles
+      WHERE public_reference = generated_reference
+    );
+  END LOOP;
+
+  RETURN generated_reference;
+END;
+$$ LANGUAGE plpgsql;
+
+ALTER TABLE roles
+  ADD COLUMN IF NOT EXISTS public_reference VARCHAR(80);
+
+ALTER TABLE roles
+  ALTER COLUMN public_reference SET DEFAULT generate_role_public_reference();
+
+DO $$
+DECLARE
+  role_record RECORD;
+BEGIN
+  FOR role_record IN
+    SELECT role_name
+    FROM roles
+    WHERE public_reference IS NULL
+    ORDER BY role_name
+  LOOP
+    UPDATE roles
+    SET public_reference = generate_role_public_reference()
+    WHERE role_name = role_record.role_name
+      AND public_reference IS NULL;
+  END LOOP;
+END;
+$$;
+
+INSERT INTO roles (role_name, role_description, public_reference)
 VALUES
-  ('Finance Officer', 'Finance access for cargo charges, invoices, payments, tariffs, and financial reports.'),
-  ('Customs Officer', 'Customs access for cargo inspection, hold, document request, rejection, and clearance workflows.'),
-  ('Gate Officer', 'Gate access for release validation, gate-out records, and emergency release requests.')
+  ('Finance Officer', 'Finance access for cargo charges, invoices, payments, tariffs, and financial reports.', generate_role_public_reference()),
+  ('Customs Officer', 'Customs access for cargo inspection, hold, document request, rejection, and clearance workflows.', generate_role_public_reference()),
+  ('Gate Officer', 'Gate access for release validation, gate-out records, and emergency release requests.', generate_role_public_reference())
 ON CONFLICT (role_name) DO UPDATE
 SET role_description = EXCLUDED.role_description;
 
@@ -134,49 +179,90 @@ SET charge_start_at = COALESCE(charge_start_at, created_at, received_datetime, C
       ELSE customs_status
     END;
 
-ALTER TABLE cargo ALTER COLUMN charge_start_at SET NOT NULL;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM cargo WHERE charge_start_at IS NULL) THEN
+    ALTER TABLE cargo ALTER COLUMN charge_start_at SET NOT NULL;
+  ELSE
+    RAISE NOTICE 'Skipping cargo.charge_start_at NOT NULL because existing cargo still contains NULL charge starts.';
+  END IF;
+END;
+$$;
+
 ALTER TABLE cargo ALTER COLUMN charge_start_at SET DEFAULT CURRENT_TIMESTAMP;
 
-ALTER TABLE cargo DROP CONSTRAINT IF EXISTS cargo_customs_status_check;
-ALTER TABLE cargo
-  ADD CONSTRAINT cargo_customs_status_check
-  CHECK (customs_status IN (
-    'Pending Inspection',
-    'Inspection In Progress',
-    'Documents Required',
-    'On Hold',
-    'Cleared',
-    'Rejected'
-  ));
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'cargo'::regclass
+      AND conname = 'cargo_customs_status_check'
+  ) THEN
+    ALTER TABLE cargo
+      ADD CONSTRAINT cargo_customs_status_check
+      CHECK (customs_status IN (
+        'Pending Inspection',
+        'Inspection In Progress',
+        'Documents Required',
+        'On Hold',
+        'Cleared',
+        'Rejected'
+      ))
+      NOT VALID;
+  END IF;
 
-ALTER TABLE cargo DROP CONSTRAINT IF EXISTS cargo_financial_status_check;
-ALTER TABLE cargo
-  ADD CONSTRAINT cargo_financial_status_check
-  CHECK (financial_status IN (
-    'Unbilled',
-    'Outstanding',
-    'Partially Paid',
-    'Fully Paid',
-    'Released With Balance'
-  ));
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'cargo'::regclass
+      AND conname = 'cargo_financial_status_check'
+  ) THEN
+    ALTER TABLE cargo
+      ADD CONSTRAINT cargo_financial_status_check
+      CHECK (financial_status IN (
+        'Unbilled',
+        'Outstanding',
+        'Partially Paid',
+        'Fully Paid',
+        'Released With Balance'
+      ))
+      NOT VALID;
+  END IF;
 
-ALTER TABLE cargo DROP CONSTRAINT IF EXISTS cargo_dispatch_status_check;
-ALTER TABLE cargo
-  ADD CONSTRAINT cargo_dispatch_status_check
-  CHECK (dispatch_status IN (
-    'Not Requested',
-    'Awaiting Approval',
-    'Approved',
-    'Rejected',
-    'Released',
-    'Emergency Released',
-    'Cancelled'
-  ));
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'cargo'::regclass
+      AND conname = 'cargo_dispatch_status_check'
+  ) THEN
+    ALTER TABLE cargo
+      ADD CONSTRAINT cargo_dispatch_status_check
+      CHECK (dispatch_status IN (
+        'Not Requested',
+        'Awaiting Approval',
+        'Approved',
+        'Rejected',
+        'Released',
+        'Emergency Released',
+        'Cancelled'
+      ))
+      NOT VALID;
+  END IF;
 
-ALTER TABLE cargo DROP CONSTRAINT IF EXISTS cargo_gate_out_status_check;
-ALTER TABLE cargo
-  ADD CONSTRAINT cargo_gate_out_status_check
-  CHECK (gate_out_status IN ('Not Released', 'Released', 'Emergency Released'));
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'cargo'::regclass
+      AND conname = 'cargo_gate_out_status_check'
+  ) THEN
+    ALTER TABLE cargo
+      ADD CONSTRAINT cargo_gate_out_status_check
+      CHECK (gate_out_status IN ('Not Released', 'Released', 'Emergency Released'))
+      NOT VALID;
+  END IF;
+END;
+$$;
 
 CREATE INDEX IF NOT EXISTS idx_cargo_charge_start ON cargo(charge_start_at);
 CREATE INDEX IF NOT EXISTS idx_cargo_financial_status ON cargo(financial_status);
@@ -292,11 +378,21 @@ CREATE TABLE IF NOT EXISTS invoices (
   CHECK (billing_period_end > billing_period_start)
 );
 
-ALTER TABLE cargo_charge_ledgers
-  DROP CONSTRAINT IF EXISTS cargo_charge_ledgers_invoice_fkey;
-ALTER TABLE cargo_charge_ledgers
-  ADD CONSTRAINT cargo_charge_ledgers_invoice_fkey
-  FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE SET NULL;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'cargo_charge_ledgers'::regclass
+      AND conname = 'cargo_charge_ledgers_invoice_fkey'
+  ) THEN
+    ALTER TABLE cargo_charge_ledgers
+      ADD CONSTRAINT cargo_charge_ledgers_invoice_fkey
+      FOREIGN KEY (invoice_id) REFERENCES invoices(id) ON DELETE SET NULL
+      NOT VALID;
+  END IF;
+END;
+$$;
 
 CREATE TABLE IF NOT EXISTS invoice_line_items (
   id SERIAL PRIMARY KEY,
@@ -333,9 +429,26 @@ CREATE TABLE IF NOT EXISTS payments (
   CHECK (status IN ('Confirmed', 'Reversed'))
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_unique_bank_reference
-  ON payments(LOWER(bank_reference))
-  WHERE bank_reference IS NOT NULL AND status = 'Confirmed';
+DO $$
+BEGIN
+  IF to_regclass('public.idx_payments_unique_bank_reference') IS NULL THEN
+    IF EXISTS (
+      SELECT 1
+      FROM payments
+      WHERE bank_reference IS NOT NULL
+        AND status = 'Confirmed'
+      GROUP BY LOWER(bank_reference)
+      HAVING COUNT(*) > 1
+    ) THEN
+      RAISE NOTICE 'Skipping idx_payments_unique_bank_reference because duplicate confirmed payment bank references exist.';
+    ELSE
+      CREATE UNIQUE INDEX idx_payments_unique_bank_reference
+        ON payments(LOWER(bank_reference))
+        WHERE bank_reference IS NOT NULL AND status = 'Confirmed';
+    END IF;
+  END IF;
+END;
+$$;
 
 CREATE TABLE IF NOT EXISTS payment_reversals (
   id SERIAL PRIMARY KEY,
@@ -442,36 +555,82 @@ CREATE INDEX IF NOT EXISTS idx_gate_out_records_released_at
 CREATE INDEX IF NOT EXISTS idx_emergency_release_status
   ON emergency_release_requests(status, created_at DESC);
 
-DROP TRIGGER IF EXISTS set_tariffs_updated_at ON tariffs;
-CREATE TRIGGER set_tariffs_updated_at
-BEFORE UPDATE ON tariffs
-FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'set_tariffs_updated_at'
+      AND tgrelid = 'tariffs'::regclass
+      AND NOT tgisinternal
+  ) THEN
+    CREATE TRIGGER set_tariffs_updated_at
+    BEFORE UPDATE ON tariffs
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
 
-DROP TRIGGER IF EXISTS set_tariff_versions_updated_at ON tariff_versions;
-CREATE TRIGGER set_tariff_versions_updated_at
-BEFORE UPDATE ON tariff_versions
-FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'set_tariff_versions_updated_at'
+      AND tgrelid = 'tariff_versions'::regclass
+      AND NOT tgisinternal
+  ) THEN
+    CREATE TRIGGER set_tariff_versions_updated_at
+    BEFORE UPDATE ON tariff_versions
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
 
-DROP TRIGGER IF EXISTS set_invoices_updated_at ON invoices;
-CREATE TRIGGER set_invoices_updated_at
-BEFORE UPDATE ON invoices
-FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'set_invoices_updated_at'
+      AND tgrelid = 'invoices'::regclass
+      AND NOT tgisinternal
+  ) THEN
+    CREATE TRIGGER set_invoices_updated_at
+    BEFORE UPDATE ON invoices
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
 
-DROP TRIGGER IF EXISTS set_customs_records_updated_at ON customs_records;
-CREATE TRIGGER set_customs_records_updated_at
-BEFORE UPDATE ON customs_records
-FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'set_customs_records_updated_at'
+      AND tgrelid = 'customs_records'::regclass
+      AND NOT tgisinternal
+  ) THEN
+    CREATE TRIGGER set_customs_records_updated_at
+    BEFORE UPDATE ON customs_records
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
 
-DROP TRIGGER IF EXISTS set_emergency_release_requests_updated_at ON emergency_release_requests;
-CREATE TRIGGER set_emergency_release_requests_updated_at
-BEFORE UPDATE ON emergency_release_requests
-FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'set_emergency_release_requests_updated_at'
+      AND tgrelid = 'emergency_release_requests'::regclass
+      AND NOT tgisinternal
+  ) THEN
+    CREATE TRIGGER set_emergency_release_requests_updated_at
+    BEFORE UPDATE ON emergency_release_requests
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+  END IF;
+END;
+$$;
 
 INSERT INTO tariffs (public_reference, tariff_name, cargo_type, charging_unit, description)
-VALUES
-  ('TRF-BASE-GENERAL', 'Standard General Cargo Daily Storage', 'General Goods', 'per_cargo_per_day', 'Default daily storage tariff for general cargo.'),
-  ('TRF-BASE-DEFAULT', 'Standard Cargo Daily Storage', 'Default', 'per_cargo_per_day', 'Fallback daily storage tariff for cargo types without a dedicated tariff.')
-ON CONFLICT (tariff_name, cargo_type, charging_unit) DO NOTHING;
+SELECT seed.public_reference, seed.tariff_name, seed.cargo_type, seed.charging_unit, seed.description
+FROM (
+  VALUES
+    ('TRF-BASE-GENERAL', 'Standard General Cargo Daily Storage', 'General Goods', 'per_cargo_per_day', 'Default daily storage tariff for general cargo.'),
+    ('TRF-BASE-DEFAULT', 'Standard Cargo Daily Storage', 'Default', 'per_cargo_per_day', 'Fallback daily storage tariff for cargo types without a dedicated tariff.')
+) AS seed(public_reference, tariff_name, cargo_type, charging_unit, description)
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM tariffs t
+  WHERE t.public_reference = seed.public_reference
+     OR (
+       t.tariff_name = seed.tariff_name
+       AND t.cargo_type = seed.cargo_type
+       AND t.charging_unit = seed.charging_unit
+     )
+);
 
 INSERT INTO tariff_versions (
   public_reference,
@@ -508,4 +667,11 @@ SELECT
   'Seeded baseline tariff.'
 FROM tariffs t
 WHERE t.public_reference IN ('TRF-BASE-GENERAL', 'TRF-BASE-DEFAULT')
-ON CONFLICT (public_reference) DO NOTHING;
+  AND NOT EXISTS (
+    SELECT 1
+    FROM tariff_versions tv
+    WHERE tv.public_reference = CASE
+      WHEN t.cargo_type = 'General Goods' THEN 'TRV-BASE-GENERAL-001'
+      ELSE 'TRV-BASE-DEFAULT-001'
+    END
+  );
