@@ -9,8 +9,6 @@ import {
   getPortalDefaultPath,
   getStoredAuthRole,
   isStoredBootstrapAdmin,
-  isStoredBootstrapCompleted,
-  isStoredBootstrapSetupPending,
   isPathAllowedForRole,
   mustChangeStoredPassword,
 } from "./lib/portal-access.js";
@@ -27,6 +25,7 @@ const ScannerPortal = lazy(() => import("./pages/ScannerPortal.jsx"));
 const FinancePortal = lazy(() => import("./pages/FinancePortal.jsx"));
 const CustomsPortal = lazy(() => import("./pages/CustomsPortal.jsx"));
 const GatePortal = lazy(() => import("./pages/GatePortal.jsx"));
+const ManagementPortal = lazy(() => import("./pages/ManagementPortal.jsx"));
 
 function PageFallback() {
   return (
@@ -99,30 +98,6 @@ function ScannerAccessGate() {
   return <ScannerPortal />;
 }
 
-function BootstrapSetupGate() {
-  const activeRole = getStoredAuthRole();
-
-  if (!activeRole) {
-    return <Navigate to="/" replace />;
-  }
-
-  if (!isStoredBootstrapAdmin()) {
-    return <Navigate to={getPortalDefaultPath(activeRole)} replace />;
-  }
-
-  if (isStoredBootstrapCompleted() || !isStoredBootstrapSetupPending()) {
-    return (
-      <Navigate
-        to="/"
-        replace
-        state={{ successMessage: "Bootstrap setup is complete. Please log in using the real administrator account." }}
-      />
-    );
-  }
-
-  return <BootstrapAdminSetup />;
-}
-
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
@@ -134,7 +109,8 @@ const App = () => (
             <Route path="/" element={<Landing />} />
             <Route path="/scanner/login" element={<Navigate to="/" replace />} />
             <Route path="/scanner" element={<ScannerAccessGate />} />
-            <Route path="/bootstrap-admin-setup" element={<BootstrapSetupGate />} />
+            <Route path="/initial-setup" element={<BootstrapAdminSetup />} />
+            <Route path="/bootstrap-admin-setup" element={<Navigate to="/initial-setup" replace />} />
             <Route path="/change-password" element={<PasswordChangeGate />} />
             <Route
               path="/admin/*"
@@ -181,6 +157,14 @@ const App = () => (
               element={
                 <PortalAccessGate role={PORTAL_ROLES.GATE_OFFICER}>
                   <GatePortal />
+                </PortalAccessGate>
+              }
+            />
+            <Route
+              path="/management/*"
+              element={
+                <PortalAccessGate role={PORTAL_ROLES.MANAGEMENT}>
+                  <ManagementPortal />
                 </PortalAccessGate>
               }
             />

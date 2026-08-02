@@ -12,8 +12,7 @@ const validPayload = {
   email: "real.admin@example.com",
   phone_number: "+255712345678",
   password: "Secure@123",
-  confirm_password: "Secure@123",
-  shift_id: 1
+  confirm_password: "Secure@123"
 };
 
 test("bootstrap setup accepts a complete first administrator payload", () => {
@@ -21,7 +20,7 @@ test("bootstrap setup accepts a complete first administrator payload", () => {
 
   assert.equal(payload.username, validPayload.username);
   assert.equal(payload.warehouse_id, undefined);
-  assert.equal(payload.shift_id, 1);
+  assert.equal(payload.shift_id, undefined);
 });
 
 test("bootstrap setup enforces password policy and confirmation", () => {
@@ -35,22 +34,19 @@ test("bootstrap setup enforces password policy and confirmation", () => {
   );
 });
 
-test("bootstrap setup defaults to all warehouses and requires a shift assignment", () => {
-  const payload = normalizeFirstAdminPayload({ ...validPayload, warehouse_id: 999 });
+test("initial setup does not depend on warehouses or shifts", () => {
+  const payload = normalizeFirstAdminPayload({ ...validPayload, warehouse_id: 999, shift_id: 999 });
   assert.equal(payload.warehouse_id, undefined);
-
-  assert.throws(
-    () => normalizeFirstAdminPayload({ ...validPayload, shift_id: "" }),
-    /Shift is required/
-  );
+  assert.equal(payload.shift_id, undefined);
 });
 
-test("database initialization reads bootstrap identity only from environment variables", () => {
+test("database initialization never creates a bootstrap identity", () => {
   const initDbPath = path.join(__dirname, "../database/initDb.js");
   const source = fs.readFileSync(initDbPath, "utf8");
 
-  assert.match(source, /BOOTSTRAP_ADMIN_FULL_NAME/);
-  assert.match(source, /BOOTSTRAP_ADMIN_PASSWORD/);
+  assert.doesNotMatch(source, /BOOTSTRAP_ADMIN_FULL_NAME/);
+  assert.doesNotMatch(source, /BOOTSTRAP_ADMIN_PASSWORD/);
+  assert.doesNotMatch(source, /seedBootstrapAdmin/);
   assert.match(source, /connectWithRetry/);
   assert.doesNotMatch(source, /DEFAULT_ADMIN_PASSWORD|SEED_DEFAULT_ADMIN|admin@fumbaport\.tz|Admin@123/);
   assert.match(source, /warehouse_configuration_srs\.sql/);

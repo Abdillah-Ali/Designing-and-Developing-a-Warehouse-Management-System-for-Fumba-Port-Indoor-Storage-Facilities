@@ -13,7 +13,7 @@ import {
   isStoredBootstrapSetupPending,
   mustChangeStoredPassword
 } from "@/lib/portal-access";
-import { login as signIn } from "@/services/api";
+import { getSetupStatus, login as signIn } from "@/services/api";
 
 const getAccountRoute = (role, requestedPath) => (
   requestedPath && isPathAllowedForRole(role, requestedPath)
@@ -32,6 +32,15 @@ const Landing = () => {
   const requestedPath = location.state?.from;
 
   useEffect(() => {
+    let active = true;
+    getSetupStatus()
+      .then((response) => {
+        if (active && response.data?.setup_required) {
+          navigate("/initial-setup", { replace: true });
+        }
+      })
+      .catch(() => {});
+
     const role = getStoredAuthRole();
     if (role) {
       if (isStoredBootstrapAdmin() && isStoredBootstrapCompleted()) {
@@ -41,13 +50,16 @@ const Landing = () => {
 
       navigate(
         isStoredBootstrapSetupPending()
-          ? "/bootstrap-admin-setup"
+          ? "/initial-setup"
           : mustChangeStoredPassword()
             ? "/change-password"
             : getAccountRoute(role, requestedPath),
         { replace: true }
       );
     }
+    return () => {
+      active = false;
+    };
   }, [navigate, requestedPath]);
 
   const handleSubmit = async (event) => {
@@ -85,7 +97,7 @@ const Landing = () => {
       );
       navigate(
         bootstrapPending
-          ? "/bootstrap-admin-setup"
+          ? "/initial-setup"
           : mustChangePassword
             ? "/change-password"
             : getAccountRoute(role, requestedPath),
@@ -108,9 +120,6 @@ const Landing = () => {
       <div className="flex min-h-dvh w-full flex-col justify-center overflow-x-hidden px-6 py-10 sm:px-10 lg:px-20">
         <section className="w-full max-w-[900px]">
           <div className="max-w-[840px]">
-            <p className="mb-5 text-xs font-semibold uppercase tracking-[0.34em] text-cyan-100 sm:text-sm">
-              Fumba Port Warehouse
-            </p>
             <h1 className="max-w-[840px] text-4xl font-semibold leading-[1.06] sm:text-5xl lg:text-[4.35rem]">
               Fumba Port Warehouse Management System
             </h1>

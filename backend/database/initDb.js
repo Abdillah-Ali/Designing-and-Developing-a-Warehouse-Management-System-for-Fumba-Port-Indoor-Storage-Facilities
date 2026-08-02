@@ -2,7 +2,6 @@ const dotenv = require("dotenv");
 const fs = require("fs/promises");
 const path = require("path");
 const { Client } = require("pg");
-const bcrypt = require("bcryptjs");
 const {
   defaultRoleDefinitions,
   roleNames
@@ -131,6 +130,18 @@ const applySchema = async () => {
     "migrations",
     "20260725_notification_scheduler_settings.sql"
   );
+  const managementPermissionsMigrationPath = path.join(
+    __dirname, "migrations", "20260730_management_permissions.sql"
+  );
+  const initialAdminGovernanceMigrationPath = path.join(
+    __dirname, "migrations", "20260730_initial_admin_governance.sql"
+  );
+  const systemAdministratorLimitSettingMigrationPath = path.join(
+    __dirname, "migrations", "20260730_system_administrator_limit_setting.sql"
+  );
+  const cargoRegistrationFormBuilderMigrationPath = path.join(
+    __dirname, "migrations", "20260730_cargo_registration_form_builder.sql"
+  );
   const financeCustomsGateMigration = await fs.readFile(financeCustomsGateMigrationPath, "utf8");
   const zoneWarehouseScopeMigration = await fs.readFile(zoneWarehouseScopeMigrationPath, "utf8");
   const warehouseConfigurationMigration = await fs.readFile(warehouseConfigurationMigrationPath, "utf8");
@@ -138,6 +149,10 @@ const applySchema = async () => {
   const integrityConstraintsMigration = await fs.readFile(integrityConstraintsMigrationPath, "utf8");
   const shiftWarehouseAssignmentsMigration = await fs.readFile(shiftWarehouseAssignmentsMigrationPath, "utf8");
   const notificationSchedulerMigration = await fs.readFile(notificationSchedulerMigrationPath, "utf8");
+  const managementPermissionsMigration = await fs.readFile(managementPermissionsMigrationPath, "utf8");
+  const initialAdminGovernanceMigration = await fs.readFile(initialAdminGovernanceMigrationPath, "utf8");
+  const systemAdministratorLimitSettingMigration = await fs.readFile(systemAdministratorLimitSettingMigrationPath, "utf8");
+  const cargoRegistrationFormBuilderMigration = await fs.readFile(cargoRegistrationFormBuilderMigrationPath, "utf8");
 
   try {
     await moveIncompatibleTables(client);
@@ -151,9 +166,21 @@ const applySchema = async () => {
     await applySqlMigration(client, "005_integrity_constraints.sql", integrityConstraintsMigration);
     await applySqlMigration(client, "006_shift_warehouse_assignments.sql", shiftWarehouseAssignmentsMigration);
     await applySqlMigration(client, "007_notification_scheduler_settings.sql", notificationSchedulerMigration);
-    console.log("✔ Roles seeded");
+    await applySqlMigration(client, "008_management_permissions.sql", managementPermissionsMigration);
+    await applySqlMigration(client, "009_initial_admin_governance.sql", initialAdminGovernanceMigration);
+    await applySqlMigration(client, "010_system_administrator_limit_setting.sql", systemAdministratorLimitSettingMigration);
+    await applySqlMigration(client, "011_cargo_registration_form_builder.sql", cargoRegistrationFormBuilderMigration);
+    await client.query(
+      `INSERT INTO role_permissions (role_id, permission_key)
+       SELECT r.id, p.permission_key
+       FROM roles r
+       JOIN permissions p ON p.permission_key = ANY($2::text[])
+       WHERE r.role_name = $1
+       ON CONFLICT DO NOTHING`,
+      [roleNames.management, ["management.dashboard.view", "management.reports.view", "notifications.view", "notifications.manage"]]
+    );
+    console.log("✔ Structural role catalog applied");
     console.log("✔ Shifts are not seeded; configure them in the Admin portal");
-    await seedBootstrapAdmin(client);
     console.log("Database schema applied successfully");
   } finally {
     await client.end();
@@ -173,161 +200,6 @@ const seedOperationalConfiguration = async (client) => {
     );
   }
 
-  await client.query(
-    `INSERT INTO audit_logs (action, module, description, metadata)
-     VALUES ('APPLY_SYSTEM_CONFIGURATION', 'System Configuration', $1, $2)`,
-    [
-      "Applied configured portal role definitions. Operational shifts are configured by the System Admin in the application.",
-      JSON.stringify({
-        roles: defaultRoleDefinitions.map((role) => role.name),
-        shifts_seeded: false
-      })
-    ]
-  );
-};
-
-const readBootstrapAdminConfig = () => {
-  const envFields = {
-    fullName: "BOOTSTRAP_ADMIN_FULL_NAME",
-    username: "BOOTSTRAP_ADMIN_USERNAME",
-    email: "BOOTSTRAP_ADMIN_EMAIL",
-    phone: "BOOTSTRAP_ADMIN_PHONE",
-    password: "BOOTSTRAP_ADMIN_PASSWORD"
-  };
-  const optionalFields = {
-    warehouse: "BOOTSTRAP_ADMIN_WAREHOUSE"
-  };
-  const config = {};
-  const missing = [];
-
-  for (const [key, envName] of Object.entries(envFields)) {
-    const value = String(process.env[envName] || "").trim();
-    if (!value) {
-      missing.push(envName);
-    } else {
-      config[key] = value;
-    }
-  }
-
-  for (const [key, envName] of Object.entries(optionalFields)) {
-    const value = String(process.env[envName] || "").trim();
-    if (value) {
-      config[key] = value;
-    }
-  }
-
-  if (missing.length > 0) {
-    throw new Error(`Missing required bootstrap admin environment variables: ${missing.join(", ")}`);
-  }
-
-  return config;
-};
-
-const seedBootstrapAdmin = async (client) => {
-  const config = readBootstrapAdminConfig();
-  const passwordHash = await bcrypt.hash(config.password, 12);
-
-  await client.query("BEGIN");
-
-  try {
-    const bootstrapCheck = await client.query(
-      `SELECT id, username
-       FROM users
-       WHERE is_bootstrap_admin = TRUE
-       LIMIT 1`
-    );
-
-    if (bootstrapCheck.rowCount > 0) {
-      console.log(`Bootstrap admin already exists (${bootstrapCheck.rows[0].username}); skipping creation`);
-      await client.query("COMMIT");
-      return;
-    }
-
-    const duplicateCheck = await client.query(
-      `SELECT username, email
-       FROM users
-       WHERE LOWER(username) = LOWER($1)
-          OR LOWER(email) = LOWER($2)
-       LIMIT 1`,
-      [config.username, config.email]
-    );
-    if (duplicateCheck.rowCount > 0) {
-      throw new Error("Configured bootstrap username or email is already used by another account.");
-    }
-
-    const roleResult = await client.query(
-      "SELECT id FROM roles WHERE role_name = $1",
-      [roleNames.systemAdmin]
-    );
-    if (roleResult.rowCount === 0) {
-      throw new Error("System Admin role not found.");
-    }
-    const roleId = roleResult.rows[0].id;
-
-    let warehouseId = null;
-    if (config.warehouse) {
-      const warehouseResult = await client.query(
-        `SELECT id
-         FROM warehouses
-         WHERE LOWER(warehouse_name) = LOWER($1)
-            OR LOWER(warehouse_code) = LOWER($1)
-         LIMIT 1`,
-        [config.warehouse]
-      );
-      if (warehouseResult.rowCount > 0) {
-        warehouseId = warehouseResult.rows[0].id;
-      } else {
-        console.log(`Configured bootstrap warehouse was not found: ${config.warehouse}. Defaulting to NULL.`);
-      }
-    }
-
-    const insertResult = await client.query(
-      `INSERT INTO users (
-        full_name,
-        username,
-        email,
-        phone_number,
-        password_hash,
-        role_id,
-        warehouse_id,
-        shift_id,
-        status,
-        must_change_password,
-        is_system_user,
-        is_bootstrap_admin,
-        bootstrap_completed
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', TRUE, TRUE, TRUE, FALSE)
-      RETURNING id`,
-      [
-        config.fullName,
-        config.username,
-        config.email,
-        config.phone,
-        passwordHash,
-        roleId,
-        warehouseId,
-        null
-      ]
-    );
-    const newUserId = insertResult.rows[0].id;
-
-    await client.query(
-      `INSERT INTO audit_logs (user_id, action, module, description)
-       VALUES ($1, $2, $3, $4)`,
-      [
-        newUserId,
-        "SEED_BOOTSTRAP_ADMIN",
-        "User Management",
-        "Temporary bootstrap administrator account seeded from environment configuration."
-      ]
-    );
-
-    await client.query("COMMIT");
-    console.log("✔ Bootstrap System Admin created successfully");
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  }
 };
 
 const getTableColumns = async (client, tableName) => {
@@ -411,8 +283,6 @@ if (require.main === module) {
 module.exports = {
   applySchema,
   createDatabaseIfMissing,
-  readBootstrapAdminConfig,
   run,
-  seedBootstrapAdmin,
   seedOperationalConfiguration
 };

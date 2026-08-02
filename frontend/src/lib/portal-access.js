@@ -9,6 +9,7 @@ export const PORTAL_ROLES = Object.freeze({
   FINANCE_OFFICER: "finance-officer",
   CUSTOMS_OFFICER: "customs-officer",
   GATE_OFFICER: "gate-officer",
+  MANAGEMENT: "management",
   SCANNER: "scanner"
 });
 
@@ -218,6 +219,21 @@ export const PORTAL_CONFIG = Object.freeze({
     modules: Object.freeze([
       "barcode-scanner"
     ])
+  },
+  [PORTAL_ROLES.MANAGEMENT]: {
+    label: "Management",
+    roleName: "Management",
+    displayRoleName: "Management",
+    basePath: "/management",
+    defaultPath: "/management",
+    allowedPaths: Object.freeze([
+      "/management",
+      "/management/dashboard",
+      "/management/reports",
+      "/management/notifications",
+      "/management/profile"
+    ]),
+    modules: Object.freeze(["dashboard", "executive-reports", "notifications", "profile"])
   }
 });
 
@@ -238,6 +254,7 @@ const roleAliases = Object.freeze({
   "customs officer": PORTAL_ROLES.CUSTOMS_OFFICER,
   "gate-officer": PORTAL_ROLES.GATE_OFFICER,
   "gate officer": PORTAL_ROLES.GATE_OFFICER,
+  "management": PORTAL_ROLES.MANAGEMENT,
   "scanner": PORTAL_ROLES.SCANNER
 });
 

@@ -22,6 +22,7 @@ import { cn } from "@/lib/utils";
 import {
   confirmPlacement as confirmPlacementRequest,
   createCargo,
+  getCargoRegistrationForm,
   getBins,
   getCargo,
   getCargoById,
@@ -38,15 +39,6 @@ import { BarcodeLabel, printBarcodeLabel } from "./BarcodeLabel";
 import { CollapsibleCard } from "./CollapsibleCard";
 import { EnterpriseModal } from "./EnterpriseModal";
 
-const sourceOptions = [
-  "Container",
-  "Truck",
-  "Ship Transfer",
-  "Manual Delivery",
-  "Customs Hold Release",
-  "Other"
-];
-
 const cargoTypes = [
   "General Goods",
   "Electronics",
@@ -56,38 +48,6 @@ const cargoTypes = [
   "Fragile Goods",
   "Hazardous Cargo",
   "Mixed Cargo"
-];
-
-const hazardClasses = [
-  "Flammable",
-  "Corrosive",
-  "Explosive",
-  "Toxic",
-  "Oxidizing",
-  "Compressed Gas",
-  "Radioactive",
-  "Other Hazardous"
-];
-
-const packagingTypes = [
-  "Boxes",
-  "Cartons",
-  "Pallets",
-  "Crates",
-  "Bags",
-  "Drums",
-  "Loose Cargo",
-  "Containerized",
-  "Other"
-];
-
-const cargoConditions = [
-  "Good",
-  "Damaged",
-  "Wet",
-  "Leaking",
-  "Broken Packaging",
-  "Requires Inspection"
 ];
 
 const allowedFileTypes = new Set([
@@ -104,16 +64,16 @@ const initialCargoForm = {
   contact_person: "",
   phone_number: "",
   email: "",
-  source_of_cargo: sourceOptions[0],
+  source_of_cargo: "",
   container_number: "",
   vehicle_number: "",
   cargo_description: "",
-  cargo_type: cargoTypes[0],
-  packaging_type: packagingTypes[0],
+  cargo_type: "",
+  packaging_type: "",
   quantity: "",
   weight: "",
   volume: "",
-  cargo_condition: cargoConditions[0],
+  cargo_condition: "",
   hazard_class: "",
   inspection_notes: "",
   received_by: "Warehouse Staff",
@@ -406,9 +366,22 @@ function checkPassed(validation, keys, fallback = false) {
   return keyList.every((key) => validation.checks[key]?.passed !== false);
 }
 
+function cargoFieldConditionMatches(rule, values) {
+  if (!rule?.field) return true;
+  const actual = values[rule.field];
+  if (rule.operator === "equals") return actual === rule.value;
+  if (rule.operator === "not_equals") return actual !== rule.value;
+  if (rule.operator === "in") return Array.isArray(rule.value) && rule.value.includes(actual);
+  return true;
+}
+
 function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) {
   const [activeTab, setActiveTab] = useState(initialTab);
   const [formData, setFormData] = useState(initialCargoForm);
+  const [registrationFields, setRegistrationFields] = useState([]);
+  const [registrationFormLoading, setRegistrationFormLoading] = useState(true);
+  const [registrationFormError, setRegistrationFormError] = useState("");
+  const [profileUser, setProfileUser] = useState(null);
   const [cargoRecords, setCargoRecords] = useState([]);
   const [barcodeModalCargo, setBarcodeModalCargo] = useState(null);
   const [cargoLoading, setCargoLoading] = useState(false);
@@ -502,10 +475,27 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
   useEffect(() => {
     refreshCargoRecords();
     refreshZones();
+    getCargoRegistrationForm()
+      .then((response) => {
+        const configuredFields = response.data || [];
+        setRegistrationFields(configuredFields);
+        setFormData((current) => {
+          const next = { ...current };
+          for (const field of configuredFields) {
+            if (field.default_value !== null && field.default_value !== undefined) {
+              next[field.field_key] = field.default_value;
+            }
+          }
+          return next;
+        });
+      })
+      .catch((error) => setRegistrationFormError(getErrorMessage(error)))
+      .finally(() => setRegistrationFormLoading(false));
     getProfile()
       .then((response) => {
         const user = response.data?.user;
         if (!user) return;
+        setProfileUser(user);
         setFormData((current) => ({
           ...current,
           received_by: user.full_name || user.username || current.received_by
@@ -966,7 +956,10 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     setFormData((current) => {
       const next = { ...current, [field]: value };
       if (field === "cargo_type") {
-        next.hazard_class = value === "Hazardous Cargo" ? hazardClasses[0] : "";
+        const hazardField = registrationFields.find((configured) => configured.field_key === "hazard_class");
+        next.hazard_class = value === "Hazardous Cargo"
+          ? hazardField?.default_value || hazardField?.option_values?.[0] || ""
+          : "";
       }
       return next;
     });
@@ -1070,6 +1063,19 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     }
     if (formData.cargo_condition !== "Good" && !String(formData.inspection_notes || "").trim()) {
       errors.push("Inspection notes are required when cargo condition is not Good.");
+    }
+    for (const field of registrationFields) {
+      if (["system", "file"].includes(field.field_type)) continue;
+      const conditionalRequired = Boolean(
+        field.conditional_rule?.required
+        && cargoFieldConditionMatches(field.conditional_rule, formData)
+      );
+      if (!field.required && !conditionalRequired) continue;
+      const value = formData[field.field_key];
+      if (value === undefined || value === null || String(value).trim() === "") {
+        const message = `${field.label} is required.`;
+        if (!errors.includes(message)) errors.push(message);
+      }
     }
     return errors;
   };
@@ -1220,6 +1226,145 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     requestAnimationFrame(() => cargoScanRef.current?.focus());
   };
 
+  const configuredSections = useMemo(() => {
+    const sections = [];
+    const byKey = new Map();
+    for (const field of registrationFields) {
+      if (!cargoFieldConditionMatches(field.conditional_rule, formData)) continue;
+      const sectionKey = field.section_key || "cargo";
+      if (!byKey.has(sectionKey)) {
+        const section = { key: sectionKey, fields: [] };
+        byKey.set(sectionKey, section);
+        sections.push(section);
+      }
+      byKey.get(sectionKey).fields.push(field);
+    }
+    return sections;
+  }, [formData, registrationFields]);
+
+  const sectionPresentation = {
+    consignee: { title: "Consignee / Owner Information", icon: ClipboardList },
+    cargo: { title: "Cargo Information", icon: Truck },
+    receiving: { title: "Inspection & Receiving", icon: PackageCheck },
+    documents: { title: "Supporting Documents", icon: FileText },
+    system: { title: "System Information", icon: Warehouse }
+  };
+
+  const renderConfiguredField = (field) => {
+    const conditionalRequired = Boolean(field.conditional_rule?.required);
+    const required = Boolean(field.required || conditionalRequired);
+    const readOnly = !field.editable;
+    const label = `${field.label}${required ? " *" : ""}`;
+    const commonHelp = field.help_text ? (
+      <span className="block text-[10px] leading-4 text-muted-foreground">{field.help_text}</span>
+    ) : null;
+
+    if (field.field_key === "supporting_documents") {
+      return (
+        <div key={field.field_key} className="space-y-3 md:col-span-2 xl:col-span-3">
+          <div
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDragOver(true);
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(event) => {
+              event.preventDefault();
+              setDragOver(false);
+              if (field.editable) addFiles(event.dataTransfer.files);
+            }}
+            onClick={() => field.editable && fileInput.current?.click()}
+            className={cn(
+              "rounded-md border-2 border-dashed p-5 text-center transition-colors",
+              field.editable ? "cursor-pointer" : "cursor-not-allowed opacity-70",
+              dragOver ? "border-info bg-info/5" : "border-border bg-muted/30 hover:bg-muted/50"
+            )}
+          >
+            <Upload className="mx-auto h-6 w-6 text-info" />
+            <div className="mt-2 text-xs font-semibold">{field.label}</div>
+            <div className="mt-0.5 text-[11px] text-muted-foreground">{field.help_text}</div>
+            <input
+              ref={fileInput}
+              type="file"
+              multiple
+              disabled={!field.editable}
+              accept=".pdf,.docx,.jpg,.jpeg,.png"
+              className="hidden"
+              onChange={(event) => addFiles(event.target.files)}
+            />
+          </div>
+          {files.length > 0 && (
+            <ul className="grid gap-2 md:grid-cols-2">
+              {files.map((file, index) => (
+                <li key={`${file.name}-${index}`} className="flex items-center justify-between gap-2 rounded border border-border bg-muted/20 px-3 py-2 text-xs">
+                  <span className="truncate">{file.name}</span>
+                  <button type="button" onClick={() => setFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))} className="text-muted-foreground hover:text-destructive" aria-label={`Remove ${file.name}`}>
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      );
+    }
+
+    if (field.field_type === "system" || field.field_key === "received_datetime") {
+      const systemValues = {
+        received_by: formData.received_by,
+        received_datetime: receivedAt,
+        receiving_warehouse: profileUser?.warehouse_name
+          ? `${profileUser.warehouse_code ? `${profileUser.warehouse_code} - ` : ""}${profileUser.warehouse_name}`
+          : "Assigned warehouse",
+        system_identifiers: "Generated automatically after registration",
+        registration_workflow: "Pending Review · Unplaced until supervisor approval"
+      };
+      return (
+        <Field key={field.field_key} label={label}>
+          <Input value={systemValues[field.field_key] || "System managed"} readOnly />
+          {commonHelp}
+        </Field>
+      );
+    }
+
+    if (field.field_type === "select") {
+      return (
+        <Field key={field.field_key} label={label}>
+          <Select value={formData[field.field_key] ?? ""} disabled={readOnly} onChange={(value) => handleCargoFieldChange(field.field_key, value)} required={required}>
+            {(field.option_values || []).map((option) => <option key={option} value={option}>{option}</option>)}
+          </Select>
+          {commonHelp}
+        </Field>
+      );
+    }
+
+    if (field.field_type === "textarea") {
+      return (
+        <Field key={field.field_key} label={label} className="md:col-span-2 xl:col-span-3">
+          <Textarea value={formData[field.field_key] ?? ""} readOnly={readOnly} required={required} placeholder={field.placeholder || ""} onChange={(event) => handleCargoFieldChange(field.field_key, event.target.value)} />
+          {commonHelp}
+        </Field>
+      );
+    }
+
+    const isNumber = field.field_type === "number";
+    return (
+      <Field key={field.field_key} label={label}>
+        <Input
+          value={formData[field.field_key] ?? ""}
+          readOnly={readOnly}
+          required={required}
+          type={isNumber ? "number" : field.field_key === "email" ? "email" : "text"}
+          min={isNumber ? "0.01" : undefined}
+          step={isNumber ? "0.01" : undefined}
+          placeholder={field.placeholder || ""}
+          onChange={(event) => handleCargoFieldChange(field.field_key, event.target.value)}
+        />
+        {commonHelp}
+      </Field>
+    );
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-md border border-border bg-card">
       <div className="flex-1 overflow-auto">
@@ -1274,155 +1419,29 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
               </div>
             )}
 
-            <CollapsibleCard title={<SectionTitle icon={ClipboardList}>Consignee / Owner Information</SectionTitle>} defaultOpen>
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                <Field label="Consignee Name">
-                  <Input value={formData.consignee_name} onChange={(event) => handleCargoFieldChange("consignee_name", event.target.value)} placeholder="Enter consignee name" required />
-                </Field>
-                <Field label="Company Name">
-                  <Input value={formData.company_name} onChange={(event) => handleCargoFieldChange("company_name", event.target.value)} placeholder="Enter company name" />
-                </Field>
-                <Field label="Contact Person">
-                  <Input value={formData.contact_person} onChange={(event) => handleCargoFieldChange("contact_person", event.target.value)} placeholder="Enter contact person" />
-                </Field>
-                <Field label="Phone Number">
-                  <Input value={formData.phone_number} onChange={(event) => handleCargoFieldChange("phone_number", event.target.value)} placeholder="+255 ..." required pattern="^\+?[0-9][0-9\s()-]{6,18}[0-9]$" />
-                </Field>
-                <Field label="Email Address" className="md:col-span-2">
-                  <Input value={formData.email} onChange={(event) => handleCargoFieldChange("email", event.target.value)} type="email" placeholder="name@company.com" />
-                </Field>
+            {registrationFormLoading && (
+              <div className="rounded border border-border bg-muted/20 p-4 text-xs text-muted-foreground">
+                Loading cargo registration form...
               </div>
-            </CollapsibleCard>
-
-            <CollapsibleCard title={<SectionTitle icon={Truck}>Cargo Information</SectionTitle>} defaultOpen>
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                <Field label="Source of Cargo">
-                  <Select value={formData.source_of_cargo} onChange={(value) => handleCargoFieldChange("source_of_cargo", value)}>
-                    {sourceOptions.map((option) => (
-                      <option key={option}>{option}</option>
-                    ))}
-                  </Select>
-                </Field>
-                <Field label="Container Number">
-                  <Input value={formData.container_number} onChange={(event) => handleCargoFieldChange("container_number", event.target.value)} placeholder="e.g. MSCU1234567" />
-                </Field>
-                <Field label="Vehicle Number">
-                  <Input value={formData.vehicle_number} onChange={(event) => handleCargoFieldChange("vehicle_number", event.target.value)} placeholder="e.g. T 123 ABC" />
-                </Field>
-                <Field label="Cargo Type">
-                  <Select value={formData.cargo_type} onChange={(value) => handleCargoFieldChange("cargo_type", value)}>
-                    {cargoTypes.map((option) => (
-                      <option key={option}>{option}</option>
-                    ))}
-                  </Select>
-                </Field>
-                {formData.cargo_type === "Hazardous Cargo" && (
-                  <Field label="Hazard Class">
-                    <Select value={formData.hazard_class} onChange={(value) => handleCargoFieldChange("hazard_class", value)}>
-                      {hazardClasses.map((option) => (
-                        <option key={option}>{option}</option>
-                      ))}
-                    </Select>
-                  </Field>
-                )}
-                <Field label="Packaging Type">
-                  <Select value={formData.packaging_type} onChange={(value) => handleCargoFieldChange("packaging_type", value)}>
-                    {packagingTypes.map((option) => (
-                      <option key={option}>{option}</option>
-                    ))}
-                  </Select>
-                </Field>
-                <Field label="Quantity">
-                  <Input value={formData.quantity} onChange={(event) => handleCargoFieldChange("quantity", event.target.value)} type="number" min="1" placeholder="1" required />
-                </Field>
-                <Field label="Weight (kg)">
-                  <Input value={formData.weight} onChange={(event) => handleCargoFieldChange("weight", event.target.value)} type="number" min="0.01" step="0.01" placeholder="0.00" required />
-                </Field>
-                <Field label="Volume (m³)">
-                  <Input value={formData.volume} onChange={(event) => handleCargoFieldChange("volume", event.target.value)} type="number" min="0.01" step="0.01" placeholder="0.00" required />
-                </Field>
-                <Field label="Cargo Condition">
-                  <Select value={formData.cargo_condition} onChange={(value) => handleCargoFieldChange("cargo_condition", value)}>
-                    {cargoConditions.map((option) => (
-                      <option key={option}>{option}</option>
-                    ))}
-                  </Select>
-                </Field>
-                <Field label="Cargo Description" className="md:col-span-2 xl:col-span-3">
-                  <Textarea value={formData.cargo_description} onChange={(event) => handleCargoFieldChange("cargo_description", event.target.value)} placeholder="Describe received cargo, markings, handling notes, or visible identifiers." />
-                </Field>
+            )}
+            {registrationFormError && (
+              <div className="rounded border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {registrationFormError}
               </div>
-            </CollapsibleCard>
-
-            <CollapsibleCard title={<SectionTitle icon={PackageCheck}>Inspection & Receiving</SectionTitle>} defaultOpen>
-              <div className="grid gap-3 lg:grid-cols-[1fr_280px]">
-                <Field label="Inspection Notes">
-                  <Textarea value={formData.inspection_notes} onChange={(event) => handleCargoFieldChange("inspection_notes", event.target.value)} placeholder="Record inspection findings after unloading." />
-                </Field>
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-                  <Field label="Received By">
-                    <Input value={formData.received_by} onChange={(event) => handleCargoFieldChange("received_by", event.target.value)} />
-                  </Field>
-                  <Field label="Received Date & Time">
-                    <Input value={receivedAt} readOnly />
-                  </Field>
-                  <Field label="Delivery Note Number">
-                    <Input value={formData.delivery_note_number} onChange={(event) => handleCargoFieldChange("delivery_note_number", event.target.value)} placeholder="DN-2026-..." />
-                  </Field>
-                </div>
-              </div>
-            </CollapsibleCard>
-
-            <CollapsibleCard title={<SectionTitle icon={FileText}>Supporting Documents</SectionTitle>} defaultOpen>
-              <div className="space-y-3">
-                <div
-                  onDragOver={(event) => {
-                    event.preventDefault();
-                    setDragOver(true);
-                  }}
-                  onDragLeave={() => setDragOver(false)}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    setDragOver(false);
-                    addFiles(event.dataTransfer.files);
-                  }}
-                  onClick={() => fileInput.current?.click()}
-                  className={cn(
-                    "cursor-pointer rounded-md border-2 border-dashed p-5 text-center transition-colors",
-                    dragOver ? "border-info bg-info/5" : "border-border bg-muted/30 hover:bg-muted/50"
-                  )}
-                >
-                  <Upload className="mx-auto h-6 w-6 text-info" />
-                  <div className="mt-2 text-xs font-semibold">Drop files or click to upload</div>
-                  <div className="mt-0.5 text-[11px] text-muted-foreground">PDF, DOCX, JPG, PNG. Maximum 10MB per file.</div>
-                  <input
-                    ref={fileInput}
-                    type="file"
-                    multiple
-                    accept=".pdf,.docx,.jpg,.jpeg,.png"
-                    className="hidden"
-                    onChange={(event) => addFiles(event.target.files)}
-                  />
-                </div>
-                {files.length > 0 && (
-                  <ul className="grid gap-2 md:grid-cols-2">
-                    {files.map((file, index) => (
-                      <li key={`${file.name}-${index}`} className="flex items-center justify-between gap-2 rounded border border-border bg-muted/20 px-3 py-2 text-xs">
-                        <span className="truncate">{file.name}</span>
-                        <button
-                          type="button"
-                          onClick={() => setFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))}
-                          className="text-muted-foreground hover:text-destructive"
-                          aria-label={`Remove ${file.name}`}
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </CollapsibleCard>
+            )}
+            {!registrationFormLoading && !registrationFormError && configuredSections.map((section) => {
+              const presentation = sectionPresentation[section.key] || {
+                title: section.key.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase()),
+                icon: ClipboardList
+              };
+              return (
+                <CollapsibleCard key={section.key} title={<SectionTitle icon={presentation.icon}>{presentation.title}</SectionTitle>} defaultOpen>
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {section.fields.map(renderConfiguredField)}
+                  </div>
+                </CollapsibleCard>
+              );
+            })}
 
           </div>
         )}
@@ -1891,7 +1910,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
             <div className="flex justify-end">
               <button
                 onClick={saveCargo}
-                disabled={savingCargo}
+                disabled={savingCargo || registrationFormLoading || Boolean(registrationFormError)}
                 className="inline-flex items-center gap-1.5 rounded bg-success px-4 py-2 text-xs font-semibold text-success-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Save className="h-3.5 w-3.5" />

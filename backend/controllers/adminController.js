@@ -22,6 +22,7 @@ const { hashPassword, verifyPassword } = require("../utils/password");
 const { createToken, verifyToken } = require("../utils/token");
 const { roleNames } = require("../config/systemConfig");
 const { loadRolePermissions } = require("../services/permissionService");
+const { getMaximumActiveSystemAdministrators } = require("../services/systemConfigurationService");
 const {
   TRANSFER_BLOCKED_MESSAGE,
   getPendingWarehouseTaskSummary,
@@ -56,6 +57,8 @@ const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const phonePattern = /^\+?[0-9][0-9\s()-]{6,18}[0-9]$/;
 const usernamePattern = /^[A-Za-z0-9._-]{3,50}$/;
 const passwordPattern = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
+const SYSTEM_ADMIN_GOVERNANCE_LOCK_KEY = 927432;
+const systemAdminLimitMessage = (maximum) => `Maximum number of active System Administrators (${maximum}) has been reached. Deactivate an existing administrator before assigning this role to another user.`;
 
 const cleanString = (value) => {
   if (value === undefined || value === null) return value;
@@ -318,42 +321,72 @@ const writeBlockedModification = async (client, req, target, action, description
   throw error;
 };
 
+const countActiveSystemAdministrators = async (client, excludeUserId = null) => {
+  const result = await client.query(
+    `SELECT COUNT(*)::int AS count
+     FROM users u
+     JOIN roles r ON r.id = u.role_id
+     WHERE r.role_name = $1
+       AND u.status = 'active'
+       AND ($2::integer IS NULL OR u.id <> $2)`,
+    [roleNames.systemAdmin, excludeUserId]
+  );
+  return Number(result.rows[0]?.count || 0);
+};
+
+const enforceSystemAdministratorCapacity = async (client, existing, candidate) => {
+  const wasActiveAdministrator = Boolean(
+    existing
+    && existing.role_name === roleNames.systemAdmin
+    && existing.status === "active"
+  );
+  const becomesActiveAdministrator = (
+    candidate.role_name === roleNames.systemAdmin
+    && candidate.status === "active"
+  );
+
+  if (!wasActiveAdministrator && becomesActiveAdministrator) {
+    const maximum = await getMaximumActiveSystemAdministrators(client);
+    const activeCount = await countActiveSystemAdministrators(client, existing?.id || null);
+    if (activeCount >= maximum) {
+      throw buildError(systemAdminLimitMessage(maximum), 409);
+    }
+  }
+};
+
+const getSystemAdministratorCapacity = async (_req, res, next) => {
+  try {
+    const [maximum, active] = await Promise.all([
+      getMaximumActiveSystemAdministrators(),
+      countActiveSystemAdministrators(db)
+    ]);
+    res.json({
+      success: true,
+      data: {
+        active,
+        maximum,
+        capacity_reached: active >= maximum
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 const protectAdministrativeAccount = async (client, req, existing, candidate, operation) => {
   const roleDemotion = candidate?.role_name && candidate.role_name !== roleNames.systemAdmin;
   const disabling = candidate?.status && candidate.status !== "active";
   const deactivation = operation === "deactivate";
   const selfPasswordReset = operation === "password-reset";
 
-  if (Number(existing.id) === Number(req.auth?.userId) && (roleDemotion || disabling || deactivation || selfPasswordReset)) {
+  if (Number(existing.id) === Number(req.auth?.userId) && selfPasswordReset) {
     await writeBlockedModification(
       client,
       req,
       existing,
       "BLOCKED_SELF_LOCKOUT_ATTEMPT",
-      `Blocked self-lockout attempt on administrator account ${existing.username}.`,
-      "You cannot disable or demote your own administrator account."
-    );
-  }
-
-  if (existing.is_system_user && !existing.is_bootstrap_admin && (roleDemotion || disabling || deactivation)) {
-    await writeBlockedModification(
-      client,
-      req,
-      existing,
-      "BLOCKED_SYSTEM_USER_MODIFICATION",
-      `Blocked protected system administrator modification for ${existing.username}.`,
-      "System administrator account cannot be disabled or removed."
-    );
-  }
-
-  if (existing.is_bootstrap_admin && roleDemotion) {
-    await writeBlockedModification(
-      client,
-      req,
-      existing,
-      "BLOCKED_SYSTEM_USER_MODIFICATION",
-      `Blocked role change for bootstrap administrator ${existing.username}.`,
-      "The bootstrap administrator role cannot be changed."
+      `Blocked self-service password reset through User Management for administrator account ${existing.username}.`,
+      "Use the authenticated password-change flow to change your own password."
     );
   }
 
@@ -370,24 +403,18 @@ const protectAdministrativeAccount = async (client, req, existing, candidate, op
        JOIN roles r ON r.id = u.role_id
        WHERE r.role_name = 'System Admin'
          AND u.status = 'active'
-         AND u.is_bootstrap_admin = FALSE
          AND u.id <> $1`,
       [existing.id]
     );
 
     if (otherAdmins.rows[0].count < 1) {
-      const isBootstrap = Boolean(existing.is_bootstrap_admin);
       await writeBlockedModification(
         client,
         req,
         existing,
-        isBootstrap ? "BLOCKED_BOOTSTRAP_DEACTIVATION" : "BLOCKED_LAST_SYSTEM_ADMIN_CHANGE",
-        isBootstrap
-          ? `Blocked bootstrap administrator deactivation for ${existing.username} because no other active System Administrator exists.`
-          : `Blocked removal of the last active System Administrator account ${existing.username}.`,
-        isBootstrap
-          ? "Create and verify another active System Administrator before deactivating the bootstrap account."
-          : "The system must retain at least one active System Administrator."
+        "BLOCKED_LAST_SYSTEM_ADMIN_CHANGE",
+        `Blocked removal of the last active System Administrator account ${existing.username}.`,
+        "The system must retain at least one active System Administrator."
       );
     }
   }
@@ -745,7 +772,16 @@ const createUser = async (req, res, next) => {
   try {
     const payload = normalizeUserPayload(req.body, "create");
     await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1)", [SYSTEM_ADMIN_GOVERNANCE_LOCK_KEY]);
     const { role } = await validateUserRecord(client, payload);
+    if (role.role_name === roleNames.systemAdmin) {
+      payload.warehouse_id = null;
+      payload.shift_id = null;
+    }
+    await enforceSystemAdministratorCapacity(client, null, {
+      role_name: role.role_name,
+      status: payload.status
+    });
 
     const passwordHash = await hashPassword(payload.password, client);
     const insertResult = await insertUser(payload, passwordHash, client);
@@ -834,6 +870,10 @@ const createScanner = async (req, res, next) => {
       throw buildError("Select an active normal user account.", 400);
     }
 
+    if (user.role_name === roleNames.systemAdmin) {
+      throw buildError("Scanner accounts are not applicable to System Administrators.", 400);
+    }
+
     if (await verifyPassword(password, user.password_hash, client)) {
       throw buildError(
         "Scanner password must be different from the user’s normal account password.",
@@ -911,6 +951,7 @@ const updateUser = async (req, res, next) => {
     const payload = normalizeUserPayload(req.body, "update");
 
     await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1)", [SYSTEM_ADMIN_GOVERNANCE_LOCK_KEY]);
 
     const existingResult = await getUserById(id, client);
     if (existingResult.rowCount === 0) {
@@ -920,6 +961,13 @@ const updateUser = async (req, res, next) => {
     const existing = existingResult.rows[0];
     const { candidate, role } = await validateUserRecord(client, payload, existing);
     candidate.role_name = role.role_name;
+    if (role.role_name === roleNames.systemAdmin) {
+      payload.warehouse_id = null;
+      payload.shift_id = null;
+      candidate.warehouse_id = null;
+      candidate.shift_id = null;
+    }
+    await enforceSystemAdministratorCapacity(client, existing, candidate);
     await protectAdministrativeAccount(client, req, existing, candidate, payload.password ? "password-reset" : "update");
 
     const changedFields = getChangedFields(existing, payload);
@@ -1135,6 +1183,7 @@ const updateUserStatus = async (req, res, next) => {
     }
 
     await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock($1)", [SYSTEM_ADMIN_GOVERNANCE_LOCK_KEY]);
 
     const existingResult = await getUserById(id, client);
     if (existingResult.rowCount === 0) {
@@ -1142,6 +1191,10 @@ const updateUserStatus = async (req, res, next) => {
     }
 
     const existing = existingResult.rows[0];
+    await enforceSystemAdministratorCapacity(client, existing, {
+      role_name: existing.role_name,
+      status
+    });
     await protectAdministrativeAccount(
       client,
       req,
@@ -1914,6 +1967,7 @@ module.exports = {
   deleteUser,
   getAuditLogs,
   getRoles,
+  getSystemAdministratorCapacity,
   getShifts,
   getUser,
   getUserPendingTasks,

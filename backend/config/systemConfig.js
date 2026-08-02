@@ -21,6 +21,7 @@ const roleNames = Object.freeze({
   financeOfficer: process.env.FINANCE_OFFICER_ROLE_NAME || "Finance Officer",
   customsOfficer: process.env.CUSTOMS_OFFICER_ROLE_NAME || "Customs Officer",
   gateOfficer: process.env.GATE_OFFICER_ROLE_NAME || "Gate Officer",
+  management: process.env.MANAGEMENT_ROLE_NAME || "Management",
   scanner: process.env.SCANNER_ROLE_NAME || "Scanner"
 });
 
@@ -48,6 +49,10 @@ const defaultRoleDefinitions = Object.freeze(parseJsonSetting("WMS_ROLE_DEFINITI
   {
     name: roleNames.gateOfficer,
     description: "Gate access for dispatch validation, release eligibility checks, gate-out confirmation, and emergency release requests."
+  },
+  {
+    name: roleNames.management,
+    description: "Read-only executive access to cross-module KPIs, analytics, reports, and notifications."
   },
   {
     name: roleNames.scanner,

@@ -33,6 +33,7 @@ import {
   RefreshCw,
   Rows3,
   Ruler,
+  Save,
   ScanLine,
   Search,
   Settings,
@@ -98,6 +99,7 @@ import {
   getBins,
   getBinRules,
   getCapacityConfigurations,
+  getAvailableCargoRegistrationFields,
   getCargo,
   getCargoById,
   getLevels,
@@ -110,6 +112,7 @@ import {
   getShiftUsers,
   getSupervisorApprovals,
   getSupervisorReviewConfiguration,
+  getSystemAdministratorCapacity,
   getUserPendingTasks,
   getUserSessions,
   getUsers,
@@ -122,10 +125,12 @@ import {
   reassignUserPendingTasks,
   rejectSupervisorApproval,
   resetUserPassword,
+  resetCargoRegistrationForm,
   updateBin,
   updateBinRule,
   updateBinStatus,
   updateCapacityConfiguration,
+  updateCargoRegistrationForm,
   updateAdminRolePermissions,
   updateShift,
   updateShiftStatus,
@@ -143,6 +148,7 @@ import {
   updateUserStatus,
   createWarehouse,
   updateWarehouse,
+  validateCargoRegistrationForm,
   updateWarehouseStatus
 } from "@/services/api";
 
@@ -193,7 +199,8 @@ const adminNavigation = [
       { label: "Users", icon: Users, to: "/admin/system/users" },
       { label: "Roles & Permissions", icon: ShieldCheck, to: "/admin/system/roles-permissions" },
       { label: "Shift Assignment", icon: CalendarClock, to: "/admin/system/shift-assignment" },
-      { label: "Warehouse Assignment", icon: Warehouse, to: "/admin/system/warehouse-assignment" }
+      { label: "Warehouse Assignment", icon: Warehouse, to: "/admin/system/warehouse-assignment" },
+      { label: "Cargo Registration Form", icon: ClipboardList, to: "/admin/system/cargo-registration-form" }
     ]
   },
   {
@@ -816,6 +823,18 @@ function UsersPage() {
   const roles = useApiCollection(() => getRoles(), "roles");
   const warehouses = useApiCollection(() => getWarehouses(), "warehouses");
   const shifts = useApiCollection(() => getShifts(), "shifts");
+  const administratorCapacity = useApiCollection(
+    async () => {
+      const response = await getSystemAdministratorCapacity();
+      return { data: [response.data] };
+    },
+    `administrator-capacity-${refreshKey}`
+  );
+  const activeSystemAdministratorCount = users.rows.filter(
+    (user) => user.role_name === "System Admin" && user.status === "active"
+  ).length;
+  const configuredAdministratorMaximum = administratorCapacity.rows[0]?.maximum ?? null;
+  const administratorCapacityReached = Boolean(administratorCapacity.rows[0]?.capacity_reached);
 
   const filteredUsers = useMemo(() => {
     return users.rows.filter((user) => {
@@ -931,6 +950,14 @@ function UsersPage() {
       <div className="flex-1 overflow-auto p-4">
         <div className="space-y-3">
           {actionError && <ErrorState message={actionError} />}
+          <div className="rounded border border-info/30 bg-info/10 px-4 py-3 text-sm text-info">
+            <span className="font-semibold">
+              System Administrators: {activeSystemAdministratorCount} / {configuredAdministratorMaximum ?? "…"} Active
+            </span>
+            {administratorCapacityReached && (
+              <span className="ml-2">The maximum has been reached. Deactivate an existing administrator before assigning another.</span>
+            )}
+          </div>
           <SectionCard title="User Filters" icon={Filter}>
             <div className="grid gap-3 md:grid-cols-4">
               <FormField label="Search users">
@@ -977,10 +1004,9 @@ function UsersPage() {
                   render: (row) => (
                     <div>
                       <div className="font-semibold">{row.full_name}</div>
-                      {(row.is_bootstrap_admin || row.is_system_user) && (
+                      {row.role_name === "System Admin" && (
                         <div className="mt-1 flex flex-wrap gap-1">
-                          {row.is_bootstrap_admin && <StatusBadge tone="warning">Bootstrap Admin</StatusBadge>}
-                          {row.is_system_user && <StatusBadge tone="info">System User</StatusBadge>}
+                          <StatusBadge tone="info">System Administrator</StatusBadge>
                         </div>
                       )}
                     </div>
@@ -993,16 +1019,24 @@ function UsersPage() {
                 {
                   key: "scanner_link",
                   label: "Scanner Account",
-                  render: (row) => row.scanner_account_id
+                  render: (row) => row.role_name === "System Admin"
+                    ? "Not applicable"
+                    : row.scanner_account_id
                     ? <StatusBadge tone="success">Created</StatusBadge>
                     : <StatusBadge tone="neutral">Not created</StatusBadge>
                 },
                 {
                   key: "assigned_warehouse",
                   label: "Assigned Warehouse",
-                  render: (row) => row.warehouse_code ? `${row.warehouse_code} - ${row.warehouse_name}` : "No warehouse assigned"
+                  render: (row) => row.role_name === "System Admin"
+                    ? "System-wide access"
+                    : row.warehouse_code ? `${row.warehouse_code} - ${row.warehouse_name}` : "No warehouse assigned"
                 },
-                { key: "assigned_shift", label: "Assigned Shift", render: (row) => row.shift_name || "No shift" },
+                {
+                  key: "assigned_shift",
+                  label: "Assigned Shift",
+                  render: (row) => row.role_name === "System Admin" ? "Not applicable" : row.shift_name || "No shift"
+                },
                 {
                   key: "account_status",
                   label: "Account Status",
@@ -1039,8 +1073,7 @@ function UsersPage() {
                           || (
                             row.status === "active"
                             && (
-                              (row.is_system_user && !row.is_bootstrap_admin)
-                              || Number(row.id) === Number(currentUserId)
+                              row.role_name === "System Admin" && activeSystemAdministratorCount === 1
                             )
                           )
                         }
@@ -1055,8 +1088,7 @@ function UsersPage() {
                         disabled={
                           busyUserId === `deactivate-${row.id}`
                           || row.status === "inactive"
-                          || (row.is_system_user && !row.is_bootstrap_admin)
-                          || Number(row.id) === Number(currentUserId)
+                          || (row.role_name === "System Admin" && row.status === "active" && activeSystemAdministratorCount === 1)
                         }
                         className="inline-flex h-8 items-center gap-1 rounded border border-destructive/35 bg-destructive/10 px-2 text-[11px] font-semibold text-destructive hover:bg-destructive/20 disabled:opacity-50"
                       >
@@ -1081,7 +1113,8 @@ function UsersPage() {
           shifts={shifts.rows}
           users={users.rows}
           referenceLoading={roles.loading || warehouses.loading || shifts.loading}
-          currentUserId={currentUserId}
+          activeSystemAdministratorCount={activeSystemAdministratorCount}
+          maximumActiveSystemAdministrators={configuredAdministratorMaximum}
           onCancel={closeDrawer}
           onSave={saveUser}
           onReassigned={refreshUsers}
@@ -1109,7 +1142,7 @@ function ScannerForm({ users, loading, onCancel, onSave }) {
   const eligibleUsers = useMemo(() => users.filter((user) => (
     user.status === "active"
     && user.role_name !== "Scanner"
-    && !user.is_bootstrap_admin
+    && user.role_name !== "System Admin"
   )), [users]);
   const departments = useMemo(() => (
     Array.from(new Set(eligibleUsers.map((user) => user.department_name).filter(Boolean)))
@@ -1339,7 +1372,7 @@ function ScannerForm({ users, loading, onCancel, onSave }) {
   );
 }
 
-function UserForm({ mode, user, roles, warehouses, shifts, users = [], referenceLoading, currentUserId, onCancel, onSave, onReassigned }) {
+function UserForm({ mode, user, roles, warehouses, shifts, users = [], referenceLoading, activeSystemAdministratorCount = 0, maximumActiveSystemAdministrators = null, onCancel, onSave, onReassigned }) {
   const [form, setForm] = useState({
     full_name: "",
     username: "",
@@ -1378,18 +1411,37 @@ function UserForm({ mode, user, roles, warehouses, shifts, users = [], reference
   }, [user, mode]);
 
   const updateField = (field, value) => {
-    setForm((current) => ({ ...current, [field]: value }));
+    setForm((current) => {
+      if (
+        field === "role_id"
+        && roles.find((role) => String(role.id) === String(value))?.role_name === "System Admin"
+      ) {
+        return { ...current, role_id: value, warehouse_id: "", shift_id: "" };
+      }
+      return { ...current, [field]: value };
+    });
   };
 
   const selectedRole = roles.find((role) => String(role.id) === String(form.role_id));
   const isWarehouseStaff = selectedRole?.role_name === "Warehouse Staff";
   const isWarehouseSupervisor = selectedRole?.role_name === "Supervisor";
+  const isSystemAdministrator = selectedRole?.role_name === "System Admin";
   const requiresWarehouse = isWarehouseStaff || isWarehouseSupervisor;
   const unsupportedRole = selectedRole && !["System Admin", "Warehouse Staff", "Supervisor"].includes(selectedRole.role_name);
-  const isCurrentUser = Boolean(user?.id && Number(user.id) === Number(currentUserId));
-  const protectedRole = Boolean(user?.is_system_user || isCurrentUser);
-  const protectedStatus = Boolean(
-    (user?.is_system_user && !user?.is_bootstrap_admin) || isCurrentUser
+  const isLastActiveSystemAdministrator = Boolean(
+    user?.role_name === "System Admin"
+    && user?.status === "active"
+    && activeSystemAdministratorCount === 1
+  );
+  const protectedRole = isLastActiveSystemAdministrator;
+  const protectedStatus = isLastActiveSystemAdministrator;
+  const retainsActiveAdministratorSlot = Boolean(
+    mode === "edit" && user?.role_name === "System Admin" && user?.status === "active"
+  );
+  const systemAdministratorRoleDisabled = (
+    Number.isInteger(maximumActiveSystemAdministrators)
+    && activeSystemAdministratorCount >= maximumActiveSystemAdministrators
+    && !retainsActiveAdministratorSlot
   );
   const warehouseChanged = mode === "edit"
     && user?.id
@@ -1476,6 +1528,17 @@ function UserForm({ mode, user, roles, warehouses, shifts, users = [], reference
       setSaving(false);
       return;
     }
+    if (
+      isSystemAdministrator
+      && form.status === "active"
+      && Number.isInteger(maximumActiveSystemAdministrators)
+      && activeSystemAdministratorCount >= maximumActiveSystemAdministrators
+      && !retainsActiveAdministratorSlot
+    ) {
+      setFormError(`Maximum number of active System Administrators (${maximumActiveSystemAdministrators}) has been reached. Deactivate an existing administrator before assigning this role to another user.`);
+      setSaving(false);
+      return;
+    }
 
     try {
       await onSave(payload, user?.id);
@@ -1506,9 +1569,20 @@ function UserForm({ mode, user, roles, warehouses, shifts, users = [], reference
           <SelectField value={form.role_id} onChange={(value) => updateField("role_id", value)} required disabled={referenceLoading || protectedRole}>
             <option value="">Select role</option>
             {roles.filter((role) => role.role_name !== "Scanner").map((role) => (
-              <option key={role.id} value={String(role.id)}>{role.role_name}</option>
+              <option
+                key={role.id}
+                value={String(role.id)}
+                disabled={role.role_name === "System Admin" && systemAdministratorRoleDisabled}
+              >
+                {role.role_name}{role.role_name === "System Admin" && systemAdministratorRoleDisabled ? " — limit reached" : ""}
+              </option>
             ))}
           </SelectField>
+          {systemAdministratorRoleDisabled && (
+            <span className="block text-[10px] font-normal leading-4 text-warning">
+              Maximum active System Administrators reached ({maximumActiveSystemAdministrators}). Deactivate an existing administrator before assigning this role.
+            </span>
+          )}
           {unsupportedRole && (
             <span className="block text-[10px] font-normal leading-4 text-warning">
               This role does not currently have a portal dashboard. The user can be created, but login access will be limited until the portal is implemented.
@@ -1516,8 +1590,8 @@ function UserForm({ mode, user, roles, warehouses, shifts, users = [], reference
           )}
         </FormField>
         <FormField label="Assigned Warehouse">
-          <SelectField value={form.warehouse_id} onChange={(value) => updateField("warehouse_id", value)} disabled={referenceLoading} required={requiresWarehouse}>
-            <option value="">No warehouse assigned</option>
+          <SelectField value={form.warehouse_id} onChange={(value) => updateField("warehouse_id", value)} disabled={referenceLoading || isSystemAdministrator} required={requiresWarehouse}>
+            <option value="">{isSystemAdministrator ? "System-wide access" : "No warehouse assigned"}</option>
             {warehouses.map((warehouse) => (
               <option key={warehouse.id} value={String(warehouse.id)}>
                 {warehouse.warehouse_code} - {warehouse.warehouse_name}
@@ -1526,8 +1600,8 @@ function UserForm({ mode, user, roles, warehouses, shifts, users = [], reference
           </SelectField>
         </FormField>
         <FormField label="Assigned Shift">
-          <SelectField value={form.shift_id} onChange={(value) => updateField("shift_id", value)} disabled={referenceLoading} required={isWarehouseStaff}>
-            <option value="">No shift assigned</option>
+          <SelectField value={form.shift_id} onChange={(value) => updateField("shift_id", value)} disabled={referenceLoading || isSystemAdministrator} required={isWarehouseStaff}>
+            <option value="">{isSystemAdministrator ? "Not applicable" : "No shift assigned"}</option>
             {shifts.map((shift) => (
               <option key={shift.id} value={String(shift.id)}>
                 {shift.shift_name}{formatShiftHours(shift) ? ` (${formatShiftHours(shift)})` : ""}
@@ -1575,11 +1649,14 @@ function UserForm({ mode, user, roles, warehouses, shifts, users = [], reference
           Warehouse Supervisors require a warehouse assignment. Shift assignment is optional.
         </div>
       )}
+      {isSystemAdministrator && (
+        <div className="rounded border border-info/30 bg-info/10 px-3 py-2 text-[11px] text-info">
+          System Administrators have system-wide access. Warehouse, shift, and scanner assignments do not apply.
+        </div>
+      )}
       {protectedRole && (
         <div className="rounded border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning">
-          {user?.is_bootstrap_admin
-            ? "The bootstrap role is protected. Its account may be deactivated only after another active System Administrator exists."
-            : "This administrator account cannot be demoted or disabled from User Management."}
+          This is the only active System Administrator. Create or reactivate another administrator before demoting or deactivating it.
         </div>
       )}
       {warehouseChanged && canOwnWarehouseTasks && (
@@ -4208,6 +4285,171 @@ function ProfilePage() {
   );
 }
 
+function CargoRegistrationFormConfigurationPage() {
+  const [fields, setFields] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await getAvailableCargoRegistrationFields();
+      setFields((response.data || []).sort((left, right) => left.display_order - right.display_order));
+    } catch (loadError) {
+      setError(getErrorMessage(loadError));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const updateField = (fieldKey, key, value) => {
+    setFields((current) => current.map((field) => (
+      field.field_key === fieldKey ? { ...field, [key]: value } : field
+    )));
+  };
+
+  const moveField = (index, direction) => {
+    setFields((current) => {
+      const next = [...current].sort((left, right) => left.display_order - right.display_order);
+      const target = index + direction;
+      if (target < 0 || target >= next.length) return current;
+      [next[index], next[target]] = [next[target], next[index]];
+      return next.map((field, fieldIndex) => ({ ...field, display_order: (fieldIndex + 1) * 10 }));
+    });
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      await validateCargoRegistrationForm(fields);
+      const response = await updateCargoRegistrationForm(fields);
+      setFields((response.data || []).sort((left, right) => left.display_order - right.display_order));
+      toast.success("Cargo registration form configuration published.");
+    } catch (saveError) {
+      setError(getErrorMessage(saveError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const reset = async () => {
+    if (!window.confirm("Reset every cargo registration field to the system defaults?")) return;
+    setSaving(true);
+    setError("");
+    try {
+      const response = await resetCargoRegistrationForm();
+      setFields((response.data || []).sort((left, right) => left.display_order - right.display_order));
+      toast.success("Cargo registration form reset to system defaults.");
+    } catch (resetError) {
+      setError(getErrorMessage(resetError));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="System Configuration"
+        title="Cargo Registration Form"
+        description="Configure the presentation of predefined cargo fields without weakening workflow or validation rules."
+        action={(
+          <div className="flex gap-2">
+            <ToolbarButton icon={RefreshCw} variant="secondary" onClick={reset} disabled={saving}>Reset Defaults</ToolbarButton>
+            <ToolbarButton icon={Save} onClick={save} disabled={saving || loading}>
+              {saving ? "Saving" : "Save & Publish"}
+            </ToolbarButton>
+          </div>
+        )}
+      />
+      <div className="flex-1 overflow-auto p-4">
+        {error && <ErrorState message={error} />}
+        <div className="mb-3 rounded border border-info/30 bg-info/10 px-4 py-3 text-xs text-info">
+          Protected and conditional fields cannot be hidden or deactivated. Conditional required rules remain controlled by the backend.
+        </div>
+        <SectionCard title="Predefined Fields" icon={ClipboardList}>
+          {loading ? (
+            <LoadingState label="Loading cargo form configuration..." />
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-[1500px] w-full text-left text-xs">
+                <thead className="border-b border-border bg-muted/30 text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <tr>
+                    <th className="p-2">Order</th>
+                    <th className="p-2">Field</th>
+                    <th className="p-2">Display Name</th>
+                    <th className="p-2">Help Text</th>
+                    <th className="p-2">Placeholder</th>
+                    <th className="p-2">Section</th>
+                    <th className="p-2">Default</th>
+                    <th className="p-2">Visible</th>
+                    <th className="p-2">Required</th>
+                    <th className="p-2">Editable</th>
+                    <th className="p-2">Active</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {fields.map((field, index) => {
+                    const conditionalRequired = Boolean(field.conditional_rule?.required);
+                    return (
+                      <tr key={field.field_key} className="border-b border-border align-top">
+                        <td className="p-2">
+                          <div className="flex items-center gap-1">
+                            <button type="button" className="h-7 rounded border px-2 disabled:opacity-40" disabled={index === 0} onClick={() => moveField(index, -1)}>↑</button>
+                            <button type="button" className="h-7 rounded border px-2 disabled:opacity-40" disabled={index === fields.length - 1} onClick={() => moveField(index, 1)}>↓</button>
+                            <span className="ml-1 font-mono text-muted-foreground">{index + 1}</span>
+                          </div>
+                        </td>
+                        <td className="p-2">
+                          <div className="font-semibold">{field.field_key}</div>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            <StatusBadge tone="neutral">{field.field_type}</StatusBadge>
+                            {field.system_protected && <StatusBadge tone="warning">Protected</StatusBadge>}
+                            {conditionalRequired && <StatusBadge tone="info">Conditional</StatusBadge>}
+                          </div>
+                        </td>
+                        <td className="p-2"><input className={inputClass} value={field.label || ""} onChange={(event) => updateField(field.field_key, "label", event.target.value)} /></td>
+                        <td className="p-2"><textarea className="min-h-16 w-64 rounded border border-input bg-background p-2" value={field.help_text || ""} onChange={(event) => updateField(field.field_key, "help_text", event.target.value)} /></td>
+                        <td className="p-2"><input className={inputClass} value={field.placeholder || ""} disabled={field.field_type === "system"} onChange={(event) => updateField(field.field_key, "placeholder", event.target.value)} /></td>
+                        <td className="p-2"><input className={inputClass} value={field.section_key || ""} onChange={(event) => updateField(field.field_key, "section_key", event.target.value)} /></td>
+                        <td className="p-2">
+                          <input
+                            className={inputClass}
+                            value={field.default_value ?? ""}
+                            disabled={field.field_type === "system"}
+                            onChange={(event) => updateField(field.field_key, "default_value", event.target.value || null)}
+                          />
+                        </td>
+                        <td className="p-2 text-center"><input type="checkbox" checked={field.visible} disabled={field.system_protected} onChange={(event) => updateField(field.field_key, "visible", event.target.checked)} /></td>
+                        <td className="p-2 text-center">
+                          {conditionalRequired ? (
+                            <span className="text-[10px] font-semibold text-info">Conditional</span>
+                          ) : (
+                            <input type="checkbox" checked={field.required} disabled={field.required_locked} onChange={(event) => updateField(field.field_key, "required", event.target.checked)} />
+                          )}
+                        </td>
+                        <td className="p-2 text-center"><input type="checkbox" checked={field.editable} disabled={field.editable_locked} onChange={(event) => updateField(field.field_key, "editable", event.target.checked)} /></td>
+                        <td className="p-2 text-center"><input type="checkbox" checked={field.active} disabled={field.system_protected} onChange={(event) => updateField(field.field_key, "active", event.target.checked)} /></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </SectionCard>
+      </div>
+    </>
+  );
+}
+
 function ReadonlyValue({ label, value }) {
   const displayValue = value === null || value === undefined || value === "" ? "Not specified" : value;
 
@@ -4229,6 +4471,7 @@ function AdminPortal() {
         <Route path="system/roles-permissions" element={<RolesPermissionsPage />} />
         <Route path="system/shift-assignment" element={<ShiftAssignmentPage />} />
         <Route path="system/warehouse-assignment" element={<WarehouseAssignmentPage />} />
+        <Route path="system/cargo-registration-form" element={<CargoRegistrationFormConfigurationPage />} />
         <Route path="warehouse/warehouses" element={<WarehousesPage />} />
         <Route path="warehouse/zones" element={<WarehouseConfigPage scope="zones" />} />
         <Route path="warehouse/racks" element={<WarehouseConfigPage scope="racks" />} />

@@ -4,6 +4,7 @@ const { roleNames } = require("../config/systemConfig");
 const userSelect = `
   SELECT
     u.id,
+    u.public_reference,
     u.full_name,
     u.username,
     u.email,
@@ -101,6 +102,7 @@ const getUserById = async (id, executor = db) => {
 const createUser = async (payload, passwordHash, executor = db) => {
   return executor.query(
     `INSERT INTO users (
+      public_reference,
       full_name,
       username,
       email,
@@ -115,8 +117,8 @@ const createUser = async (payload, passwordHash, executor = db) => {
       is_bootstrap_admin,
       bootstrap_completed
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, FALSE, FALSE, FALSE)
-    RETURNING id`,
+    VALUES (generate_user_public_reference(), $1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE, FALSE, FALSE, FALSE)
+    RETURNING id, public_reference`,
     [
       payload.full_name,
       payload.username,
@@ -347,6 +349,8 @@ const listAuditLogs = async (filters = {}) => {
       COALESCE(action_warehouse.warehouse_code, w.warehouse_code) AS warehouse_code,
       target.full_name AS target_full_name,
       target.username AS target_username,
+      target.public_reference AS target_user_reference,
+      COALESCE(al.actor_reference, u.public_reference) AS actor_reference,
       al.action,
       al.module,
       al.description,

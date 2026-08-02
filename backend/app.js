@@ -26,6 +26,8 @@ const financeRoutes = require("./routes/financeRoutes");
 const customsRoutes = require("./routes/customsRoutes");
 const gateRoutes = require("./routes/gateRoutes");
 const adminRoutes = require("./routes/adminRoutes");
+const managementRoutes = require("./routes/managementRoutes");
+const cargoRegistrationFormRoutes = require("./routes/cargoRegistrationFormRoutes");
 const {
   errorHandler,
   notFoundHandler
@@ -137,6 +139,8 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/finance", financeRoutes);
 app.use("/api/customs", customsRoutes);
 app.use("/api/gate", gateRoutes);
+app.use("/api/management", managementRoutes);
+app.use("/api/cargo-registration-form", cargoRegistrationFormRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

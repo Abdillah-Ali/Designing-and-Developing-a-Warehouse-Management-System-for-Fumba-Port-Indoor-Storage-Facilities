@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS shifts (
 
 CREATE TABLE IF NOT EXISTS users (
   id SERIAL PRIMARY KEY,
+  public_reference VARCHAR(80) UNIQUE,
   full_name VARCHAR(150) NOT NULL,
   username VARCHAR(80) UNIQUE NOT NULL,
   email VARCHAR(150) UNIQUE NOT NULL,
@@ -121,6 +122,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS public_reference VARCHAR(80),
   ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'active',
   ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT TRUE,
   ADD COLUMN IF NOT EXISTS is_system_user BOOLEAN NOT NULL DEFAULT FALSE,
@@ -226,6 +228,9 @@ INSERT INTO system_settings (setting_key, setting_value)
 VALUES ('cargo_pending_review_escalation_hours', '2'::jsonb)
 ON CONFLICT (setting_key) DO NOTHING;
 
+INSERT INTO system_settings (setting_key, setting_value)
+VALUES ('maximum_active_system_administrators', '3'::jsonb)
+ON CONFLICT (setting_key) DO NOTHING;
 
 
 CREATE TABLE IF NOT EXISTS zones (

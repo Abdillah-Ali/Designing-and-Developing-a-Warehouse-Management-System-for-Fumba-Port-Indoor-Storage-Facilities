@@ -22,6 +22,10 @@ const {
   updateCargoRegistrationStatus
 } = require("../services/cargoWorkflowService");
 const {
+  applyConfiguredDefaults,
+  validateConfiguredCargoPayload
+} = require("../services/cargoRegistrationFormService");
+const {
   documentMaxBytes,
   documentTypes,
   documentUploadRoot
@@ -398,12 +402,16 @@ const createCargo = async (req, res, next) => {
   const client = await db.pool.connect();
 
   try {
-    const errors = validateCargoPayload(req.body);
+    const configuredPayload = await applyConfiguredDefaults(req.body, client);
+    const errors = [
+      ...validateCargoPayload(configuredPayload),
+      ...await validateConfiguredCargoPayload(configuredPayload, client)
+    ];
     if (errors.length) {
       throw buildError("Cargo validation failed.", 400, errors);
     }
 
-    const payload = normalizeCargoPayload(req.body);
+    const payload = normalizeCargoPayload(configuredPayload);
     payload.received_by = req.auth?.username || payload.received_by || "Warehouse Staff";
     const registrationStatus = REGISTRATION_STATUS.PENDING_REVIEW;
     const placementStatus = PLACEMENT_STATUS.UNPLACED;

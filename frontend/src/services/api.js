@@ -162,6 +162,7 @@ export const logout = async () => {
 };
 
 export const getBootstrapOptions = () => request("/bootstrap/options");
+export const getSetupStatus = () => request("/bootstrap/status");
 
 export const createFirstSystemAdmin = (payload) => request("/bootstrap/create-admin", {
   method: "POST",
@@ -239,6 +240,21 @@ export const printBinBarcode = (id) => request(`/bins/${encodeURIComponent(id)}/
 export const getUsers = (params = {}) => {
   return request(`/users${buildQuerySuffix(params)}`);
 };
+export const getSystemAdministratorCapacity = () => request("/users/administrator-capacity");
+
+export const getCargoRegistrationForm = () => request("/cargo-registration-form");
+export const getAvailableCargoRegistrationFields = () => request("/cargo-registration-form/available");
+export const validateCargoRegistrationForm = (fields) => request("/cargo-registration-form/validate", {
+  method: "POST",
+  body: { fields }
+});
+export const updateCargoRegistrationForm = (fields) => request("/cargo-registration-form", {
+  method: "PUT",
+  body: { fields }
+});
+export const resetCargoRegistrationForm = () => request("/cargo-registration-form/reset", {
+  method: "POST"
+});
 
 export const getUserById = (id) => request(`/users/${encodeURIComponent(id)}`);
 export const getUserPendingTasks = (id) => request(`/users/${encodeURIComponent(id)}/pending-tasks`);
@@ -672,6 +688,8 @@ export const updateCustomsStatus = (cargoReference, payload) => request(`/custom
 
 // Gate endpoints
 export const getGateDashboard = () => request("/gate/dashboard");
+export const getManagementDashboard = () => request("/management/dashboard");
+export const getManagementReports = () => request("/management/reports");
 export const getGateReleaseQueue = (params = {}) => request(`/gate/release-queue${buildQuerySuffix(params)}`);
 export const getGateRecords = () => request("/gate/records");
 export const getGateEligibility = (cargoReference) => request(`/gate/cargo/${encodeURIComponent(cargoReference)}/eligibility`);

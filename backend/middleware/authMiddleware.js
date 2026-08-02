@@ -10,6 +10,7 @@ const PORTAL_ROLES = Object.freeze({
   FINANCE_OFFICER: "finance-officer",
   CUSTOMS_OFFICER: "customs-officer",
   GATE_OFFICER: "gate-officer",
+  MANAGEMENT: "management",
   SCANNER: "scanner"
 });
 
@@ -30,6 +31,7 @@ const roleAliases = Object.freeze({
   "customs officer": PORTAL_ROLES.CUSTOMS_OFFICER,
   "gate-officer": PORTAL_ROLES.GATE_OFFICER,
   "gate officer": PORTAL_ROLES.GATE_OFFICER,
+  "management": PORTAL_ROLES.MANAGEMENT,
   "scanner": PORTAL_ROLES.SCANNER,
   [roleNames.systemAdmin.toLowerCase()]: PORTAL_ROLES.SYSTEM_ADMIN,
   [roleNames.warehouseStaff.toLowerCase()]: PORTAL_ROLES.WAREHOUSE_STAFF,
@@ -37,6 +39,7 @@ const roleAliases = Object.freeze({
   [roleNames.financeOfficer.toLowerCase()]: PORTAL_ROLES.FINANCE_OFFICER,
   [roleNames.customsOfficer.toLowerCase()]: PORTAL_ROLES.CUSTOMS_OFFICER,
   [roleNames.gateOfficer.toLowerCase()]: PORTAL_ROLES.GATE_OFFICER,
+  [roleNames.management.toLowerCase()]: PORTAL_ROLES.MANAGEMENT,
   [roleNames.scanner.toLowerCase()]: PORTAL_ROLES.SCANNER
 });
 
@@ -76,6 +79,13 @@ const rolePermissionKeys = Object.freeze({
   [PORTAL_ROLES.WAREHOUSE_SUPERVISOR]: Object.freeze([
     "gate.history.view",
     "gate.emergency_release.approve"
+  ])
+  ,
+  [PORTAL_ROLES.MANAGEMENT]: Object.freeze([
+    { methods: ["GET"], pattern: /^\/management\/(?:dashboard|reports)$/ },
+    { methods: ["GET", "PATCH", "DELETE"], pattern: /^\/notifications(?:\/.*)?$/ },
+    { methods: ["GET"], pattern: /^\/profile$/ },
+    { methods: ["PATCH"], pattern: /^\/profile(?:\/change-password)?$/ }
   ])
 });
 
@@ -272,6 +282,12 @@ const normalizeRole = (value) => {
 };
 
 const canAccessRoute = (role, method, path) => {
+  if (method === "GET" && path === "/cargo-registration-form") return Boolean(role);
+  if (
+    role === PORTAL_ROLES.SYSTEM_ADMIN
+    && /^\/cargo-registration-form(?:\/(?:available|validate|reset))?$/.test(path)
+    && ["GET", "POST", "PUT"].includes(method)
+  ) return true;
   const permissions = portalPermissions[role] || [];
   return permissions.some((permission) => (
     permission.methods.includes(method) && permission.pattern.test(path)

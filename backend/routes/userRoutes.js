@@ -6,6 +6,7 @@ const {
   deleteUser,
   getUser,
   getUserPendingTasks,
+  getSystemAdministratorCapacity,
   getUsers,
   reassignUserPendingTasks,
   resetUserPassword,
@@ -17,6 +18,7 @@ const { requireRole } = require("../middleware/authMiddleware");
 const router = express.Router();
 
 router.route("/").get(getUsers).post(requireRole("System Admin"), createUser);
+router.get("/administrator-capacity", requireRole("System Admin"), getSystemAdministratorCapacity);
 router.post("/scanners", requireRole("System Admin"), createScanner);
 router.patch("/:id/status", requireRole("System Admin"), updateUserStatus);
 router.patch("/:id/reset-password", requireRole("System Admin"), resetUserPassword);
