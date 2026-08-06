@@ -254,17 +254,6 @@ CREATE TABLE IF NOT EXISTS capacity_configurations (
   CHECK (status IN ('Active', 'Inactive'))
 );
 
-INSERT INTO bin_rules (rule_key, rule_name, description, is_active, parameters)
-VALUES
-  ('zone_restriction', 'Zone Restriction', 'Searches only zones whose configured cargo type accepts the cargo.', TRUE, '{}'::jsonb),
-  ('customs_hold', 'Customs Hold Restriction', 'Routes customs-held cargo only to explicitly compatible restricted storage.', TRUE, '{}'::jsonb),
-  ('fragile_handling', 'Fragile Cargo Handling', 'Requires configured fragile handling conditions and compatible bins.', TRUE, '{}'::jsonb),
-  ('first_available', 'First Available Bin', 'Uses the first valid active bin after all safety checks pass.', TRUE, '{"order":"created_at"}'::jsonb),
-  ('avoid_unavailable', 'Avoid Unavailable Bins', 'Excludes full, blocked, restricted, maintenance, damaged, and inactive bins.', TRUE, '{}'::jsonb),
-  ('priority', 'Assignment Priority', 'Controls deterministic ordering when several valid bins are available.', TRUE, '{"priority":100}'::jsonb)
-ON CONFLICT (rule_key) DO UPDATE
-SET rule_name=EXCLUDED.rule_name, description=EXCLUDED.description;
-
 CREATE INDEX IF NOT EXISTS idx_capacity_configurations_entity
   ON capacity_configurations(entity_type, entity_id);
 

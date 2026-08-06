@@ -12,8 +12,6 @@ const {
   validatePlacementOperation
 } = require("../services/placementService");
 const {
-  isCargoAllowedByBinCategory,
-  isCargoAllowedInZone,
   validatePlacement
 } = require("../services/validationService");
 const {
@@ -27,6 +25,17 @@ const basePlacementPayload = () => ({
   scanned_cargo_barcode: "CARGO-2026-OWN",
   scanned_bin_barcode: "BIN-A01-L1-01"
 });
+
+const configuredPlacementRules = () => [
+  { public_reference: "BR-CAPACITY", rule_code: "admin_capacity", rule_name: "Capacity", rule_type: "validation", evaluator_type: "capacity_limits", execution_targets: ["placement_confirmation", "placement_recommendation", "relocation"], violation_action: "block", severity: "critical", priority: 10, parameters: { enforce_weight: true, enforce_volume: true } },
+  { public_reference: "BR-COMPATIBILITY", rule_code: "admin_compatibility", rule_name: "Compatibility", rule_type: "validation", evaluator_type: "cargo_storage_compatibility", execution_targets: ["placement_confirmation", "placement_recommendation", "relocation"], violation_action: "block", severity: "critical", priority: 20, parameters: {} },
+  { public_reference: "BR-HAZARD", rule_code: "admin_hazard", rule_name: "Hazard", rule_type: "validation", evaluator_type: "hazard_zone_compatibility", execution_targets: ["placement_confirmation", "placement_recommendation", "relocation"], violation_action: "block", severity: "critical", priority: 30, parameters: { hazardous_cargo_type: "Hazardous Cargo" } },
+  { public_reference: "BR-STATUS", rule_code: "admin_status", rule_name: "Storage Status", rule_type: "validation", evaluator_type: "storage_status", execution_targets: ["placement_confirmation", "placement_recommendation", "relocation"], violation_action: "block", severity: "critical", priority: 40, parameters: { allowed_statuses: ["Available", "Occupied"] } },
+  { public_reference: "BR-RESERVED", rule_code: "admin_reserved", rule_name: "Reserved Storage", rule_type: "validation", evaluator_type: "reserved_storage", execution_targets: ["placement_confirmation", "placement_recommendation", "relocation"], violation_action: "block", severity: "high", priority: 50, parameters: {} },
+  { public_reference: "BR-RESTRICTED", rule_code: "admin_restricted", rule_name: "Restricted Zone", rule_type: "validation", evaluator_type: "restricted_zone_approval", execution_targets: ["placement_confirmation", "placement_recommendation", "relocation"], violation_action: "supervisor_approval", severity: "high", priority: 60, parameters: { restricted_zone_type: "Restricted" } },
+  { public_reference: "BR-CUSTOMS", rule_code: "admin_customs", rule_name: "Customs Hold", rule_type: "validation", evaluator_type: "customs_hold_storage", execution_targets: ["placement_confirmation", "placement_recommendation", "relocation"], violation_action: "customs_approval", severity: "high", priority: 70, parameters: { hold_marker: "hold", storage_marker: "customs hold" } },
+  { public_reference: "BR-FRAGILE", rule_code: "admin_fragile", rule_name: "Fragile Handling", rule_type: "validation", evaluator_type: "fragile_handling", execution_targets: ["placement_confirmation", "placement_recommendation", "relocation"], violation_action: "block", severity: "high", priority: 80, parameters: { cargo_type: "Fragile Goods", handling_marker: "fragile" } }
+];
 
 const mockResponse = () => {
   const res = { statusCode: 200, body: null };
@@ -123,7 +132,8 @@ const createPlacementQueryMock = ({
       return { rowCount: 1, rows: [bin] };
     }
     if (sql.includes("FROM bin_rules")) {
-      return { rowCount: 0, rows: [] };
+      const rows = configuredPlacementRules();
+      return { rowCount: rows.length, rows };
     }
     if (sql.includes("FROM approval_requests")) {
       return { rowCount: 0, rows: [] };
@@ -266,24 +276,7 @@ test("placement locations use the complete warehouse hierarchy", () => {
   );
 });
 
-test("mandatory cargo compatibility follows the official zone matrix", () => {
-  assert.equal(isCargoAllowedInZone("Food Products", "Z-A"), false);
-  assert.equal(isCargoAllowedInZone("Food Products", "Z-D"), true);
-  assert.equal(isCargoAllowedInZone("Food Products", "Z-H"), true);
-  assert.equal(isCargoAllowedInZone("Hazardous Cargo", "Z-G"), true);
-  assert.equal(isCargoAllowedInZone("Hazardous Cargo", "Z-H"), false);
-  assert.equal(isCargoAllowedInZone("Mixed Cargo", "Z-H"), true);
-  assert.equal(isCargoAllowedInZone("Mixed Cargo", "Z-A"), false);
-});
-
-test("bin cargo categories can narrow mixed-zone storage without weakening hazard rules", () => {
-  assert.equal(isCargoAllowedByBinCategory("Food Products", "Mixed Cargo"), true);
-  assert.equal(isCargoAllowedByBinCategory("Hazardous Cargo", "Mixed Cargo"), false);
-  assert.equal(isCargoAllowedByBinCategory("Electronics", "Electronics"), true);
-  assert.equal(isCargoAllowedByBinCategory("General Goods", "Electronics"), false);
-});
-
-test("compatibility and capacity checks cannot be disabled or supervisor-overridden", async () => {
+test("placement fails closed when legacy rules do not provide trusted evaluator coverage", async () => {
   const executor = {
     query: async (sql) => {
       if (sql.includes("FROM cargo")) {
@@ -363,8 +356,9 @@ test("compatibility and capacity checks cannot be disabled or supervisor-overrid
   }, executor);
 
   assert.equal(validation.approved, false);
-  assert.equal(validation.checks.cargoCompatibility.passed, false);
-  assert.equal(validation.checks.weightCapacity.passed, false);
+  assert.equal(validation.approved, false);
+  assert.equal(validation.checks.ruleEngineReadiness.passed, false);
+  assert.match(validation.detail, /Missing capabilities/);
 });
 
 test("placement validation rejects cargo before supervisor approval", async () => {
@@ -464,9 +458,8 @@ test("relocation applies destination compatibility and capacity rules", async ()
   }, { query: mock.query });
 
   assert.equal(validation.approved, false);
-  assert.equal(validation.checks.cargoCompatibility.passed, false);
-  assert.equal(validation.checks.weightCapacity.passed, false);
-  assert.equal(validation.checks.volumeCapacity.passed, false);
+  assert.equal(validation.checks["rule:BR-COMPATIBILITY"].passed, false);
+  assert.equal(validation.checks["rule:BR-CAPACITY"].passed, false);
 });
 
 test("repeated confirmations preserve a relocated cargo status", () => {

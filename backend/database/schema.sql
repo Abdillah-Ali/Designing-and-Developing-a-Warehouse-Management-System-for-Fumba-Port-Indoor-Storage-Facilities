@@ -948,30 +948,28 @@ ALTER TABLE notifications
 
 CREATE TABLE IF NOT EXISTS bin_rules (
   id SERIAL PRIMARY KEY,
+  public_reference VARCHAR(80) UNIQUE NOT NULL DEFAULT ('BR-' || UPPER(ENCODE(gen_random_bytes(8), 'hex'))),
   rule_key VARCHAR(80) UNIQUE NOT NULL,
   rule_name VARCHAR(150) NOT NULL,
   description TEXT,
-  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  category_id INTEGER,
+  rule_type VARCHAR(40) NOT NULL DEFAULT 'validation',
+  evaluator_type VARCHAR(100),
+  execution_targets TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+  violation_action VARCHAR(40),
+  severity VARCHAR(20),
+  priority INTEGER NOT NULL DEFAULT 100,
+  is_active BOOLEAN NOT NULL DEFAULT FALSE,
   parameters JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CHECK (priority > 0),
+  CHECK (rule_type IN ('validation', 'filter', 'ordering')),
+  CHECK (violation_action IS NULL OR violation_action IN ('warning', 'block', 'supervisor_approval', 'customs_approval', 'finance_approval', 'manual_override')),
+  CHECK (severity IS NULL OR severity IN ('info', 'low', 'medium', 'high', 'critical'))
 );
-
-INSERT INTO bin_rules (rule_key, rule_name, description, is_active, parameters)
-VALUES
-  ('hazardous', 'Hazardous Zone Compliance', 'Validates hazardous cargo placement against hazard zones.', TRUE, '{}'::jsonb),
-  ('weight', 'Bin Weight Capacity Limit', 'Validates remaining bin weight capacity.', TRUE, '{}'::jsonb),
-  ('volume', 'Bin Volume Capacity Limit', 'Validates remaining bin volume capacity.', TRUE, '{}'::jsonb),
-  ('compatibility', 'Cargo-Zone Compatibility', 'Validates cargo type against the zone allowed cargo types.', TRUE, '{}'::jsonb),
-  ('restricted', 'Restricted Zone Rules', 'Requires supervisor approval for restricted storage zones.', TRUE, '{}'::jsonb)
-ON CONFLICT (rule_key) DO UPDATE
-SET rule_name = EXCLUDED.rule_name,
-    description = EXCLUDED.description;
-
-UPDATE bin_rules
-SET is_active = TRUE,
-    updated_at = CURRENT_TIMESTAMP
-WHERE rule_key IN ('hazardous', 'weight', 'volume', 'compatibility');
 
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS TRIGGER AS $$

@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const { evaluateRules, loadActiveRules } = require("../services/binRuleEngine");
 const { buildError } = require("../utils/apiError");
 const { notifyWarehouseAlert } = require("../services/notificationService");
 const { writeAuditLog } = require("../models/adminModel");
@@ -554,46 +555,50 @@ const deleteBin = async (req, res, next) => {
 
 const recommendBin = async (req, res, next) => {
   try {
-    const result = await db.query(
-      `SELECT
-         b.*, l.code AS level_code, r.code AS rack_code, z.code AS zone_code,
-         z.name AS zone_name, w.warehouse_code, w.warehouse_name,
-         (b.max_weight-b.current_weight) AS available_weight,
-         (b.max_volume-b.current_volume) AS available_volume
-       FROM cargo c
-       JOIN warehouses w ON w.id=c.warehouse_id AND w.status='active'
-       JOIN zones z ON z.warehouse_id=w.id AND z.active=TRUE
-         AND (
-           LOWER(z.allowed_cargo_type)=LOWER(c.cargo_type)
-           OR LOWER(z.allowed_cargo_type)='all'
-           OR (LOWER(z.allowed_cargo_type)='mixed cargo' AND c.cargo_type<>'Hazardous Cargo')
-         )
-       JOIN racks r ON r.zone_id=z.id AND r.active=TRUE
-       JOIN levels l ON l.rack_id=r.id AND l.active=TRUE
-       JOIN bins b ON b.level_id=l.id AND b.active=TRUE AND b.status IN ('Available','Occupied')
-       WHERE (c.id::text=$1 OR UPPER(c.cargo_id)=UPPER($1) OR UPPER(c.barcode)=UPPER($1))
-         AND c.is_deleted=FALSE
-         AND c.registration_status='Approved'
-         AND c.placement_status IN ('Unplaced','Placed','Relocated')
-         AND c.weight>0 AND c.volume>0 AND c.cargo_type IS NOT NULL
-         AND (c.cargo_type<>'Fragile Goods' OR LOWER(COALESCE(z.handling_condition,'')) LIKE '%fragile%')
-         AND (
-           LOWER(COALESCE(c.customs_status,'')) NOT LIKE '%hold%'
-           OR LOWER(COALESCE(b.cargo_restrictions,'')) LIKE '%customs hold%'
-         )
-         AND b.current_weight+c.weight<=b.max_weight
-         AND b.current_volume+c.volume<=b.max_volume
-         AND (b.cargo_restrictions IS NULL OR b.cargo_restrictions='')
-         AND (b.allowed_cargo_type IS NULL OR LOWER(b.allowed_cargo_type) IN ('all',LOWER(c.cargo_type),'mixed cargo'))
-       ORDER BY
-         COALESCE((SELECT (parameters->>'priority')::int FROM bin_rules WHERE rule_key='priority' AND is_active), 100),
-         CASE WHEN b.status='Available' THEN 0 ELSE 1 END,
-         b.created_at, b.id
-       LIMIT 1`,
+    const cargoResult = await db.query(
+      `SELECT * FROM cargo WHERE (cargo_id=$1 OR barcode=$1) AND is_deleted=FALSE LIMIT 1`,
       [req.params.cargoId]
     );
-    if (!result.rowCount) throw buildError("No active compatible bin has enough weight and volume capacity.", 404);
-    res.json({ success: true, data: result.rows[0] });
+    if (!cargoResult.rowCount) throw buildError("Cargo record not found.", 404);
+    const cargo = cargoResult.rows[0];
+    const candidates = await db.query(
+      `SELECT b.*,l.code AS level_code,l.active AS level_active,r.code AS rack_code,r.active AS rack_active,
+              z.code AS zone_code,z.name AS zone_name,z.zone_type,z.allowed_cargo_type AS zone_allowed_cargo_type,
+              z.handling_condition,z.is_hazard_zone,z.active AS zone_active,z.warehouse_id,
+              w.warehouse_code,w.warehouse_name,w.status AS warehouse_status,
+              (b.max_weight-b.current_weight) AS available_weight,
+              (b.max_volume-b.current_volume) AS available_volume
+       FROM warehouses w JOIN zones z ON z.warehouse_id=w.id JOIN racks r ON r.zone_id=z.id
+       JOIN levels l ON l.rack_id=r.id JOIN bins b ON b.level_id=l.id WHERE w.id=$1`,
+      [cargo.warehouse_id]
+    );
+    const rules = await loadActiveRules("placement_recommendation");
+    const eligible = [];
+    for (const bin of candidates.rows) {
+      const evaluation = await evaluateRules({
+        target: "placement_recommendation", rules,
+        context: { cargo, bin, approvals: { supervisor_override: null }, derived: {
+          remaining_weight: Number(bin.max_weight || 0) - Number(bin.current_weight || 0),
+          remaining_volume: Number(bin.max_volume || 0) - Number(bin.current_volume || 0),
+          already_placed_in_bin: Number(cargo.current_bin_id) === Number(bin.id)
+        } }
+      });
+      if (!evaluation.readiness.ready) return res.status(409).json({ success: false, message: evaluation.detail, data: evaluation.readiness });
+      if (evaluation.approved) eligible.push(bin);
+    }
+    if (!eligible.length) throw buildError("No configured-rule-compliant bin is available for this cargo.", 404);
+    const orderingRules = rules.filter((rule) => rule.rule_type === "ordering");
+    eligible.sort((left, right) => {
+      for (const rule of orderingRules) {
+        const field = rule.parameters?.field;
+        const direction = rule.parameters?.direction === "desc" ? -1 : 1;
+        const comparison = String(left[field] ?? "").localeCompare(String(right[field] ?? ""), undefined, { numeric: true });
+        if (comparison) return comparison * direction;
+      }
+      return String(left.created_at).localeCompare(String(right.created_at));
+    });
+    const { id, level_id, warehouse_id, ...publicBin } = eligible[0];
+    res.json({ success: true, data: publicBin });
   } catch (error) {
     next(error);
   }

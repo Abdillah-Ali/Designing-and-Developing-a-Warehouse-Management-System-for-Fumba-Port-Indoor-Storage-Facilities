@@ -142,6 +142,9 @@ const applySchema = async () => {
   const cargoRegistrationFormBuilderMigrationPath = path.join(
     __dirname, "migrations", "20260730_cargo_registration_form_builder.sql"
   );
+  const configurableBinRuleEngineMigrationPath = path.join(
+    __dirname, "migrations", "20260805_configurable_bin_rule_engine.sql"
+  );
   const financeCustomsGateMigration = await fs.readFile(financeCustomsGateMigrationPath, "utf8");
   const zoneWarehouseScopeMigration = await fs.readFile(zoneWarehouseScopeMigrationPath, "utf8");
   const warehouseConfigurationMigration = await fs.readFile(warehouseConfigurationMigrationPath, "utf8");
@@ -153,6 +156,7 @@ const applySchema = async () => {
   const initialAdminGovernanceMigration = await fs.readFile(initialAdminGovernanceMigrationPath, "utf8");
   const systemAdministratorLimitSettingMigration = await fs.readFile(systemAdministratorLimitSettingMigrationPath, "utf8");
   const cargoRegistrationFormBuilderMigration = await fs.readFile(cargoRegistrationFormBuilderMigrationPath, "utf8");
+  const configurableBinRuleEngineMigration = await fs.readFile(configurableBinRuleEngineMigrationPath, "utf8");
 
   try {
     await moveIncompatibleTables(client);
@@ -170,6 +174,7 @@ const applySchema = async () => {
     await applySqlMigration(client, "009_initial_admin_governance.sql", initialAdminGovernanceMigration);
     await applySqlMigration(client, "010_system_administrator_limit_setting.sql", systemAdministratorLimitSettingMigration);
     await applySqlMigration(client, "011_cargo_registration_form_builder.sql", cargoRegistrationFormBuilderMigration);
+    await applySqlMigration(client, "012_configurable_bin_rule_engine.sql", configurableBinRuleEngineMigration);
     await client.query(
       `INSERT INTO role_permissions (role_id, permission_key)
        SELECT r.id, p.permission_key

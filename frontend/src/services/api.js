@@ -624,8 +624,17 @@ export const recommendBin = (cargoId) => request(`/bins/recommend/${encodeURICom
 
 // Bin Rules
 export const getBinRules = () => request("/bin-rules");
+export const getBinRuleEvaluators = () => request("/bin-rules/evaluators");
+export const getBinRuleReadiness = (workflow = "placement_confirmation") => request(`/bin-rules/readiness?workflow=${encodeURIComponent(workflow)}`);
+export const getBinRuleCategories = () => request("/bin-rules/categories");
+export const createBinRuleCategory = (payload) => request("/bin-rules/categories", { method: "POST", body: payload });
+export const updateBinRuleCategory = (reference, payload) => request(`/bin-rules/categories/${encodeURIComponent(reference)}`, { method: "PUT", body: payload });
+export const deleteBinRuleCategory = (reference) => request(`/bin-rules/categories/${encodeURIComponent(reference)}`, { method: "DELETE" });
+export const createBinRule = (payload) => request("/bin-rules", { method: "POST", body: payload });
+export const deleteBinRule = (reference) => request(`/bin-rules/${encodeURIComponent(reference)}`, { method: "DELETE" });
+export const getBinRuleHistory = (reference) => request(`/bin-rules/${encodeURIComponent(reference)}/history`);
 
-export const updateBinRule = (id, payload) => request(`/bin-rules/${encodeURIComponent(id)}`, {
+export const updateBinRule = (reference, payload) => request(`/bin-rules/${encodeURIComponent(reference)}`, {
   method: "PUT",
   body: payload
 });

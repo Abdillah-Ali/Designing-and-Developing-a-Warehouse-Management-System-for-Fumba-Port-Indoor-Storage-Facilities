@@ -3,6 +3,7 @@ const {
   canCargoBePlaced,
   getCargoPlacementBlock
 } = require("./cargoWorkflowService");
+const { evaluateRules } = require("./binRuleEngine");
 
 const cargoFields = [
   "consignee_name",
@@ -45,29 +46,6 @@ const cargoTypes = new Set([
   "Fragile Goods",
   "Hazardous Cargo",
   "Mixed Cargo"
-]);
-
-const CARGO_ZONE_COMPATIBILITY = Object.freeze({
-  "General Goods": Object.freeze(["Z-A", "Z-H"]),
-  Electronics: Object.freeze(["Z-B", "Z-H"]),
-  Machinery: Object.freeze(["Z-C", "Z-H"]),
-  "Food Products": Object.freeze(["Z-D", "Z-H"]),
-  "Construction Materials": Object.freeze(["Z-E", "Z-H"]),
-  "Fragile Goods": Object.freeze(["Z-F", "Z-H"]),
-  "Hazardous Cargo": Object.freeze(["Z-G"]),
-  "Mixed Cargo": Object.freeze(["Z-H"])
-});
-
-const BIN_PLACEMENT_STATUSES = Object.freeze([
-  "Available",
-  "Occupied",
-  "Blocked",
-  "Reserved",
-  "Restricted",
-  "Maintenance",
-  "Damaged",
-  "Full",
-  "Inactive"
 ]);
 
 const packagingTypes = new Set([
@@ -229,43 +207,6 @@ const failValidation = ({ reason, detail, checks, cargo = null, bin = null }) =>
   bin
 });
 
-/**
- * Fetches active bin_rules from the database and returns them as a map
- * keyed by rule_key for fast lookup.
- */
-const fetchActiveRules = async (executor = db) => {
-  const result = await executor.query("SELECT rule_key, is_active, parameters FROM bin_rules");
-  const rules = {};
-  for (const row of result.rows) {
-    rules[row.rule_key] = { is_active: row.is_active, parameters: row.parameters };
-  }
-  return rules;
-};
-
-const isRuleActive = (rules, ruleKey) => {
-  const rule = rules[ruleKey];
-  return rule ? rule.is_active : true; // default to active if rule doesn't exist
-};
-
-const isCargoAllowedInZone = (cargoType, zoneCode) => (
-  CARGO_ZONE_COMPATIBILITY[cargoType]?.includes(String(zoneCode || "").toUpperCase()) === true
-);
-
-const isCargoAllowedByBinCategory = (cargoType, allowedCargoType) => {
-  const allowedTypes = String(allowedCargoType || "")
-    .split(",")
-    .map((value) => value.trim().toLowerCase())
-    .filter(Boolean);
-
-  if (allowedTypes.length === 0 || allowedTypes.includes("all")) return true;
-  if (allowedTypes.includes(String(cargoType || "").toLowerCase())) return true;
-
-  return (
-    allowedTypes.includes("mixed cargo")
-    && cargoType !== "Hazardous Cargo"
-  );
-};
-
 const validatePlacement = async (payload = {}, executor = db) => {
   const placementMode = String(payload.placement_mode || payload.placementMode || "scan")
     .trim()
@@ -417,8 +358,6 @@ const validatePlacement = async (payload = {}, executor = db) => {
   const remainingWeight = Number(bin.max_weight || 0) - Number(bin.current_weight || 0) + (alreadyPlacedInThisBin ? cargoWeight : 0);
   const remainingVolume = Number(bin.max_volume || 0) - Number(bin.current_volume || 0) + (alreadyPlacedInThisBin ? cargoVolume : 0);
 
-  // Fetch dynamic rules from database
-  const rules = await fetchActiveRules(executor);
   const approvalId = Number(payload.approval_request_id || payload.approvalRequestId);
   let approvedOverride = null;
 
@@ -522,95 +461,32 @@ const validatePlacement = async (payload = {}, executor = db) => {
     );
   }
 
-  if (!bin.active || !bin.level_active || !bin.rack_active || !bin.zone_active || bin.warehouse_status === "inactive" || bin.status === "Inactive") {
-    addIssue("activeStorage", "Inactive Storage", "Selected bin or one of its parent storage locations is inactive.");
-  }
-
-  if (bin.status === "Blocked") {
-    addIssue("blockedBin", "Blocked Bin", "Selected storage bin is blocked for operations.");
-  }
-
-  if (bin.status === "Reserved") {
-    addIssue("reservedBin", "Reserved Bin", "Reserved bins cannot be used for normal cargo placement.");
-  }
-
-  if (bin.status === "Maintenance") {
-    addIssue("maintenanceBin", "Bin Under Maintenance", "Selected storage bin is under maintenance.");
-  }
-
-  if (bin.status === "Damaged") {
-    addIssue("availableBin", "Damaged Bin", "Selected storage bin is marked damaged.");
-  }
-
-  if (bin.status === "Restricted") {
-    addIssue("availableBin", "Restricted Bin", "Selected storage bin is restricted from normal placement.");
-  }
-
-  if (bin.status === "Full" && !alreadyPlacedInThisBin) {
-    addIssue("availableBin", "Bin Full", "Selected storage bin has no remaining capacity.");
-  }
-
-  if (!alreadyPlacedInThisBin && !BIN_PLACEMENT_STATUSES.includes(bin.status)) {
-    addIssue("availableBin", "Bin Not Available", `Selected storage bin is ${bin.status} and cannot receive normal placement.`);
-  }
-
-  if (bin.is_hazard_zone && cargo.cargo_type !== "Hazardous Cargo") {
-    addIssue("hazardRestriction", "Hazard Restriction", `${cargo.cargo_type} cannot be placed in Hazardous Cargo Zone.`);
-  }
-
-  if (cargo.cargo_type === "Hazardous Cargo" && !bin.is_hazard_zone) {
-    addIssue("hazardRestriction", "Hazard Restriction", "Hazardous cargo must be placed in the Hazardous Cargo Zone.");
-  }
-
-  if (!isCargoAllowedByBinCategory(cargo.cargo_type, bin.zone_allowed_cargo_type)) {
-    addIssue(
-      "cargoCompatibility",
-      "Incompatible Cargo",
-      `${cargo.cargo_type} is not permitted in zone ${bin.zone_code} (allowed: ${bin.zone_allowed_cargo_type}).`
-    );
-  } else if (!isCargoAllowedByBinCategory(cargo.cargo_type, bin.allowed_cargo_type)) {
-    addIssue(
-      "cargoCompatibility",
-      "Incompatible Cargo",
-      `${cargo.cargo_type} is not permitted in bin ${bin.barcode} (allowed: ${bin.allowed_cargo_type}).`
-    );
-  }
-
-  if (
-    isRuleActive(rules, "fragile_handling")
-    && cargo.cargo_type === "Fragile Goods"
-    && !String(bin.handling_condition || "").toLowerCase().includes("fragile")
-  ) {
-    addIssue("cargoCompatibility", "Fragile Handling Required", "Fragile cargo requires a zone configured for fragile handling.");
-  }
-
-  if (
-    isRuleActive(rules, "customs_hold")
-    && String(cargo.customs_status || "").toLowerCase().includes("hold")
-    && !String(bin.cargo_restrictions || "").toLowerCase().includes("customs hold")
-  ) {
-    addIssue("restrictedZone", "Customs Hold Restriction", "Cargo under customs hold requires a bin configured for customs-hold storage.");
-  }
-
-  if (cargoWeight > remainingWeight) {
-    addIssue("weightCapacity", "Weight Capacity Exceeded", "Selected bin does not have enough remaining weight capacity.");
-  }
-
-  if (cargoVolume > remainingVolume) {
-    addIssue("volumeCapacity", "Volume Capacity Exceeded", "Selected bin does not have enough remaining volume capacity.");
-  }
-
-  let overrideApplied = false;
-  if (
-    isRuleActive(rules, "restricted")
-    && String(bin.zone_type || "").toLowerCase() === "restricted"
-  ) {
-    if (approvedOverride) {
-      overrideApplied = true;
-    } else {
-      addIssue("restrictedZone", "Restricted Zone", "Placement into this restricted zone requires supervisor approval.");
+  const engineTarget = operationType === "relocation" ? "relocation" : "placement_confirmation";
+  const ruleEvaluation = await evaluateRules({
+    target: engineTarget,
+    executor,
+    context: {
+      cargo,
+      bin,
+      approvals: { supervisor_override: approvedOverride },
+      derived: { remaining_weight: remainingWeight, remaining_volume: remainingVolume, already_placed_in_bin: alreadyPlacedInThisBin }
     }
+  });
+  checks.ruleEngineReadiness = {
+    passed: ruleEvaluation.readiness.ready,
+    message: ruleEvaluation.readiness.ready
+      ? "Required placement safety capabilities are configured."
+      : ruleEvaluation.detail
+  };
+  for (const evaluated of ruleEvaluation.results) {
+    checks[`rule:${evaluated.rule_reference}`] = { passed: evaluated.passed, message: evaluated.message };
+    if (evaluated.blocks) addIssue(`rule:${evaluated.rule_reference}`, evaluated.rule_name, evaluated.message);
   }
+  if (!ruleEvaluation.readiness.ready) {
+    addIssue("ruleEngineReadiness", ruleEvaluation.reason, ruleEvaluation.detail);
+  }
+
+  const overrideApplied = Boolean(approvedOverride);
 
   const approved = issues.length === 0;
 
@@ -677,10 +553,7 @@ const validatePlacement = async (payload = {}, executor = db) => {
 };
 
 module.exports = {
-  CARGO_ZONE_COMPATIBILITY,
   cargoFields,
-  isCargoAllowedByBinCategory,
-  isCargoAllowedInZone,
   validateCargoPayload,
   normalizeCargoPayload,
   validatePlacement

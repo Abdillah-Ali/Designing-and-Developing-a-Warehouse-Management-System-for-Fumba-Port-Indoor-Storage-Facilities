@@ -80,6 +80,8 @@ import { getDetailViewFields } from "@/lib/warehouse-detail-fields";
 import {
   approveSupervisorApproval,
   createBin,
+  createBinRule,
+  createBinRuleCategory,
   createLevel,
   createRack,
   createScanner,
@@ -88,6 +90,8 @@ import {
   createUser,
   deactivateUser,
   deleteBin,
+  deleteBinRule,
+  deleteBinRuleCategory,
   deleteLevel,
   deleteRack,
   deleteWarehouse,
@@ -98,6 +102,9 @@ import {
   getAdminRoles,
   getBins,
   getBinRules,
+  getBinRuleCategories,
+  getBinRuleEvaluators,
+  getBinRuleReadiness,
   getCapacityConfigurations,
   getAvailableCargoRegistrationFields,
   getCargo,
@@ -128,6 +135,7 @@ import {
   resetCargoRegistrationForm,
   updateBin,
   updateBinRule,
+  updateBinRuleCategory,
   updateBinStatus,
   updateCapacityConfiguration,
   updateCargoRegistrationForm,
@@ -3417,27 +3425,52 @@ function WarehouseConfigPage({ scope }) {
 function BinRulesPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const rules = useApiCollection(() => getBinRules(), `bin-rules-${refreshKey}`);
-  const [viewing, setViewing] = useState(null);
+  const categories = useApiCollection(() => getBinRuleCategories(), `bin-rule-categories-${refreshKey}`);
+  const [catalog, setCatalog] = useState({ evaluators: [], execution_targets: [], violation_actions: [], severities: [] });
+  const [readiness, setReadiness] = useState(null);
   const [editing, setEditing] = useState(null);
-  const [priority, setPriority] = useState("100");
+  const [categoryForm, setCategoryForm] = useState({ category_code: "", category_name: "", description: "" });
   const [saving, setSaving] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const emptyRule = {
+    rule_code: "", rule_name: "", description: "", category_reference: "",
+    rule_type: "validation", evaluator_type: "", execution_targets: [],
+    violation_action: "block", severity: "high", priority: 100,
+    is_active: false, parametersText: "{}"
+  };
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([getBinRuleEvaluators(), getBinRuleReadiness()]).then(([catalogResponse, readinessResponse]) => {
+      if (active) {
+        setCatalog(catalogResponse.data || {});
+        setReadiness(readinessResponse.data || null);
+      }
+    }).catch((error) => toast.error("Rule engine configuration could not be loaded", { description: getErrorMessage(error) }));
+    return () => { active = false; };
+  }, [refreshKey]);
+
   const visibleRules = rules.rows.filter((rule) => (
     (!statusFilter || (statusFilter === "Active") === rule.is_active)
-    && (!searchTerm || `${rule.rule_name} ${rule.description} ${rule.rule_key}`.toLowerCase().includes(searchTerm.toLowerCase()))
+    && (!searchTerm || `${rule.rule_name} ${rule.description} ${rule.rule_code} ${rule.evaluator_type}`.toLowerCase().includes(searchTerm.toLowerCase()))
   ));
 
-  const saveRule = async (rule, active = rule.is_active) => {
+  const openRule = (rule = null) => setEditing(rule ? {
+    ...rule,
+    category_reference: rule.category_reference || "",
+    parametersText: JSON.stringify(rule.parameters || {}, null, 2)
+  } : { ...emptyRule });
+
+  const saveRule = async () => {
     setSaving(true);
     try {
-      await updateBinRule(rule.id, {
-        is_active: active,
-        parameters: rule.rule_key === "priority"
-          ? { ...(rule.parameters || {}), priority: Number(priority) || 100 }
-          : rule.parameters || {}
-      });
-      toast.success("Bin assignment rule updated.");
+      const payload = { ...editing, priority: Number(editing.priority), parameters: JSON.parse(editing.parametersText || "{}") };
+      delete payload.parametersText;
+      delete payload.public_reference;
+      if (editing.public_reference) await updateBinRule(editing.public_reference, payload);
+      else await createBinRule(payload);
+      toast.success(editing.public_reference ? "Bin rule updated." : "Bin rule created.");
       setEditing(null);
       setRefreshKey((value) => value + 1);
     } catch (error) {
@@ -3447,14 +3480,91 @@ function BinRulesPage() {
     }
   };
 
+  const toggleRule = async (rule) => {
+    setSaving(true);
+    try {
+      await updateBinRule(rule.public_reference, { is_active: !rule.is_active });
+      setRefreshKey((value) => value + 1);
+    } catch (error) { toast.error("Rule status could not be changed", { description: getErrorMessage(error) }); }
+    finally { setSaving(false); }
+  };
+
+  const removeRule = async (rule) => {
+    if (!window.confirm(`Delete ${rule.rule_name}? Audit history will be retained.`)) return;
+    try { await deleteBinRule(rule.public_reference); setRefreshKey((value) => value + 1); }
+    catch (error) { toast.error("Rule could not be deleted", { description: getErrorMessage(error) }); }
+  };
+
+  const saveCategory = async (event) => {
+    event.preventDefault();
+    try { await createBinRuleCategory(categoryForm); setCategoryForm({ category_code: "", category_name: "", description: "" }); setRefreshKey((value) => value + 1); }
+    catch (error) { toast.error("Category could not be created", { description: getErrorMessage(error) }); }
+  };
+
+  const renameCategory = async (category) => {
+    const name = window.prompt("Category name", category.category_name);
+    if (!name) return;
+    try {
+      await updateBinRuleCategory(category.public_reference, {
+        category_code: category.category_code,
+        category_name: name,
+        description: category.description || "",
+        is_active: category.is_active
+      });
+      setRefreshKey((value) => value + 1);
+    } catch (error) { toast.error("Category could not be updated", { description: getErrorMessage(error) }); }
+  };
+
+  const removeCategory = async (category) => {
+    if (!window.confirm(`Delete category ${category.category_name}?`)) return;
+    try { await deleteBinRuleCategory(category.public_reference); setRefreshKey((value) => value + 1); }
+    catch (error) { toast.error("Category could not be deleted", { description: getErrorMessage(error) }); }
+  };
+
+  const toggleCategory = async (category) => {
+    try {
+      await updateBinRuleCategory(category.public_reference, {
+        category_code: category.category_code,
+        category_name: category.category_name,
+        description: category.description || "",
+        is_active: !category.is_active
+      });
+      setRefreshKey((value) => value + 1);
+    } catch (error) { toast.error("Category status could not be updated", { description: getErrorMessage(error) }); }
+  };
+
+  const selectedEvaluator = catalog.evaluators?.find((item) => item.value === editing?.evaluator_type);
+  const setRuleField = (key, value) => setEditing((current) => ({ ...current, [key]: value }));
+  const toggleTarget = (target) => setRuleField("execution_targets", editing.execution_targets.includes(target)
+    ? editing.execution_targets.filter((item) => item !== target)
+    : [...editing.execution_targets, target]);
+
   return (
     <>
       <PageHeader
         eyebrow="Warehouse Configuration"
         title="Bin Rules"
-        description="Operational rule configuration for cargo compatibility and storage validation."
+        description="Database-driven policies evaluated through trusted application capabilities."
+        actions={<ToolbarButton icon={Plus} onClick={() => openRule()}>Create Rule</ToolbarButton>}
       />
       <div className="flex-1 overflow-auto p-4">
+        <SectionCard title="Operational Readiness" icon={readiness?.ready ? CheckCircle2 : AlertTriangle}>
+          <div className="flex flex-wrap items-center gap-3 text-xs">
+            <StatusBadge tone={readiness?.ready ? "success" : "destructive"}>{readiness?.ready ? "Placement ready" : "Placement blocked"}</StatusBadge>
+            <span>{readiness?.ready ? `${readiness.active_rule_count} active rules provide required safety coverage.` : `Missing: ${(readiness?.missing_capabilities || []).join(", ") || "Invalid rule configuration"}`}</span>
+          </div>
+        </SectionCard>
+        <div className="mt-3 grid gap-3 lg:grid-cols-[1fr_2fr]">
+          <SectionCard title="Rule Categories" icon={Rows3}>
+            <form className="space-y-2" onSubmit={saveCategory}>
+              <FormField label="Category code"><input className={inputClass} value={categoryForm.category_code} onChange={(event) => setCategoryForm((value) => ({ ...value, category_code: event.target.value }))} required /></FormField>
+              <FormField label="Category name"><input className={inputClass} value={categoryForm.category_name} onChange={(event) => setCategoryForm((value) => ({ ...value, category_name: event.target.value }))} required /></FormField>
+              <FormField label="Description"><input className={inputClass} value={categoryForm.description} onChange={(event) => setCategoryForm((value) => ({ ...value, description: event.target.value }))} /></FormField>
+              <ToolbarButton icon={Plus} type="submit">Add Category</ToolbarButton>
+            </form>
+            <div className="mt-3 space-y-1 text-xs">{categories.rows.map((category) => <div key={category.public_reference} className="rounded border p-2"><div className="flex items-center justify-between gap-2"><strong>{category.category_name}</strong><StatusBadge tone={category.is_active ? "success" : "secondary"}>{category.is_active ? "Active" : "Inactive"}</StatusBadge></div><div className="text-muted-foreground">{category.category_code} · {category.rule_count} rules</div><div className="mt-2 flex gap-2"><button type="button" className="text-primary" onClick={() => renameCategory(category)}>Edit</button><button type="button" className="text-primary" onClick={() => toggleCategory(category)}>{category.is_active ? "Deactivate" : "Activate"}</button><button type="button" className="text-destructive" onClick={() => removeCategory(category)}>Delete</button></div></div>)}</div>
+          </SectionCard>
+          <div>
         <SectionCard title="Search & Filter" icon={Filter}>
           <div className="grid gap-3 md:grid-cols-2">
             <FormField label="Search">
@@ -3477,7 +3587,7 @@ function BinRulesPage() {
               {visibleRules.length > 0 ? (
                 <div className="divide-y divide-border">
                   {visibleRules.map((rule) => (
-                    <div key={rule.id} className="flex flex-col gap-3 py-3 md:flex-row md:items-center md:justify-between">
+                    <div key={rule.public_reference} className="flex flex-col gap-3 py-3 md:flex-row md:items-center md:justify-between">
                       <div className="min-w-0 space-y-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <div className="font-semibold text-foreground">{rule.rule_name}</div>
@@ -3487,14 +3597,14 @@ function BinRulesPage() {
                         </div>
                         <div className="text-xs text-muted-foreground">{rule.description}</div>
                         <div className="text-[11px] text-muted-foreground">
-                          Rule key: <span className="font-mono text-foreground">{rule.rule_key || "Not specified"}</span>
+                          Code: <span className="font-mono text-foreground">{rule.rule_code}</span> · Evaluator: <span className="font-mono text-foreground">{rule.evaluator_type || "Review required"}</span> · Priority {rule.priority}
                         </div>
                       </div>
                       <div className="flex flex-wrap gap-2 md:justify-end">
                         <ToolbarButton
                           icon={Power}
                           variant="secondary"
-                          onClick={() => saveRule(rule, !rule.is_active)}
+                           onClick={() => toggleRule(rule)}
                           disabled={saving}
                         >
                           {rule.is_active ? "Deactivate" : "Activate"}
@@ -3502,53 +3612,48 @@ function BinRulesPage() {
                         <ToolbarButton
                           icon={Eye}
                           variant="secondary"
-                          onClick={() => setViewing(rule)}
+                          onClick={() => openRule(rule)}
                         >
-                          View
+                          Edit
                         </ToolbarButton>
                         <ToolbarButton
                           icon={SlidersHorizontal}
                           variant="secondary"
-                          onClick={() => {
-                            setPriority(String(rule.parameters?.priority || 100));
-                            setEditing(rule);
-                          }}
+                          onClick={() => removeRule(rule)}
                         >
-                          Edit Rule
+                          Delete
                         </ToolbarButton>
                       </div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <EmptyState title="No bin rules configured" body="Run the warehouse configuration migration to seed assignment rules." />
+                <EmptyState title="No bin rules configured" body="Create administrator-owned rules before placement workflows can operate." />
               )}
             </SectionCard>
           )}
         </div>
-      </div>
-      <EnterpriseModal open={Boolean(viewing)} title={viewing?.rule_name || "Bin Rule Details"} subtitle="Review rule configuration and parameters" onClose={() => setViewing(null)}>
-        {viewing && (
-          <div className="grid gap-3 md:grid-cols-2">
-            {getDetailViewFields("bin-rules", viewing).map(([label, value]) => (
-              <ReadonlyValue key={label} label={label} value={value} />
-            ))}
           </div>
-        )}
-      </EnterpriseModal>
-      <EnterpriseModal open={Boolean(editing)} title={editing?.rule_name || "Edit rule"} onClose={() => setEditing(null)}>
-        <div className="space-y-3 text-xs">
-          <p className="text-muted-foreground">{editing?.description}</p>
-          {editing?.rule_key === "priority" && (
-            <FormField label="Priority (lower runs first)">
-              <input className={inputClass} type="number" min="1" value={priority} onChange={(event) => setPriority(event.target.value)} />
-            </FormField>
-          )}
+      </div>
+      </div>
+      <EnterpriseModal open={Boolean(editing)} title={editing?.public_reference ? "Edit Bin Rule" : "Create Bin Rule"} subtitle="Configure trusted evaluator metadata; rule names and codes never control execution." onClose={() => setEditing(null)}>
+        {editing && <div className="grid gap-3 text-xs md:grid-cols-2">
+          <FormField label="Rule name"><input className={inputClass} value={editing.rule_name} onChange={(event) => setRuleField("rule_name", event.target.value)} /></FormField>
+          <FormField label="Rule code"><input className={inputClass} value={editing.rule_code} onChange={(event) => setRuleField("rule_code", event.target.value.toLowerCase())} /></FormField>
+          <FormField label="Category"><SelectField value={editing.category_reference} onChange={(value) => setRuleField("category_reference", value)}><option value="">Uncategorized</option>{categories.rows.map((category) => <option key={category.public_reference} value={category.public_reference}>{category.category_name}</option>)}</SelectField></FormField>
+          <FormField label="Trusted evaluator"><SelectField value={editing.evaluator_type} onChange={(value) => { const definition = catalog.evaluators.find((item) => item.value === value); setEditing((current) => ({ ...current, evaluator_type: value, rule_type: definition?.rule_type || "validation", execution_targets: [] })); }}><option value="">Select evaluator</option>{catalog.evaluators.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</SelectField></FormField>
+          <FormField label="Violation action"><SelectField value={editing.violation_action} onChange={(value) => setRuleField("violation_action", value)}>{catalog.violation_actions.map((item) => <option key={item} value={item}>{item.replaceAll("_", " ")}</option>)}</SelectField></FormField>
+          <FormField label="Severity"><SelectField value={editing.severity} onChange={(value) => setRuleField("severity", value)}>{catalog.severities.map((item) => <option key={item} value={item}>{item}</option>)}</SelectField></FormField>
+          <FormField label="Priority"><input className={inputClass} type="number" min="1" value={editing.priority} onChange={(event) => setRuleField("priority", event.target.value)} /></FormField>
+          <FormField label="Status"><label className="flex items-center gap-2 rounded border p-2"><input type="checkbox" checked={editing.is_active} onChange={(event) => setRuleField("is_active", event.target.checked)} /> Active</label></FormField>
+          <div className="md:col-span-2"><FormField label="Description"><textarea className={inputClass} value={editing.description || ""} onChange={(event) => setRuleField("description", event.target.value)} /></FormField></div>
+          <div className="md:col-span-2"><FormField label="Execution targets"><div className="grid gap-2 sm:grid-cols-2">{(selectedEvaluator?.supported_targets || []).map((target) => <label key={target} className="flex items-center gap-2 rounded border p-2"><input type="checkbox" checked={editing.execution_targets.includes(target)} onChange={() => toggleTarget(target)} />{target.replaceAll("_", " ")}</label>)}</div></FormField></div>
+          <div className="md:col-span-2"><FormField label="Parameters (JSON)"><textarea className={`${inputClass} min-h-32 font-mono`} value={editing.parametersText} onChange={(event) => setRuleField("parametersText", event.target.value)} /><p className="mt-1 text-muted-foreground">Schema: {JSON.stringify(selectedEvaluator?.parameter_schema || {})}</p></FormField></div>
           <div className="flex justify-end gap-2">
             <ToolbarButton variant="secondary" onClick={() => setEditing(null)}>Cancel</ToolbarButton>
-            <ToolbarButton onClick={() => saveRule(editing)} disabled={saving}>{saving ? "Saving..." : "Save Rule"}</ToolbarButton>
+            <ToolbarButton onClick={saveRule} disabled={saving}>{saving ? "Saving..." : "Save Rule"}</ToolbarButton>
           </div>
-        </div>
+        </div>}
       </EnterpriseModal>
     </>
   );

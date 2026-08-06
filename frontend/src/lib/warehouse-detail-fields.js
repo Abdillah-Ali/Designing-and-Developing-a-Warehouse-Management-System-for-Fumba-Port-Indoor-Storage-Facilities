@@ -198,15 +198,18 @@ export const getBinViewFields = (record) => {
 export const getBinRuleViewFields = (record) => {
   if (!record) return [];
 
-  const params = record.parameters || {};
-
   return [
-    ["Rule Name", formatText(record.rule_name, record.name)],
-    ["Cargo Type", formatText(params.cargo_type, record.cargo_type)],
-    ["Zone Restriction", formatText(params.zone_restriction, record.zone_restriction)],
-    ["Weight Limit", formatMeasureValue(params.weight_limit, "kg")],
-    ["Volume Limit", formatMeasureValue(params.volume_limit, "m³")],
-    ["Priority", formatCountValue(params.priority)],
+    ["Rule Reference", formatText(record.public_reference)],
+    ["Rule Name", formatText(record.rule_name)],
+    ["Rule Code", formatText(record.rule_code)],
+    ["Category", formatText(record.category_name)],
+    ["Trusted Evaluator", formatText(record.evaluator_type)],
+    ["Rule Type", formatText(record.rule_type)],
+    ["Execution Targets", Array.isArray(record.execution_targets) ? record.execution_targets.join(", ") : "Not specified"],
+    ["Violation Action", formatText(record.violation_action)],
+    ["Severity", formatText(record.severity)],
+    ["Priority", formatCountValue(record.priority)],
+    ["Parameters", JSON.stringify(record.parameters || {})],
     ["Status", record.is_active ? "Active" : "Inactive"],
     ["Created At", formatDateTimeValue(record.created_at)],
     ["Updated At", formatDateTimeValue(record.updated_at)]
