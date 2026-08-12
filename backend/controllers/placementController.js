@@ -315,6 +315,10 @@ const requestPlacementOverride = async (req, res, next) => {
 
 const getPlacementFailures = async (req, res, next) => {
   try {
+    const values = [];
+    const warehouseFilter = req.auth?.role === "warehouse-supervisor" && req.auth?.warehouseId
+      ? `AND c.warehouse_id = $${values.push(req.auth.warehouseId)}`
+      : "";
     const result = await db.query(
       `SELECT
          pvl.*,
@@ -324,8 +328,10 @@ const getPlacementFailures = async (req, res, next) => {
        LEFT JOIN cargo c ON c.id = pvl.cargo_id
        LEFT JOIN bins b ON b.id = pvl.bin_id
        WHERE pvl.approved = FALSE
+       ${warehouseFilter}
        ORDER BY pvl.created_at DESC, pvl.id DESC
-       LIMIT 200`
+       LIMIT 200`,
+      values
     );
 
     res.json({ success: true, count: result.rowCount, data: result.rows });

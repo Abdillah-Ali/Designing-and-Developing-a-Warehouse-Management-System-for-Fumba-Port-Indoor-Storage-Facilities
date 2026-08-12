@@ -7,6 +7,7 @@ const {
   readIdentifier,
   readLetter,
   readPositiveNumber,
+  MAX_CAPACITY,
   readThresholds,
   resolveLifecycleState,
   resolveBinLifecycleState
@@ -24,6 +25,8 @@ test("warehouse hierarchy rejects invalid letters and non-positive capacity", ()
   assert.throws(() => readLetter("AA", "Rack letter"), /one alphabet letter/i);
   assert.throws(() => readIdentifier("A-1"), /letters or numbers/i);
   assert.throws(() => readPositiveNumber(0, "Capacity"), /greater than zero/i);
+  assert.equal(readPositiveNumber(1000000000000, "Capacity"), 1000000000000);
+  assert.throws(() => readPositiveNumber(MAX_CAPACITY + 1, "Capacity"), /cannot exceed/i);
 });
 
 test("capacity thresholds and parent limits are backend-enforced", () => {

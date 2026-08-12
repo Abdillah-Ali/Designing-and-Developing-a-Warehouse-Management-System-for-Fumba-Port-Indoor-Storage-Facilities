@@ -41,8 +41,8 @@ const levelSelect = (activeOnly) => `
     (COUNT(b.id) FILTER (WHERE b.status = 'Occupied' AND b.active = TRUE))::int AS occupied_bins,
     (COUNT(b.id) FILTER (WHERE b.status = 'Blocked' AND b.active = TRUE))::int AS blocked_bins,
     (COUNT(b.id) FILTER (WHERE b.status = 'Reserved' AND b.active = TRUE))::int AS reserved_bins,
-    COALESCE(SUM(b.current_weight), 0)::numeric(12, 2) AS current_weight_capacity,
-    COALESCE(SUM(b.current_volume), 0)::numeric(12, 2) AS current_volume_capacity,
+    COALESCE(SUM(b.current_weight), 0)::numeric(18, 2) AS current_weight_capacity,
+    COALESCE(SUM(b.current_volume), 0)::numeric(18, 2) AS current_volume_capacity,
     CASE WHEN l.max_weight > 0
       THEN ROUND((COALESCE(SUM(b.current_weight), 0) / l.max_weight) * 100, 2)
       ELSE 0 END AS weight_occupancy_percent,

@@ -80,13 +80,6 @@ const rolePermissionKeys = Object.freeze({
     "gate.history.view",
     "gate.emergency_release.approve"
   ])
-  ,
-  [PORTAL_ROLES.MANAGEMENT]: Object.freeze([
-    { methods: ["GET"], pattern: /^\/management\/(?:dashboard|reports)$/ },
-    { methods: ["GET", "PATCH", "DELETE"], pattern: /^\/notifications(?:\/.*)?$/ },
-    { methods: ["GET"], pattern: /^\/profile$/ },
-    { methods: ["PATCH"], pattern: /^\/profile(?:\/change-password)?$/ }
-  ])
 });
 
 const hasPermission = (authOrRole, permissionKey) => {
@@ -131,10 +124,13 @@ const portalPermissions = Object.freeze({
     { methods: ["GET"], pattern: /^\/placement\/activity$/ },
     { methods: ["GET"], pattern: /^\/placement\/activity\/summary$/ },
     { methods: ["GET"], pattern: /^\/placement\/failures$/ },
+    { methods: ["GET"], pattern: /^\/placement\/failures$/ },
     { methods: ["GET", "PUT"], pattern: /^\/placement\/settings$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/dashboard$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/my\/review-history$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/review-configuration$/ },
+    { methods: ["GET"], pattern: /^\/supervisor\/staff-activity$/ },
+    { methods: ["GET"], pattern: /^\/supervisor\/placement-monitoring$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/approvals(?:\/[^/]+)?$/ },
     { methods: ["POST"], pattern: /^\/supervisor\/approvals\/[^/]+\/(?:approve|emergency-approve|reject|request-correction)$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/staff-activity$/ },
@@ -222,9 +218,12 @@ const portalPermissions = Object.freeze({
     { methods: ["GET", "PUT"], pattern: /^\/placement\/settings$/ },
     { methods: ["GET"], pattern: /^\/placement\/activity$/ },
     { methods: ["GET"], pattern: /^\/placement\/activity\/summary$/ },
+    { methods: ["GET"], pattern: /^\/placement\/failures$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/dashboard$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/my\/review-history$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/review-configuration$/ },
+    { methods: ["GET"], pattern: /^\/supervisor\/staff-activity$/ },
+    { methods: ["GET"], pattern: /^\/supervisor\/placement-monitoring$/ },
     { methods: ["GET"], pattern: /^\/supervisor\/approvals(?:\/[^/]+)?$/ },
     { methods: ["POST"], pattern: /^\/supervisor\/approvals\/[^/]+\/approve$/ },
     { methods: ["POST"], pattern: /^\/supervisor\/approvals\/[^/]+\/emergency-approve$/ },
@@ -269,6 +268,12 @@ const portalPermissions = Object.freeze({
     { methods: ["GET"], pattern: /^\/gate\/cargo\/[^/]+\/eligibility$/ },
     { methods: ["POST"], pattern: /^\/gate\/cargo\/[^/]+\/gate-out$/ },
     { methods: ["GET", "POST"], pattern: /^\/gate\/emergency-requests$/ },
+    { methods: ["GET", "PATCH", "DELETE"], pattern: /^\/notifications(?:\/.*)?$/ },
+    { methods: ["GET"], pattern: /^\/profile$/ },
+    { methods: ["PATCH"], pattern: /^\/profile(?:\/change-password)?$/ }
+  ]),
+  [PORTAL_ROLES.MANAGEMENT]: Object.freeze([
+    { methods: ["GET"], pattern: /^\/management\/(?:dashboard|reports)$/ },
     { methods: ["GET", "PATCH", "DELETE"], pattern: /^\/notifications(?:\/.*)?$/ },
     { methods: ["GET"], pattern: /^\/profile$/ },
     { methods: ["PATCH"], pattern: /^\/profile(?:\/change-password)?$/ }

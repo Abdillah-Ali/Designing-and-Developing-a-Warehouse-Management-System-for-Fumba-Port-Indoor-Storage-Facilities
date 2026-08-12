@@ -10,10 +10,7 @@ const {
 const RAW_LOG_PATHS = [
   "/audit-logs",
   "/user-sessions",
-  "/placement/logs",
-  "/placement/failures",
-  "/supervisor/staff-activity",
-  "/supervisor/placement-monitoring"
+  "/placement/logs"
 ];
 
 test("only System Admin can access raw log routes", () => {
@@ -22,6 +19,17 @@ test("only System Admin can access raw log routes", () => {
     assert.equal(canAccessRoute(PORTAL_ROLES.WAREHOUSE_STAFF, "GET", path), false, path);
     assert.equal(canAccessRoute(PORTAL_ROLES.WAREHOUSE_SUPERVISOR, "GET", path), false, path);
     assert.equal(canAccessRoute("customs-officer", "GET", path), false, path);
+  }
+});
+
+test("supervisors can access only their warehouse-scoped dashboard activity", () => {
+  for (const path of [
+    "/placement/failures",
+    "/supervisor/staff-activity",
+    "/supervisor/placement-monitoring"
+  ]) {
+    assert.equal(canAccessRoute(PORTAL_ROLES.WAREHOUSE_SUPERVISOR, "GET", path), true, path);
+    assert.equal(canAccessRoute(PORTAL_ROLES.WAREHOUSE_STAFF, "GET", path), false, path);
   }
 });
 

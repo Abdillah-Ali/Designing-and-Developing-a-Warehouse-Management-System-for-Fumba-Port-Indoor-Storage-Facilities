@@ -13,6 +13,12 @@ const CARGO_TYPES = Object.freeze([
   "Mixed Cargo"
 ]);
 
+// Stay just below PostgreSQL NUMERIC(18, 2)'s precision boundary. JavaScript
+// cannot precisely represent its fractional maximum (.99) at this magnitude.
+// Keep this limit in the API so oversized values return a useful 400 response
+// instead of a database range error.
+const MAX_CAPACITY = 999999999999999;
+
 const textValue = (value) => {
   if (value === undefined || value === null) return null;
   return String(value).trim() || null;
@@ -41,6 +47,9 @@ const readPositiveNumber = (value, label, fallback = null) => {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) {
     throw buildError(`${label} must be a number greater than zero.`, 400);
+  }
+  if (number > MAX_CAPACITY) {
+    throw buildError(`${label} cannot exceed ${MAX_CAPACITY.toLocaleString("en-US")}.`, 400);
   }
   return number;
 };
@@ -193,6 +202,7 @@ const ensureCapacityFitsParent = ({
 
 module.exports = {
   CARGO_TYPES,
+  MAX_CAPACITY,
   auditConfigurationAttempt,
   ensureCapacityFitsParent,
   ensureCargoType,

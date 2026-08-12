@@ -68,6 +68,12 @@ const parseRule = (payload, { partial = false } = {}) => {
 };
 
 const validateCompleteRule = (rule) => {
+  if (rule.required_evaluator_type && rule.evaluator_type !== rule.required_evaluator_type) {
+    throw buildError(
+      `This built-in rule must use the trusted evaluator: ${rule.required_evaluator_type.replaceAll("_", " ")}.`,
+      400
+    );
+  }
   const definition = evaluatorDefinitions[rule.evaluator_type];
   if (!definition.supported_targets || rule.execution_targets.some((target) => !definition.supported_targets.includes(target))) {
     throw buildError("One or more execution targets are not supported by the selected evaluator.", 400);
@@ -175,7 +181,8 @@ const updateRule = async (req, res, next) => {
       severity: changes.severity ?? existing.severity,
       priority: changes.priority ?? existing.priority,
       is_active: changes.is_active ?? existing.is_active,
-      parameters: changes.parameters ?? existing.parameters
+      parameters: changes.parameters ?? existing.parameters,
+      required_evaluator_type: existing.required_evaluator_type
     };
     const definitionChanged = ["evaluator_type", "execution_targets", "parameters", "rule_type"].some(
       (key) => Object.prototype.hasOwnProperty.call(changes, key)

@@ -61,8 +61,8 @@ const zoneSelect = (activeOnly) => `
     (COUNT(b.id) FILTER (WHERE b.status = 'Reserved' AND b.active = TRUE))::int AS reserved_bins,
     COALESCE(SUM(b.max_weight), 0)::numeric(14, 2) AS max_weight_capacity,
     COALESCE(SUM(b.max_volume), 0)::numeric(14, 2) AS max_volume_capacity,
-    COALESCE(SUM(b.current_weight), 0)::numeric(14, 2) AS current_weight_capacity,
-    COALESCE(SUM(b.current_volume), 0)::numeric(14, 2) AS current_volume_capacity,
+    COALESCE(SUM(b.current_weight), 0)::numeric(18, 2) AS current_weight_capacity,
+    COALESCE(SUM(b.current_volume), 0)::numeric(18, 2) AS current_volume_capacity,
     CASE
       WHEN COALESCE(SUM(b.max_weight), 0) > 0
       THEN ROUND((SUM(b.current_weight) / SUM(b.max_weight)) * 100, 2)

@@ -759,6 +759,36 @@ const runUpdates = async () => {
       "utf8"
     );
     await applySqlMigration(client, "007_notification_scheduler_settings.sql", notificationSchedulerMigration);
+
+    const expandWarehouseCapacityMigration = fs.readFileSync(
+      path.join(__dirname, "migrations", "20260811_expand_warehouse_capacity.sql"),
+      "utf8"
+    );
+    await applySqlMigration(client, "013_expand_warehouse_capacity.sql", expandWarehouseCapacityMigration);
+
+    const expandStorageHierarchyCapacityMigration = fs.readFileSync(
+      path.join(__dirname, "migrations", "20260811_expand_storage_hierarchy_capacity.sql"),
+      "utf8"
+    );
+    await applySqlMigration(client, "014_expand_storage_hierarchy_capacity.sql", expandStorageHierarchyCapacityMigration);
+
+    const repairBuiltinBinRuleEvaluatorsMigration = fs.readFileSync(
+      path.join(__dirname, "migrations", "20260811_repair_builtin_bin_rule_evaluators.sql"),
+      "utf8"
+    );
+    await applySqlMigration(client, "015_repair_builtin_bin_rule_evaluators.sql", repairBuiltinBinRuleEvaluatorsMigration);
+
+    const correctReservedBinRuleEvaluatorMigration = fs.readFileSync(
+      path.join(__dirname, "migrations", "20260811_correct_reserved_bin_rule_evaluator.sql"),
+      "utf8"
+    );
+    await applySqlMigration(client, "016_correct_reserved_bin_rule_evaluator.sql", correctReservedBinRuleEvaluatorMigration);
+
+    const lockBuiltinBinRuleEvaluatorsMigration = fs.readFileSync(
+      path.join(__dirname, "migrations", "20260811_lock_builtin_bin_rule_evaluators.sql"),
+      "utf8"
+    );
+    await applySqlMigration(client, "017_lock_builtin_bin_rule_evaluators.sql", lockBuiltinBinRuleEvaluatorsMigration);
   } catch (error) {
     if (transactionOpen) await client.query("ROLLBACK").catch(() => {});
     if (legacyStarted) {

@@ -60,6 +60,7 @@ import {
 } from "@/components/wms/OperationalUi";
 import { BinBarcodeLabel, printBinBarcodeLabel } from "@/components/wms/BarcodeLabel";
 import { EnterpriseModal } from "@/components/wms/EnterpriseModal";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ManualPlacementSetting } from "@/components/wms/ManualPlacementSetting";
 import { PlacementActivityPanel } from "@/components/wms/PlacementActivityTimeline";
 import { ReviewActionModal } from "@/components/wms/ReviewActionModal";
@@ -1435,7 +1436,6 @@ function UserForm({ mode, user, roles, warehouses, shifts, users = [], reference
   const isWarehouseSupervisor = selectedRole?.role_name === "Supervisor";
   const isSystemAdministrator = selectedRole?.role_name === "System Admin";
   const requiresWarehouse = isWarehouseStaff || isWarehouseSupervisor;
-  const unsupportedRole = selectedRole && !["System Admin", "Warehouse Staff", "Supervisor"].includes(selectedRole.role_name);
   const isLastActiveSystemAdministrator = Boolean(
     user?.role_name === "System Admin"
     && user?.status === "active"
@@ -1589,11 +1589,6 @@ function UserForm({ mode, user, roles, warehouses, shifts, users = [], reference
           {systemAdministratorRoleDisabled && (
             <span className="block text-[10px] font-normal leading-4 text-warning">
               Maximum active System Administrators reached ({maximumActiveSystemAdministrators}). Deactivate an existing administrator before assigning this role.
-            </span>
-          )}
-          {unsupportedRole && (
-            <span className="block text-[10px] font-normal leading-4 text-warning">
-              This role does not currently have a portal dashboard. The user can be created, but login access will be limited until the portal is implemented.
             </span>
           )}
         </FormField>
@@ -1911,6 +1906,24 @@ function RolesPermissionsPage() {
   );
 }
 
+function ShiftFormFields({ form, setForm }) {
+  const setField = (field, value) => setForm((current) => ({ ...current, [field]: value }));
+
+  return (
+    <>
+      <FormField label="Shift Name"><input className={inputClass} value={form.shift_name} onChange={(event) => setField("shift_name", event.target.value)} required /></FormField>
+      <FormField label="Shift Code"><input className={inputClass} value={form.shift_code} onChange={(event) => setField("shift_code", event.target.value.toUpperCase())} required /></FormField>
+      <div className="grid grid-cols-2 gap-3">
+        <FormField label="Start Time"><input className={inputClass} type="time" value={form.start_time} onChange={(event) => setField("start_time", event.target.value)} required /></FormField>
+        <FormField label="End Time"><input className={inputClass} type="time" value={form.end_time} onChange={(event) => setField("end_time", event.target.value)} required /></FormField>
+      </div>
+      <FormField label="Grace Minutes"><input className={inputClass} type="number" min="0" value={form.grace_period_minutes} onChange={(event) => setField("grace_period_minutes", event.target.value)} /></FormField>
+      <FormField label="Effective Date"><input className={inputClass} type="date" value={form.effective_date} onChange={(event) => setField("effective_date", event.target.value)} /></FormField>
+      <FormField label="Description"><input className={inputClass} value={form.description} onChange={(event) => setField("description", event.target.value)} /></FormField>
+    </>
+  );
+}
+
 function ShiftAssignmentPage() {
   const [refreshKey, setRefreshKey] = useState(0);
   const shifts = useApiCollection(() => getShifts(), `shift-assignment-${refreshKey}`);
@@ -2032,20 +2045,11 @@ function ShiftAssignmentPage() {
       <div className="flex-1 overflow-auto p-4">
         {message && <div className="mb-3 rounded border border-info/30 bg-info/10 px-3 py-2 text-xs font-semibold text-info">{message}</div>}
         <div className="grid gap-3 xl:grid-cols-[360px_1fr]">
-          <SectionCard title={editing ? "Edit Shift" : "Create Shift"} icon={CalendarClock}>
+          <SectionCard title="Create Shift" icon={CalendarClock}>
             <form className="grid gap-3" onSubmit={submitShift}>
-              <FormField label="Shift Name"><input className={inputClass} value={form.shift_name} onChange={(event) => setForm((current) => ({ ...current, shift_name: event.target.value }))} required /></FormField>
-              <FormField label="Shift Code"><input className={inputClass} value={form.shift_code} onChange={(event) => setForm((current) => ({ ...current, shift_code: event.target.value.toUpperCase() }))} required /></FormField>
-              <div className="grid grid-cols-2 gap-3">
-                <FormField label="Start Time"><input className={inputClass} type="time" value={form.start_time} onChange={(event) => setForm((current) => ({ ...current, start_time: event.target.value }))} required /></FormField>
-                <FormField label="End Time"><input className={inputClass} type="time" value={form.end_time} onChange={(event) => setForm((current) => ({ ...current, end_time: event.target.value }))} required /></FormField>
-              </div>
-              <FormField label="Grace Minutes"><input className={inputClass} type="number" min="0" value={form.grace_period_minutes} onChange={(event) => setForm((current) => ({ ...current, grace_period_minutes: event.target.value }))} /></FormField>
-              <FormField label="Effective Date"><input className={inputClass} type="date" value={form.effective_date} onChange={(event) => setForm((current) => ({ ...current, effective_date: event.target.value }))} /></FormField>
-              <FormField label="Description"><input className={inputClass} value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} /></FormField>
+              <ShiftFormFields form={form} setForm={setForm} />
               <div className="flex justify-end gap-2">
-                {editing && <ToolbarButton variant="secondary" onClick={resetForm}>Cancel</ToolbarButton>}
-                <ToolbarButton icon={Save} type="submit">{editing ? "Save Shift" : "Create Shift"}</ToolbarButton>
+                <ToolbarButton icon={Save} type="submit">Create Shift</ToolbarButton>
               </div>
             </form>
           </SectionCard>
@@ -2113,6 +2117,17 @@ function ShiftAssignmentPage() {
           </div>
         </div>
       </div>
+      <EnterpriseModal open={Boolean(editing)} title="Edit Shift" subtitle="Update the selected shift's schedule and operational details." onClose={resetForm}>
+        {editing && (
+          <form className="grid gap-3" onSubmit={submitShift}>
+            <ShiftFormFields form={form} setForm={setForm} />
+            <div className="flex justify-end gap-2">
+              <ToolbarButton variant="secondary" onClick={resetForm}>Cancel</ToolbarButton>
+              <ToolbarButton icon={Save} type="submit">Save Shift</ToolbarButton>
+            </div>
+          </form>
+        )}
+      </EnterpriseModal>
     </>
   );
 }
@@ -2907,6 +2922,7 @@ function WarehouseFormDrawer({ mode, warehouse, onClose, onSave }) {
             className={inputClass}
             type="number"
             min="0.01"
+            max="999999999999999"
             step="0.01"
             value={form.total_capacity}
             onChange={(e) => setField("total_capacity", e.target.value)}
@@ -3669,6 +3685,7 @@ function CapacityConfigurationPage() {
   const [saving, setSaving] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [activeCapacityTab, setActiveCapacityTab] = useState("warehouse");
 
   const rowsFor = (type, selectedId = "", matchParent = false) => capacity.rows.filter((row) => {
     const normalizedStatus = String(row.status || "").toLowerCase();
@@ -3704,6 +3721,14 @@ function CapacityConfigurationPage() {
       setSaving(false);
     }
   };
+
+  const capacityTabs = [
+    { value: "warehouse", label: "Warehouse Capacity", icon: Warehouse, type: "Warehouse", selectedId: hierarchy.selectedWarehouse, labelText: "Warehouse" },
+    { value: "zone", label: "Zone Capacity", icon: Boxes, type: "Zone", selectedId: hierarchy.selectedWarehouse, labelText: "Zone", matchParent: true },
+    { value: "rack", label: "Rack Capacity", icon: Rows3, type: "Rack", selectedId: hierarchy.selectedZone, labelText: "Rack", matchParent: true },
+    { value: "level", label: "Level Capacity", icon: SquareStack, type: "Level", selectedId: hierarchy.selectedRack, labelText: "Level", matchParent: true },
+    { value: "bin", label: "Bin Capacity", icon: Box, type: "Bin", selectedId: hierarchy.selectedLevel, labelText: "Bin", matchParent: true }
+  ];
 
   return (
     <>
@@ -3746,13 +3771,34 @@ function CapacityConfigurationPage() {
               </FormField>
             </div>
           </SectionCard>
-          <div className="grid gap-3 xl:grid-cols-2">
-            <CapacityTable title="Warehouse Capacity" icon={Warehouse} rows={rowsFor("Warehouse", hierarchy.selectedWarehouse)} loading={capacity.loading} error={capacity.error} label="Warehouse" labelRenderer={(row) => row.entity_name} onView={setViewing} onEdit={openCapacity} />
-            <CapacityTable title="Zone Capacity" icon={Boxes} rows={rowsFor("Zone", hierarchy.selectedWarehouse, true)} loading={capacity.loading} error={capacity.error} label="Zone" labelRenderer={(row) => row.entity_name} onView={setViewing} onEdit={openCapacity} />
-            <CapacityTable title="Rack Capacity" icon={Rows3} rows={rowsFor("Rack", hierarchy.selectedZone, true)} loading={capacity.loading} error={capacity.error} label="Rack" labelRenderer={(row) => row.entity_name} onView={setViewing} onEdit={openCapacity} />
-            <CapacityTable title="Level Capacity" icon={SquareStack} rows={rowsFor("Level", hierarchy.selectedRack, true)} loading={capacity.loading} error={capacity.error} label="Level" labelRenderer={(row) => row.entity_name} onView={setViewing} onEdit={openCapacity} />
-            <CapacityTable title="Bin Capacity" icon={Box} rows={rowsFor("Bin", hierarchy.selectedLevel, true)} loading={capacity.loading} error={capacity.error} label="Bin" labelRenderer={(row) => row.entity_name} onView={setViewing} onEdit={openCapacity} />
-          </div>
+          <Tabs value={activeCapacityTab} onValueChange={setActiveCapacityTab}>
+            <TabsList className="h-auto w-full justify-start gap-1 overflow-x-auto rounded-lg bg-muted p-1">
+              {capacityTabs.map((tab) => {
+                const Icon = tab.icon;
+                return (
+                  <TabsTrigger key={tab.value} value={tab.value} className="shrink-0 gap-2 px-4 py-2">
+                    <Icon className="h-4 w-4" />
+                    {tab.label}
+                  </TabsTrigger>
+                );
+              })}
+            </TabsList>
+            {capacityTabs.map((tab) => (
+              <TabsContent key={tab.value} value={tab.value} className="mt-3">
+                <CapacityTable
+                  title={tab.label}
+                  icon={tab.icon}
+                  rows={rowsFor(tab.type, tab.selectedId, tab.matchParent)}
+                  loading={capacity.loading}
+                  error={capacity.error}
+                  label={tab.labelText}
+                  labelRenderer={(row) => row.entity_name}
+                  onView={setViewing}
+                  onEdit={openCapacity}
+                />
+              </TabsContent>
+            ))}
+          </Tabs>
         </div>
       </div>
       <EnterpriseModal open={Boolean(viewing)} title={`${viewing?.entity_name || "Capacity Configuration"} - Details`} subtitle={`${viewing?.entity_type || "Entity"} capacity configuration`} onClose={() => setViewing(null)}>

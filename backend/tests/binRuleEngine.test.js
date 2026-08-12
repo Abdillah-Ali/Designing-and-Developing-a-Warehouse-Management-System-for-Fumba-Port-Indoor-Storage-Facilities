@@ -53,6 +53,34 @@ test("fresh schema and migrations do not insert bin rules or categories", () => 
   }
 });
 
+test("built-in rule repair maps only rules lacking a trusted evaluator", () => {
+  const sql = fs.readFileSync(path.join(__dirname, "../database/migrations/20260811_repair_builtin_bin_rule_evaluators.sql"), "utf8");
+  assert.match(sql, /capacity_limits/);
+  assert.match(sql, /cargo_storage_compatibility/);
+  assert.match(sql, /hazard_zone_compatibility/);
+  assert.match(sql, /storage_status/);
+  assert.match(sql, /reserved_storage/);
+  assert.match(sql, /restricted_zone_approval/);
+  assert.match(sql, /customs_hold_storage/);
+  assert.match(sql, /fragile_handling/);
+  assert.match(sql, /rule\.evaluator_type IS NULL/i);
+});
+
+test("reserved and restricted legacy rules are corrected using their displayed names", () => {
+  const sql = fs.readFileSync(path.join(__dirname, "../database/migrations/20260811_correct_reserved_bin_rule_evaluator.sql"), "utf8");
+  assert.match(sql, /rule_name = 'Reserved Bin Restrictions'/);
+  assert.match(sql, /reserved_storage/);
+  assert.match(sql, /rule_name = 'Zone Restriction'/);
+  assert.match(sql, /restricted_zone_approval/);
+});
+
+test("built-in rule migration records the approved trusted evaluator mapping", () => {
+  const sql = fs.readFileSync(path.join(__dirname, "../database/migrations/20260811_lock_builtin_bin_rule_evaluators.sql"), "utf8");
+  assert.match(sql, /required_evaluator_type/);
+  assert.match(sql, /'Customs Hold Restriction' THEN 'customs_hold_storage'/);
+  assert.match(sql, /'Reserved Bin Restrictions' THEN 'reserved_storage'/);
+});
+
 test("placement readiness fails closed with no configured rules", async () => {
   const readiness = await getWorkflowReadiness("placement_confirmation", null, []);
   assert.equal(readiness.ready, false);

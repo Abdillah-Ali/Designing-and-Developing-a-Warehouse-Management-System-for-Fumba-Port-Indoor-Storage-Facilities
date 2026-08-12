@@ -60,6 +60,7 @@ const readShiftPayload = (body, existing = {}) => {
 };
 
 const formatShift = (row) => row && ({
+  id: row.id,
   public_reference: row.public_reference,
   shift_name: row.shift_name,
   name: row.shift_name,
