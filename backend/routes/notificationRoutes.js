@@ -10,7 +10,7 @@ const {
   restoreNotificationForUser,
   resolveNotificationRoute
 } = require("../controllers/notificationController");
-const { requireRole } = require("../middleware/authMiddleware");
+const { requirePermission } = require("../middleware/authMiddleware");
 
 const router = express.Router();
 
@@ -18,7 +18,7 @@ router.get("/", getNotifications);
 router.get("/unread-count", getUnreadNotificationCount);
 router.get("/summary", getNotificationSummaryForUser);
 router.patch("/read-all", markAllNotificationsAsRead);
-router.post("/system-announcement", requireRole("System Admin"), createSystemAnnouncementNotification);
+router.post("/system-announcement", requirePermission("system.notifications.announce"), createSystemAnnouncementNotification);
 router.patch("/:publicRef/read", markNotificationAsRead);
 router.patch("/:publicRef/archive", archiveNotificationForUser);
 router.patch("/:publicRef/restore", restoreNotificationForUser);

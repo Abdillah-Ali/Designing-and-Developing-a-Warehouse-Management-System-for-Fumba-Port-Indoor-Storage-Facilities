@@ -6,7 +6,6 @@ const { generateCargoIdentifiers } = require("../utils/barcodeGenerator");
 const {
   cargoFields,
   normalizeCargoPayload,
-  validateCargoPayload,
   validatePlacement
 } = require("../services/validationService");
 const {
@@ -23,6 +22,7 @@ const {
 } = require("../services/cargoWorkflowService");
 const {
   applyConfiguredDefaults,
+  normalizeCatalogPayload,
   validateConfiguredCargoPayload
 } = require("../services/cargoRegistrationFormService");
 const {
@@ -403,16 +403,14 @@ const createCargo = async (req, res, next) => {
 
   try {
     const configuredPayload = await applyConfiguredDefaults(req.body, client);
-    const errors = [
-      ...validateCargoPayload(configuredPayload),
-      ...await validateConfiguredCargoPayload(configuredPayload, client)
-    ];
+    const errors = await validateConfiguredCargoPayload(configuredPayload, client);
     if (errors.length) {
       throw buildError("Cargo validation failed.", 400, errors);
     }
 
-    const payload = normalizeCargoPayload(configuredPayload);
-    payload.received_by = req.auth?.username || payload.received_by || "Warehouse Staff";
+    const catalogResult = await normalizeCatalogPayload(configuredPayload, client);
+    const payload = normalizeCargoPayload(catalogResult.payload);
+    payload.received_by = req.auth?.username || "Warehouse Staff";
     const registrationStatus = REGISTRATION_STATUS.PENDING_REVIEW;
     const placementStatus = PLACEMENT_STATUS.UNPLACED;
 
@@ -725,6 +723,7 @@ const resubmitCargo = async (req, res, next) => {
     const resubmission = await completeCargoResubmission(client, {
       cargo,
       userId: req.auth?.userId,
+      roleId: req.auth?.roleId,
       remarks: req.body.remarks,
       buildError
     });
@@ -774,68 +773,15 @@ const resubmitCargo = async (req, res, next) => {
 };
 
 const updateCargoStatus = async (req, res, next) => {
-  const client = await db.pool.connect();
-
   try {
-    const registrationStatus = String(
-      req.body.registration_status || req.body.status || ""
-    ).trim() || null;
-    const placementStatus = String(req.body.placement_status || "").trim() || null;
-
-    if (!registrationStatus && !placementStatus) {
-      throw buildError("A registration status or placement status is required.", 400);
-    }
-    if (registrationStatus && !registrationStatuses.has(registrationStatus)) {
-      throw buildError("Registration status is not valid.", 400);
-    }
-    if (placementStatus && !placementStatuses.has(placementStatus)) {
-      throw buildError("Placement status is not valid.", 400);
-    }
-
-    await client.query("BEGIN");
-    const cargo = await findCargoForAccess(client, req.params.id, true);
-    if (!cargo) throw buildError("Cargo record not found.", 404);
-
-    let result = { rows: [cargo] };
-    if (registrationStatus) {
-      result = await updateCargoRegistrationStatus(
-        client,
-        cargo.id,
-        registrationStatus
-      );
-    }
-    if (placementStatus) {
-      result = await client.query(
-        `UPDATE cargo
-         SET placement_status = $1,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = $2
-         RETURNING *`,
-        [placementStatus, cargo.id]
-      );
-    }
-
-    await writeAuditLog(
-      {
-        user_id: req.auth?.userId || null,
-        action: "UPDATE_CARGO_STATUS",
-        module: "Cargo Management",
-        description: `Updated cargo ${result.rows[0].cargo_id} workflow statuses.`,
-        metadata: {
-          registration_status: registrationStatus || result.rows[0].registration_status,
-          placement_status: placementStatus || result.rows[0].placement_status
-        }
-      },
-      client
+    throw buildError(
+      "Direct status updates are no longer supported. Use the applicable approval, correction, resubmission, placement, or relocation action.",
+      409,
+      null,
+      "WORKFLOW_TRANSITION_KEY_REQUIRED"
     );
-
-    await client.query("COMMIT");
-    res.json({ success: true, data: result.rows[0] });
   } catch (error) {
-    await client.query("ROLLBACK");
     next(error);
-  } finally {
-    client.release();
   }
 };
 
@@ -1084,12 +1030,13 @@ const updateCargo = async (req, res, next) => {
     }
 
     const mergedPayload = { ...existingCargo, ...req.body };
-    const errors = validateCargoPayload(mergedPayload);
+    const errors = await validateConfiguredCargoPayload(mergedPayload, client, { allowInactive: true, allowSystemManaged: true });
     if (errors.length) {
       throw buildError("Cargo validation failed.", 400, errors);
     }
 
-    const payload = normalizeCargoPayload(mergedPayload);
+    const catalogResult = await normalizeCatalogPayload(mergedPayload, client, { allowInactive: true });
+    const payload = normalizeCargoPayload(catalogResult.payload);
     if (existingCargo.registration_status === REGISTRATION_STATUS.APPROVED) {
       const revisionCandidates = updates.filter((field) => CORRECTION_FIELDS[field]);
       const candidateSnapshot = captureCorrectionValues(existingCargo, revisionCandidates);
@@ -1243,6 +1190,7 @@ const updateCargo = async (req, res, next) => {
       automaticResubmission = await completeCargoResubmission(client, {
         cargo: updatedCargo,
         userId: req.auth?.userId,
+        roleId: req.auth?.roleId,
         remarks: "Approved cargo details updated and resubmitted for supervisor approval.",
         buildError
       });

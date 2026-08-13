@@ -840,7 +840,7 @@ function UsersPage() {
     `administrator-capacity-${refreshKey}`
   );
   const activeSystemAdministratorCount = users.rows.filter(
-    (user) => user.role_name === "System Admin" && user.status === "active"
+    (user) => user.role_key === "system_administrator" && user.status === "active"
   ).length;
   const configuredAdministratorMaximum = administratorCapacity.rows[0]?.maximum ?? null;
   const administratorCapacityReached = Boolean(administratorCapacity.rows[0]?.capacity_reached);
@@ -1013,7 +1013,7 @@ function UsersPage() {
                   render: (row) => (
                     <div>
                       <div className="font-semibold">{row.full_name}</div>
-                      {row.role_name === "System Admin" && (
+                      {row.role_key === "system_administrator" && (
                         <div className="mt-1 flex flex-wrap gap-1">
                           <StatusBadge tone="info">System Administrator</StatusBadge>
                         </div>
@@ -1028,7 +1028,7 @@ function UsersPage() {
                 {
                   key: "scanner_link",
                   label: "Scanner Account",
-                  render: (row) => row.role_name === "System Admin"
+                  render: (row) => row.role_key === "system_administrator"
                     ? "Not applicable"
                     : row.scanner_account_id
                     ? <StatusBadge tone="success">Created</StatusBadge>
@@ -1037,14 +1037,14 @@ function UsersPage() {
                 {
                   key: "assigned_warehouse",
                   label: "Assigned Warehouse",
-                  render: (row) => row.role_name === "System Admin"
+                  render: (row) => row.role_key === "system_administrator"
                     ? "System-wide access"
                     : row.warehouse_code ? `${row.warehouse_code} - ${row.warehouse_name}` : "No warehouse assigned"
                 },
                 {
                   key: "assigned_shift",
                   label: "Assigned Shift",
-                  render: (row) => row.role_name === "System Admin" ? "Not applicable" : row.shift_name || "No shift"
+                  render: (row) => row.role_key === "system_administrator" ? "Not applicable" : row.shift_name || "No shift"
                 },
                 {
                   key: "account_status",
@@ -1082,7 +1082,7 @@ function UsersPage() {
                           || (
                             row.status === "active"
                             && (
-                              row.role_name === "System Admin" && activeSystemAdministratorCount === 1
+                              row.role_key === "system_administrator" && activeSystemAdministratorCount === 1
                             )
                           )
                         }
@@ -1097,7 +1097,7 @@ function UsersPage() {
                         disabled={
                           busyUserId === `deactivate-${row.id}`
                           || row.status === "inactive"
-                          || (row.role_name === "System Admin" && row.status === "active" && activeSystemAdministratorCount === 1)
+                          || (row.role_key === "system_administrator" && row.status === "active" && activeSystemAdministratorCount === 1)
                         }
                         className="inline-flex h-8 items-center gap-1 rounded border border-destructive/35 bg-destructive/10 px-2 text-[11px] font-semibold text-destructive hover:bg-destructive/20 disabled:opacity-50"
                       >
@@ -1151,7 +1151,7 @@ function ScannerForm({ users, loading, onCancel, onSave }) {
   const eligibleUsers = useMemo(() => users.filter((user) => (
     user.status === "active"
     && user.role_name !== "Scanner"
-    && user.role_name !== "System Admin"
+    && user.role_key !== "system_administrator"
   )), [users]);
   const departments = useMemo(() => (
     Array.from(new Set(eligibleUsers.map((user) => user.department_name).filter(Boolean)))
@@ -1423,7 +1423,7 @@ function UserForm({ mode, user, roles, warehouses, shifts, users = [], reference
     setForm((current) => {
       if (
         field === "role_id"
-        && roles.find((role) => String(role.id) === String(value))?.role_name === "System Admin"
+        && roles.find((role) => String(role.id) === String(value))?.role_key === "system_administrator"
       ) {
         return { ...current, role_id: value, warehouse_id: "", shift_id: "" };
       }
@@ -1432,19 +1432,19 @@ function UserForm({ mode, user, roles, warehouses, shifts, users = [], reference
   };
 
   const selectedRole = roles.find((role) => String(role.id) === String(form.role_id));
-  const isWarehouseStaff = selectedRole?.role_name === "Warehouse Staff";
-  const isWarehouseSupervisor = selectedRole?.role_name === "Supervisor";
-  const isSystemAdministrator = selectedRole?.role_name === "System Admin";
+  const isWarehouseStaff = selectedRole?.role_key === "warehouse_staff";
+  const isWarehouseSupervisor = selectedRole?.role_key === "warehouse_supervisor";
+  const isSystemAdministrator = selectedRole?.role_key === "system_administrator";
   const requiresWarehouse = isWarehouseStaff || isWarehouseSupervisor;
   const isLastActiveSystemAdministrator = Boolean(
-    user?.role_name === "System Admin"
+    user?.role_key === "system_administrator"
     && user?.status === "active"
     && activeSystemAdministratorCount === 1
   );
   const protectedRole = isLastActiveSystemAdministrator;
   const protectedStatus = isLastActiveSystemAdministrator;
   const retainsActiveAdministratorSlot = Boolean(
-    mode === "edit" && user?.role_name === "System Admin" && user?.status === "active"
+    mode === "edit" && user?.role_key === "system_administrator" && user?.status === "active"
   );
   const systemAdministratorRoleDisabled = (
     Number.isInteger(maximumActiveSystemAdministrators)
@@ -1580,9 +1580,9 @@ function UserForm({ mode, user, roles, warehouses, shifts, users = [], reference
               <option
                 key={role.id}
                 value={String(role.id)}
-                disabled={role.role_name === "System Admin" && systemAdministratorRoleDisabled}
+                disabled={role.role_key === "system_administrator" && systemAdministratorRoleDisabled}
               >
-                {role.role_name}{role.role_name === "System Admin" && systemAdministratorRoleDisabled ? " — limit reached" : ""}
+                {role.role_name}{role.role_key === "system_administrator" && systemAdministratorRoleDisabled ? " — limit reached" : ""}
               </option>
             ))}
           </SelectField>
@@ -3453,7 +3453,7 @@ function BinRulesPage() {
     rule_code: "", rule_name: "", description: "", category_reference: "",
     rule_type: "validation", evaluator_type: "", execution_targets: [],
     violation_action: "block", severity: "high", priority: 100,
-    is_active: false, parametersText: "{}"
+    is_active: false, parameters: {}
   };
 
   useEffect(() => {
@@ -3475,14 +3475,13 @@ function BinRulesPage() {
   const openRule = (rule = null) => setEditing(rule ? {
     ...rule,
     category_reference: rule.category_reference || "",
-    parametersText: JSON.stringify(rule.parameters || {}, null, 2)
+    parameters: rule.parameters || {}
   } : { ...emptyRule });
 
   const saveRule = async () => {
     setSaving(true);
     try {
-      const payload = { ...editing, priority: Number(editing.priority), parameters: JSON.parse(editing.parametersText || "{}") };
-      delete payload.parametersText;
+      const payload = { ...editing, priority: Number(editing.priority) };
       delete payload.public_reference;
       if (editing.public_reference) await updateBinRule(editing.public_reference, payload);
       else await createBinRule(payload);
@@ -3551,6 +3550,7 @@ function BinRulesPage() {
 
   const selectedEvaluator = catalog.evaluators?.find((item) => item.value === editing?.evaluator_type);
   const setRuleField = (key, value) => setEditing((current) => ({ ...current, [key]: value }));
+  const setRuleParameter = (key, value) => setEditing((current) => ({ ...current, parameters: { ...(current.parameters || {}), [key]: value } }));
   const toggleTarget = (target) => setRuleField("execution_targets", editing.execution_targets.includes(target)
     ? editing.execution_targets.filter((item) => item !== target)
     : [...editing.execution_targets, target]);
@@ -3658,13 +3658,13 @@ function BinRulesPage() {
           <FormField label="Rule code"><input className={inputClass} value={editing.rule_code} onChange={(event) => setRuleField("rule_code", event.target.value.toLowerCase())} /></FormField>
           <FormField label="Category"><SelectField value={editing.category_reference} onChange={(value) => setRuleField("category_reference", value)}><option value="">Uncategorized</option>{categories.rows.map((category) => <option key={category.public_reference} value={category.public_reference}>{category.category_name}</option>)}</SelectField></FormField>
           <FormField label="Trusted evaluator"><SelectField value={editing.evaluator_type} onChange={(value) => { const definition = catalog.evaluators.find((item) => item.value === value); setEditing((current) => ({ ...current, evaluator_type: value, rule_type: definition?.rule_type || "validation", execution_targets: [] })); }}><option value="">Select evaluator</option>{catalog.evaluators.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</SelectField></FormField>
-          <FormField label="Violation action"><SelectField value={editing.violation_action} onChange={(value) => setRuleField("violation_action", value)}>{catalog.violation_actions.map((item) => <option key={item} value={item}>{item.replaceAll("_", " ")}</option>)}</SelectField></FormField>
+          <FormField label="Violation action"><SelectField value={editing.violation_action} onChange={(value) => setRuleField("violation_action", value)}>{(selectedEvaluator?.supported_actions || catalog.violation_actions).map((item) => <option key={item} value={item}>{item.replaceAll("_", " ")}</option>)}</SelectField></FormField>
           <FormField label="Severity"><SelectField value={editing.severity} onChange={(value) => setRuleField("severity", value)}>{catalog.severities.map((item) => <option key={item} value={item}>{item}</option>)}</SelectField></FormField>
           <FormField label="Priority"><input className={inputClass} type="number" min="1" value={editing.priority} onChange={(event) => setRuleField("priority", event.target.value)} /></FormField>
           <FormField label="Status"><label className="flex items-center gap-2 rounded border p-2"><input type="checkbox" checked={editing.is_active} onChange={(event) => setRuleField("is_active", event.target.checked)} /> Active</label></FormField>
           <div className="md:col-span-2"><FormField label="Description"><textarea className={inputClass} value={editing.description || ""} onChange={(event) => setRuleField("description", event.target.value)} /></FormField></div>
           <div className="md:col-span-2"><FormField label="Execution targets"><div className="grid gap-2 sm:grid-cols-2">{(selectedEvaluator?.supported_targets || []).map((target) => <label key={target} className="flex items-center gap-2 rounded border p-2"><input type="checkbox" checked={editing.execution_targets.includes(target)} onChange={() => toggleTarget(target)} />{target.replaceAll("_", " ")}</label>)}</div></FormField></div>
-          <div className="md:col-span-2"><FormField label="Parameters (JSON)"><textarea className={`${inputClass} min-h-32 font-mono`} value={editing.parametersText} onChange={(event) => setRuleField("parametersText", event.target.value)} /><p className="mt-1 text-muted-foreground">Schema: {JSON.stringify(selectedEvaluator?.parameter_schema || {})}</p></FormField></div>
+          <div className="md:col-span-2"><FormField label="Evaluator settings"><div className="grid gap-3 sm:grid-cols-2">{Object.entries(selectedEvaluator?.parameter_schema?.properties || {}).map(([key, schema]) => <div key={key}><label className="mb-1 block capitalize text-muted-foreground">{key.replaceAll("_", " ")}</label>{schema.type === "boolean" ? <label className="flex items-center gap-2 rounded border p-2"><input type="checkbox" checked={editing.parameters?.[key] ?? schema.default ?? false} onChange={(event) => setRuleParameter(key, event.target.checked)} /> Enabled</label> : schema.enum ? <SelectField value={editing.parameters?.[key] || ""} onChange={(value) => setRuleParameter(key, value)}><option value="">Select value</option>{schema.enum.map((value) => <option key={value} value={value}>{value.replaceAll("_", " ")}</option>)}</SelectField> : <input className={inputClass} value={Array.isArray(editing.parameters?.[key]) ? editing.parameters[key].join(", ") : editing.parameters?.[key] || ""} onChange={(event) => setRuleParameter(key, schema.type === "array" ? event.target.value.split(",").map((item) => item.trim()).filter(Boolean) : event.target.value)} />}</div>)}</div>{!selectedEvaluator && <p className="text-muted-foreground">Select a trusted evaluator to configure its supported settings.</p>}</FormField></div>
           <div className="flex justify-end gap-2">
             <ToolbarButton variant="secondary" onClick={() => setEditing(null)}>Cancel</ToolbarButton>
             <ToolbarButton onClick={saveRule} disabled={saving}>{saving ? "Saving..." : "Save Rule"}</ToolbarButton>

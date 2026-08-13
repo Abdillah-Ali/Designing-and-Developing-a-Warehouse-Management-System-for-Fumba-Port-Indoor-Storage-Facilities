@@ -14,6 +14,7 @@ const {
   getTariffs,
   issueInvoiceByNumber,
   recordInvoicePayment,
+  confirmInvoicePayment,
   updateTariff
 } = require("../controllers/financeController");
 const { requirePermission } = require("../middleware/authMiddleware");
@@ -37,6 +38,7 @@ router.post("/invoices/:invoiceNumber/cancel", requirePermission("finance.invoic
 
 router.get("/payments", requirePermission("finance.payments.record"), getPayments);
 router.post("/payments", requirePermission("finance.payments.record"), recordInvoicePayment);
+router.post("/payments/:reference/confirm", requirePermission("finance.payments.confirm"), confirmInvoicePayment);
 
 router.get("/reports", requirePermission("finance.reports.view"), getReports);
 

@@ -3,7 +3,7 @@ const {
   getCapacityConfigurations,
   updateCapacityConfiguration
 } = require("../controllers/capacityConfigurationController");
-const { requireRole } = require("../middleware/authMiddleware");
+const { requirePermission } = require("../middleware/authMiddleware");
 const { auditConfigurationAttempt } = require("../services/warehouseConfigurationService");
 
 const router = express.Router();
@@ -11,7 +11,7 @@ const router = express.Router();
 router.get("/", getCapacityConfigurations);
 router.put(
   "/:entityType/:entityId",
-  requireRole("System Admin"),
+  requirePermission("warehouse.configuration.manage"),
   auditConfigurationAttempt,
   updateCapacityConfiguration
 );

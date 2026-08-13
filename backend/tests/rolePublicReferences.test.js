@@ -44,7 +44,7 @@ test("operational role seeding creates public references and preserves existing 
   assert.equal(roleInserts.length, defaultRoleDefinitions.length);
 
   for (const entry of roleInserts) {
-    assert.match(entry.sql, /INSERT INTO roles \(role_name, role_description, public_reference\)/);
+    assert.match(entry.sql, /INSERT INTO roles \(role_name, role_description, public_reference, role_key\)/);
     assert.match(entry.sql, /generate_role_public_reference\(\)/);
     assert.match(entry.sql, /ON CONFLICT \(role_name\) DO UPDATE/);
     assert.doesNotMatch(entry.sql, /public_reference\s*=\s*EXCLUDED\.public_reference/);

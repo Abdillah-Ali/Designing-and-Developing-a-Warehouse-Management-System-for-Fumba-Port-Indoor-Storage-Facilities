@@ -2,6 +2,7 @@ const db = require("../config/db");
 const { roleNames } = require("../config/systemConfig");
 const { writeAuditLog } = require("../models/adminModel");
 const { buildError } = require("../utils/apiError");
+const { executeTransition } = require("../services/cargoWorkflowEngine");
 const {
   NOTIFICATION_TYPES,
   createNotificationsForAudience,
@@ -39,6 +40,15 @@ const approvalSelect = `
     c.registration_status,
     c.warehouse_id,
     c.placement_status,
+    COALESCE((SELECT json_agg(json_build_object(
+      'transition_key',wt.transition_key,'label',wt.display_label,
+      'notes_requirement',wt.notes_requirement,'confirmation_requirement',wt.confirmation_requirement
+    ) ORDER BY wt.priority,wt.id)
+      FROM workflow_definitions wd
+      JOIN workflow_transitions wt ON wt.workflow_key=wd.workflow_key AND wt.revision=wd.active_revision AND wt.active=TRUE
+      JOIN workflow_states ws ON ws.workflow_key=wt.workflow_key AND ws.state_key=wt.from_state_key
+      WHERE wd.workflow_key='cargo_registration' AND wd.active=TRUE AND ws.storage_value=c.registration_status
+    ),'[]'::json) AS allowed_actions,
     COALESCE(ar.assigned_to, ar.assigned_supervisor_id) AS assigned_to,
     ar.warehouse_id_at_request,
     requester.full_name AS requested_by_name,
@@ -308,6 +318,22 @@ const decideApproval = async (req, res, next, decision, options = {}) => {
     const rejectionReason = rejectionCondition
       ? `${rejectionCondition} ${rejectionDetails}`.trim()
       : null;
+
+    if (isRegistrationApproval) {
+      await executeTransition({
+        workflowKey: "cargo_registration",
+        transitionKey: decision === "Approved" ? "approve_registration" : "reject_registration",
+        cargoId: approval.cargo_record_id,
+        actor: req.auth,
+        input: {
+          notes: decision === "Approved" ? decisionNotes : rejectionReason,
+          confirmed: true,
+          audit_metadata: { approval_request_id: approval.id, emergency }
+        },
+        executor: client,
+        lockedCargo: { ...approval, id: approval.cargo_record_id }
+      });
+    }
 
     await client.query(
       `UPDATE approval_requests
@@ -608,6 +634,16 @@ const requestCorrection = async (req, res, next) => {
       throw buildError(`Approval request has already been ${approval.approval_status.toLowerCase()}.`, 409);
     }
     const originalValues = captureCorrectionValues(approval, correctionFields);
+
+    await executeTransition({
+      workflowKey: "cargo_registration",
+      transitionKey: "request_registration_correction",
+      cargoId: approval.cargo_record_id,
+      actor: req.auth,
+      input: { notes, confirmed: true, audit_metadata: { approval_request_id: approval.approval_id, correction_fields: correctionFields } },
+      executor: client,
+      lockedCargo: approval
+    });
 
     await client.query(
       `UPDATE approval_requests

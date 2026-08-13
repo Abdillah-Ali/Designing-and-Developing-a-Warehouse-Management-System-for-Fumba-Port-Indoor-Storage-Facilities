@@ -10,19 +10,19 @@ const {
   deleteBin,
   recommendBin
 } = require("../controllers/binController");
-const { requireRole } = require("../middleware/authMiddleware");
+const { requirePermission } = require("../middleware/authMiddleware");
 const { auditConfigurationAttempt } = require("../services/warehouseConfigurationService");
 
 const router = express.Router();
 
 router.get("/", getBins);
-router.post("/", requireRole("System Admin"), auditConfigurationAttempt, createBin);
+router.post("/", requirePermission("warehouse.hierarchy.manage"), auditConfigurationAttempt, createBin);
 router.get("/by-level/:levelId", getBinsByLevel);
 router.get("/recommend/:cargoId", recommendBin);
-router.patch("/:id/status", requireRole("System Admin"), auditConfigurationAttempt, updateBinStatus);
+router.patch("/:id/status", requirePermission("warehouse.hierarchy.manage"), auditConfigurationAttempt, updateBinStatus);
 router.post("/:id/print-barcode", printBinBarcode);
 router.get("/:id", getBinById);
-router.put("/:id", requireRole("System Admin"), auditConfigurationAttempt, updateBin);
-router.delete("/:id", requireRole("System Admin"), auditConfigurationAttempt, deleteBin);
+router.put("/:id", requirePermission("warehouse.hierarchy.manage"), auditConfigurationAttempt, updateBin);
+router.delete("/:id", requirePermission("warehouse.hierarchy.manage"), auditConfigurationAttempt, deleteBin);
 
 module.exports = router;

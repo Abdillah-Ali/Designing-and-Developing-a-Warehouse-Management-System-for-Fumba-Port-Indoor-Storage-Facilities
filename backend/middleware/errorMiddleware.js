@@ -13,6 +13,7 @@ const errorHandler = (err, req, res, next) => {
 
   res.status(statusCode).json({
     success: false,
+    code: err.errorCode || undefined,
     message: isNumericOverflow
       ? "Capacity is too large. Enter a value no greater than 999,999,999,999,999."
       : statusCode >= 500 ? "Internal server error" : (err.message || "Request failed"),

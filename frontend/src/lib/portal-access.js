@@ -238,6 +238,12 @@ export const PORTAL_CONFIG = Object.freeze({
 });
 
 const roleAliases = Object.freeze({
+  "system_administrator": PORTAL_ROLES.SYSTEM_ADMIN,
+  "warehouse_staff": PORTAL_ROLES.WAREHOUSE_STAFF,
+  "warehouse_supervisor": PORTAL_ROLES.WAREHOUSE_SUPERVISOR,
+  "finance_officer": PORTAL_ROLES.FINANCE_OFFICER,
+  "customs_officer": PORTAL_ROLES.CUSTOMS_OFFICER,
+  "gate_officer": PORTAL_ROLES.GATE_OFFICER,
   "system-admin": PORTAL_ROLES.SYSTEM_ADMIN,
   "system admin": PORTAL_ROLES.SYSTEM_ADMIN,
   "system administrator": PORTAL_ROLES.SYSTEM_ADMIN,
@@ -411,7 +417,24 @@ export function hasStoredPermission(permissionKey, storage = canUseSessionStorag
 }
 
 export function extractRoleFromToken(token) {
-  return normalizeRole(decodeTokenPayload(token)?.role);
+  const claims = decodeTokenPayload(token);
+  return normalizeRole(claims?.roleKey || claims?.role_key || claims?.role);
+}
+
+const portalEntryPermissions = Object.freeze({
+  [PORTAL_ROLES.SYSTEM_ADMIN]: "system.dashboard.view",
+  [PORTAL_ROLES.WAREHOUSE_STAFF]: "cargo.register",
+  [PORTAL_ROLES.WAREHOUSE_SUPERVISOR]: "supervisor.dashboard.view",
+  [PORTAL_ROLES.FINANCE_OFFICER]: "finance.dashboard.view",
+  [PORTAL_ROLES.CUSTOMS_OFFICER]: "customs.dashboard.view",
+  [PORTAL_ROLES.GATE_OFFICER]: "gate.dashboard.view",
+  [PORTAL_ROLES.MANAGEMENT]: "management.dashboard.view"
+});
+
+export function hasPortalEntryPermission(role, storage = canUseSessionStorage() ? window.sessionStorage : null) {
+  if (role === PORTAL_ROLES.SCANNER) return true;
+  const required = portalEntryPermissions[role];
+  return Boolean(required && hasStoredPermission(required, storage));
 }
 
 export function getDisplayRoleName(role) {

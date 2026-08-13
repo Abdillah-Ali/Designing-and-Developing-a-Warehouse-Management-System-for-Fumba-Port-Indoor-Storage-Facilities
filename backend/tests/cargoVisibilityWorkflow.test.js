@@ -162,6 +162,16 @@ test("resubmission clears active correction markers and records submitted change
   const executor = {
     query: async (sql, values) => {
       calls.push({ sql, values });
+      if (sql.includes("FROM workflow_definitions wd")) return { rowCount: 1, rows: [{
+        workflow_key: "cargo_registration", revision: 1, active_revision: 1,
+        transition_key: "resubmit_registration", from_state_key: values[2] === REGISTRATION_STATUS.APPROVED ? "approved" : "correction_required",
+        to_state_key: "pending_review", to_storage_value: REGISTRATION_STATUS.PENDING_REVIEW,
+        required_permission_key: "cargo.resubmit", notes_requirement: "optional", confirmation_requirement: true,
+        conditions: [{ condition_key: "cargo_not_archived", parameters: {} }], effects: ["update_registration_state"], audit_event_key: "CARGO_WORKFLOW_RESUBMIT"
+      }] };
+      if (sql.includes("FROM role_permissions")) return { rowCount: 1, rows: [{ "?column?": 1 }] };
+      if (sql.includes("INSERT INTO workflow_transition_history")) return { rowCount: 1, rows: [{ id: 1 }] };
+      if (sql.includes("INSERT INTO audit_logs")) return { rowCount: 1, rows: [{ id: 1 }] };
       if (sql.includes("UPDATE cargo")) {
         return {
           rows: [{
@@ -212,6 +222,16 @@ test("an edited approved registration returns to pending supervisor review", asy
   const executor = {
     query: async (sql, values) => {
       calls.push({ sql, values });
+      if (sql.includes("FROM workflow_definitions wd")) return { rowCount: 1, rows: [{
+        workflow_key: "cargo_registration", revision: 1, active_revision: 1,
+        transition_key: "resubmit_registration", from_state_key: "approved", to_state_key: "pending_review",
+        to_storage_value: REGISTRATION_STATUS.PENDING_REVIEW, required_permission_key: "cargo.resubmit",
+        notes_requirement: "optional", confirmation_requirement: true,
+        conditions: [{ condition_key: "cargo_not_archived", parameters: {} }], effects: ["update_registration_state"], audit_event_key: "CARGO_WORKFLOW_REVISE_APPROVED"
+      }] };
+      if (sql.includes("FROM role_permissions")) return { rowCount: 1, rows: [{ "?column?": 1 }] };
+      if (sql.includes("INSERT INTO workflow_transition_history")) return { rowCount: 1, rows: [{ id: 1 }] };
+      if (sql.includes("INSERT INTO audit_logs")) return { rowCount: 1, rows: [{ id: 1 }] };
       if (sql.includes("UPDATE cargo")) {
         return {
           rows: [{

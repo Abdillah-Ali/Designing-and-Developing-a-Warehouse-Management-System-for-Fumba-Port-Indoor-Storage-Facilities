@@ -7,16 +7,16 @@ const {
   updateZoneStatus,
   deleteZone
 } = require("../controllers/zoneController");
-const { requireRole } = require("../middleware/authMiddleware");
+const { requirePermission } = require("../middleware/authMiddleware");
 const { auditConfigurationAttempt } = require("../services/warehouseConfigurationService");
 
 const router = express.Router();
 
 router.get("/", getZones);
-router.post("/", requireRole("System Admin"), auditConfigurationAttempt, createZone);
-router.patch("/:id/status", requireRole("System Admin"), auditConfigurationAttempt, updateZoneStatus);
+router.post("/", requirePermission("warehouse.hierarchy.manage"), auditConfigurationAttempt, createZone);
+router.patch("/:id/status", requirePermission("warehouse.hierarchy.manage"), auditConfigurationAttempt, updateZoneStatus);
 router.get("/:id", getZoneById);
-router.put("/:id", requireRole("System Admin"), auditConfigurationAttempt, updateZone);
-router.delete("/:id", requireRole("System Admin"), auditConfigurationAttempt, deleteZone);
+router.put("/:id", requirePermission("warehouse.hierarchy.manage"), auditConfigurationAttempt, updateZone);
+router.delete("/:id", requirePermission("warehouse.hierarchy.manage"), auditConfigurationAttempt, deleteZone);
 
 module.exports = router;

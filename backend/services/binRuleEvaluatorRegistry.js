@@ -1,21 +1,13 @@
 const EXECUTION_TARGETS = Object.freeze([
-  "cargo_registration",
   "placement_recommendation",
   "placement_confirmation",
-  "relocation",
-  "dispatch",
-  "customs",
-  "finance",
-  "gate_out"
+  "relocation"
 ]);
 
 const VIOLATION_ACTIONS = Object.freeze([
   "warning",
   "block",
-  "supervisor_approval",
-  "customs_approval",
-  "finance_approval",
-  "manual_override"
+  "supervisor_approval"
 ]);
 
 const SEVERITIES = Object.freeze(["info", "low", "medium", "high", "critical"]);
@@ -39,12 +31,18 @@ const cargoAllowed = (cargoType, configuredTypes) => {
 };
 
 const result = (passed, message, details = {}) => ({ passed, message, details });
+const cargoTypeKey = (cargo) => cargo.cargo_type_key || ({
+  "Hazardous Cargo": "hazardous_cargo",
+  "Fragile Goods": "fragile_goods",
+  "General Goods": "general_goods"
+}[cargo.cargo_type] || null);
 
 const evaluatorDefinitions = Object.freeze({
   capacity_limits: {
     label: "Capacity limits",
     description: "Checks cargo weight and volume against the destination bin's remaining capacity.",
     supported_targets: placementTargets,
+    supported_actions: Object.freeze(["warning", "block"]),
     parameter_schema: {
       type: "object",
       properties: {
@@ -68,6 +66,7 @@ const evaluatorDefinitions = Object.freeze({
     label: "Cargo/storage compatibility",
     description: "Checks cargo type against zone and bin cargo classifications.",
     supported_targets: placementTargets,
+    supported_actions: Object.freeze(["warning", "block"]),
     parameter_schema: { type: "object", properties: {}, additionalProperties: false },
     evaluate: ({ cargo, bin }) => {
       const zoneAllowed = cargoAllowed(cargo.cargo_type, bin.zone_allowed_cargo_type);
@@ -81,9 +80,10 @@ const evaluatorDefinitions = Object.freeze({
     label: "Hazard-zone compatibility",
     description: "Separates hazardous and non-hazardous cargo using warehouse hazard-zone configuration.",
     supported_targets: placementTargets,
-    parameter_schema: { type: "object", properties: { hazardous_cargo_type: { type: "string", minLength: 1 } }, required: ["hazardous_cargo_type"], additionalProperties: false },
+    supported_actions: Object.freeze(["warning", "block"]),
+    parameter_schema: { type: "object", properties: { hazardous_cargo_type_key: { type: "string", minLength: 1 } }, required: ["hazardous_cargo_type_key"], additionalProperties: false },
     evaluate: ({ cargo, bin }, parameters) => {
-      const hazardous = cargo.cargo_type === parameters.hazardous_cargo_type;
+      const hazardous = cargoTypeKey(cargo) === parameters.hazardous_cargo_type_key;
       const passed = hazardous ? Boolean(bin.is_hazard_zone) : !bin.is_hazard_zone;
       return result(passed, passed ? "Hazard-zone compatibility passed." : "Cargo hazard classification is incompatible with the destination zone.");
     }
@@ -92,6 +92,7 @@ const evaluatorDefinitions = Object.freeze({
     label: "Storage status",
     description: "Rejects inactive or operationally unavailable storage locations.",
     supported_targets: placementTargets,
+    supported_actions: Object.freeze(["warning", "block"]),
     parameter_schema: { type: "object", properties: { allowed_statuses: { type: "array", items: { type: "string" }, minItems: 1 } }, required: ["allowed_statuses"], additionalProperties: false },
     evaluate: ({ bin }, parameters) => {
       const hierarchyActive = Boolean(bin.active && bin.level_active && bin.rack_active && bin.zone_active && bin.warehouse_status !== "inactive");
@@ -103,6 +104,7 @@ const evaluatorDefinitions = Object.freeze({
     label: "Reserved storage",
     description: "Controls placement into bins reserved for a cargo classification.",
     supported_targets: placementTargets,
+    supported_actions: Object.freeze(["warning", "block"]),
     parameter_schema: { type: "object", properties: {}, additionalProperties: false },
     evaluate: ({ cargo, bin }) => result(
       bin.status !== "Reserved" && (!bin.reserved_for_cargo_type || cargoAllowed(cargo.cargo_type, bin.reserved_for_cargo_type)),
@@ -113,6 +115,7 @@ const evaluatorDefinitions = Object.freeze({
     label: "Restricted-zone approval",
     description: "Requires an approved placement override for restricted zones.",
     supported_targets: placementTargets,
+    supported_actions: Object.freeze(["warning", "block", "supervisor_approval"]),
     parameter_schema: { type: "object", properties: { restricted_zone_type: { type: "string", minLength: 1 } }, required: ["restricted_zone_type"], additionalProperties: false },
     evaluate: ({ bin, approvals }, parameters) => result(
       String(bin.zone_type || "").toLowerCase() !== parameters.restricted_zone_type.toLowerCase() || Boolean(approvals.supervisor_override),
@@ -123,6 +126,7 @@ const evaluatorDefinitions = Object.freeze({
     label: "Customs-hold storage",
     description: "Requires customs-held cargo to use explicitly compatible storage.",
     supported_targets: placementTargets,
+    supported_actions: Object.freeze(["warning", "block"]),
     parameter_schema: { type: "object", properties: { hold_marker: { type: "string", minLength: 1 }, storage_marker: { type: "string", minLength: 1 } }, required: ["hold_marker", "storage_marker"], additionalProperties: false },
     evaluate: ({ cargo, bin }, parameters) => result(
       !String(cargo.customs_status || "").toLowerCase().includes(parameters.hold_marker.toLowerCase())
@@ -134,9 +138,10 @@ const evaluatorDefinitions = Object.freeze({
     label: "Fragile handling",
     description: "Requires configured handling conditions for a selected cargo classification.",
     supported_targets: placementTargets,
-    parameter_schema: { type: "object", properties: { cargo_type: { type: "string", minLength: 1 }, handling_marker: { type: "string", minLength: 1 } }, required: ["cargo_type", "handling_marker"], additionalProperties: false },
+    supported_actions: Object.freeze(["warning", "block"]),
+    parameter_schema: { type: "object", properties: { cargo_type_key: { type: "string", minLength: 1 }, handling_marker: { type: "string", minLength: 1 } }, required: ["cargo_type_key", "handling_marker"], additionalProperties: false },
     evaluate: ({ cargo, bin }, parameters) => result(
-      cargo.cargo_type !== parameters.cargo_type || String(bin.handling_condition || "").toLowerCase().includes(parameters.handling_marker.toLowerCase()),
+      cargoTypeKey(cargo) !== parameters.cargo_type_key || String(bin.handling_condition || "").toLowerCase().includes(parameters.handling_marker.toLowerCase()),
       "Cargo requires a destination configured with the required handling condition."
     )
   },
@@ -144,6 +149,7 @@ const evaluatorDefinitions = Object.freeze({
     label: "Candidate ordering",
     description: "Orders eligible bin candidates using a trusted storage attribute.",
     supported_targets: Object.freeze(["placement_recommendation"]),
+    supported_actions: Object.freeze(["warning"]),
     rule_type: "ordering",
     parameter_schema: { type: "object", properties: { field: { type: "string", enum: ["created_at", "available_weight", "available_volume", "status"] }, direction: { type: "string", enum: ["asc", "desc"] } }, required: ["field", "direction"], additionalProperties: false },
     evaluate: () => result(true, "Candidate ordering rule loaded.")
@@ -203,6 +209,7 @@ const listEvaluatorDefinitions = () => Object.entries(evaluatorDefinitions).map(
   description: definition.description,
   rule_type: definition.rule_type || "validation",
   supported_targets: definition.supported_targets,
+  supported_actions: definition.supported_actions,
   parameter_schema: definition.parameter_schema
 }));
 

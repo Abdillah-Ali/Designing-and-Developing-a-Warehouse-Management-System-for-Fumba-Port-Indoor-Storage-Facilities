@@ -57,6 +57,8 @@ const getAdminRoles = async (req, res, next) => {
     sendRows(res, await db.query(
       `SELECT
          r.public_reference,
+         r.role_key,
+         r.system_protected,
          r.role_name,
          r.role_description,
          r.created_at,
@@ -91,7 +93,7 @@ const updateAdminRolePermissions = async (req, res, next) => {
 
     await client.query("BEGIN");
     const roleResult = await client.query(
-      "SELECT id, public_reference, role_name FROM roles WHERE public_reference = $1 FOR UPDATE",
+      "SELECT id, public_reference, role_name, role_key, system_protected FROM roles WHERE public_reference = $1 FOR UPDATE",
       [req.params.publicReference]
     );
     if (roleResult.rowCount === 0) throw buildError("Role not found.", 404);
@@ -114,6 +116,16 @@ const updateAdminRolePermissions = async (req, res, next) => {
     const existingKeys = existingResult.rows.map((row) => row.permission_key);
     const protectedExisting = existingKeys.filter((key) => permissionMap.get(key)?.system_protected);
     const finalKeys = Array.from(new Set([...requestedKeys, ...protectedExisting]));
+
+    if (role.role_key === "scanner" && finalKeys.length > 0) {
+      throw buildError("Scanner identity permissions cannot be changed through portal RBAC.", 409, undefined, "RBAC_SCANNER_BOUNDARY_PROTECTED");
+    }
+    if (role.role_key === "management" && finalKeys.some((key) => !key.endsWith(".view") && key !== "notifications.manage")) {
+      throw buildError("Management must remain read-only.", 409, undefined, "RBAC_MANAGEMENT_READ_ONLY");
+    }
+    if (role.role_key === "system_administrator" && !finalKeys.includes("system.permissions.manage")) {
+      throw buildError("The protected administrator role must retain permission-management access.", 409, undefined, "RBAC_ADMIN_LOCKOUT_PREVENTED");
+    }
 
     if (Number(role.id) === Number(req.auth.roleId)) {
       const keepsCriticalAccess = finalKeys.includes("*") || finalKeys.includes("system.permissions.manage");

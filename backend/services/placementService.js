@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const { executeTransition } = require("./cargoWorkflowEngine");
 const { writeAuditLog } = require("../models/adminModel");
 const { buildError } = require("../utils/apiError");
 const { validatePlacement: runPlacementValidation } = require("./validationService");
@@ -455,24 +456,17 @@ const confirmPlacementOperation = async (payload, auth = {}) => {
       currentStatus: cargo.placement_status,
       isRelocation
     });
-    const updatedCargoResult = await client.query(
-      `UPDATE cargo
-       SET placement_status = $1,
-           location = $2,
-           current_bin_id = $3,
-           relocation_required = FALSE,
-           relocation_reason = NULL,
-           relocation_flagged_at = NULL,
-           updated_at = CURRENT_TIMESTAMP
-      WHERE id = $4
-       RETURNING *`,
-      [
-        nextPlacementStatus,
-        newLocation,
-        targetBin.id,
-        cargo.id
-      ]
-    );
+    const placementTransition = await executeTransition({
+      workflowKey: "cargo_placement",
+      transitionKey: isRelocation ? "relocate_cargo" : "confirm_placement",
+      cargoId: cargo.id,
+      actor: auth,
+      input: { location: newLocation, bin_id: targetBin.id, confirmed: true,
+        audit_metadata: { phase4_validation: "passed", previous_bin_id: previousBin?.id || null, next_placement_status: nextPlacementStatus } },
+      executor: client,
+      lockedCargo: cargo
+    });
+    const updatedCargoResult = { rows: [placementTransition.cargo] };
 
     const movementResult = alreadyPlacedInThisBin
       ? { rows: [] }

@@ -461,6 +461,10 @@ const validatePlacement = async (payload = {}, executor = db) => {
     );
   }
 
+  // Physical maxima are trusted storage invariants and cannot be disabled by rule configuration.
+  if (cargoWeight > remainingWeight) addIssue("weightCapacity", "Weight Capacity Exceeded", "Destination bin physical weight capacity is insufficient.");
+  if (cargoVolume > remainingVolume) addIssue("volumeCapacity", "Volume Capacity Exceeded", "Destination bin physical volume capacity is insufficient.");
+
   const engineTarget = operationType === "relocation" ? "relocation" : "placement_confirmation";
   const ruleEvaluation = await evaluateRules({
     target: engineTarget,

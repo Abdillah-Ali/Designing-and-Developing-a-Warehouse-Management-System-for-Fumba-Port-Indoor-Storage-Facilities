@@ -24,6 +24,16 @@ const { roleNames } = require("../config/systemConfig");
 const { loadRolePermissions } = require("../services/permissionService");
 const { getMaximumActiveSystemAdministrators } = require("../services/systemConfigurationService");
 const {
+  clearRefreshCookie,
+  createRefreshCredential,
+  getAuthLifetimes,
+  issueAccessToken,
+  readRefreshCookie,
+  revokeSession,
+  rotateRefreshCredential,
+  setRefreshCookie
+} = require("../services/authSessionService");
+const {
   TRANSFER_BLOCKED_MESSAGE,
   getPendingWarehouseTaskSummary,
   isWarehouseStaffRole,
@@ -220,7 +230,7 @@ const validateUserRecord = async (client, payload, existing = null) => {
   }
 
   const roleResult = await client.query(
-    "SELECT id, role_name FROM roles WHERE id = $1",
+    "SELECT id, role_name, role_key FROM roles WHERE id = $1",
     [candidate.role_id]
   );
   if (roleResult.rowCount === 0) {
@@ -255,15 +265,15 @@ const validateUserRecord = async (client, payload, existing = null) => {
     }
   }
 
-  if (role.role_name === roleNames.warehouseStaff && (!candidate.warehouse_id || !candidate.shift_id)) {
+  if (role.role_key === "warehouse_staff" && (!candidate.warehouse_id || !candidate.shift_id)) {
     throw buildError("Warehouse Staff must be assigned to both a warehouse and a shift.", 400);
   }
 
-  if (role.role_name === roleNames.warehouseSupervisor && !candidate.warehouse_id) {
+  if (role.role_key === "warehouse_supervisor" && !candidate.warehouse_id) {
     throw buildError("Warehouse Supervisor must be assigned to a warehouse.", 400);
   }
 
-  if (role.role_name === roleNames.scanner) {
+  if (role.role_key === "scanner") {
     throw buildError("Use Create Scanner to add scanner credentials to an existing user.", 400);
   }
 
@@ -326,10 +336,10 @@ const countActiveSystemAdministrators = async (client, excludeUserId = null) => 
     `SELECT COUNT(*)::int AS count
      FROM users u
      JOIN roles r ON r.id = u.role_id
-     WHERE r.role_name = $1
+     WHERE r.role_key = $1
        AND u.status = 'active'
        AND ($2::integer IS NULL OR u.id <> $2)`,
-    [roleNames.systemAdmin, excludeUserId]
+    ["system_administrator", excludeUserId]
   );
   return Number(result.rows[0]?.count || 0);
 };
@@ -337,11 +347,11 @@ const countActiveSystemAdministrators = async (client, excludeUserId = null) => 
 const enforceSystemAdministratorCapacity = async (client, existing, candidate) => {
   const wasActiveAdministrator = Boolean(
     existing
-    && existing.role_name === roleNames.systemAdmin
+    && existing.role_key === "system_administrator"
     && existing.status === "active"
   );
   const becomesActiveAdministrator = (
-    candidate.role_name === roleNames.systemAdmin
+    candidate.role_key === "system_administrator"
     && candidate.status === "active"
   );
 
@@ -374,7 +384,7 @@ const getSystemAdministratorCapacity = async (_req, res, next) => {
 };
 
 const protectAdministrativeAccount = async (client, req, existing, candidate, operation) => {
-  const roleDemotion = candidate?.role_name && candidate.role_name !== roleNames.systemAdmin;
+  const roleDemotion = candidate?.role_key && candidate.role_key !== "system_administrator";
   const disabling = candidate?.status && candidate.status !== "active";
   const deactivation = operation === "deactivate";
   const selfPasswordReset = operation === "password-reset";
@@ -391,7 +401,7 @@ const protectAdministrativeAccount = async (client, req, existing, candidate, op
   }
 
   const removesActiveSystemAdmin = (
-    existing.role_name === roleNames.systemAdmin
+    existing.role_key === "system_administrator"
     && existing.status === "active"
     && (roleDemotion || disabling || deactivation)
   );
@@ -401,7 +411,7 @@ const protectAdministrativeAccount = async (client, req, existing, candidate, op
       `SELECT COUNT(*)::int AS count
        FROM users u
        JOIN roles r ON r.id = u.role_id
-       WHERE r.role_name = 'System Admin'
+       WHERE r.role_key = 'system_administrator'
          AND u.status = 'active'
          AND u.id <> $1`,
       [existing.id]
@@ -548,13 +558,17 @@ const buildAuthToken = (
   const scannerAccountId = Number(identity.scannerAccountId) || null;
   const isScannerIdentity = Boolean(scannerAccountId);
   const roleName = isScannerIdentity ? roleNames.scanner : user.role_name;
+  const roleKey = isScannerIdentity ? "scanner" : user.role_key;
   const roleId = isScannerIdentity ? identity.scannerRoleId : user.role_id;
 
   return createToken({
+  typ: "access",
   userId: user.id,
   user_id: user.id,
   username: user.username,
   role: roleName,
+  roleKey,
+  role_key: roleKey,
   roleId,
   role_id: roleId,
   warehouseId: user.warehouse_id || null,
@@ -774,12 +788,13 @@ const createUser = async (req, res, next) => {
     await client.query("BEGIN");
     await client.query("SELECT pg_advisory_xact_lock($1)", [SYSTEM_ADMIN_GOVERNANCE_LOCK_KEY]);
     const { role } = await validateUserRecord(client, payload);
-    if (role.role_name === roleNames.systemAdmin) {
+    if (role.role_key === "system_administrator") {
       payload.warehouse_id = null;
       payload.shift_id = null;
     }
     await enforceSystemAdministratorCapacity(client, null, {
       role_name: role.role_name,
+      role_key: role.role_key,
       status: payload.status
     });
 
@@ -848,6 +863,7 @@ const createScanner = async (req, res, next) => {
          u.is_bootstrap_admin,
          u.role_id,
          r.role_name,
+         r.role_key,
          CASE
            WHEN r.role_name IN ('Warehouse Staff', 'Supervisor') THEN 'Warehouse'
            WHEN r.role_name = 'System Admin' THEN 'Management'
@@ -866,11 +882,11 @@ const createScanner = async (req, res, next) => {
     );
     const user = userResult.rows[0];
 
-    if (!user || user.status !== "active" || user.is_bootstrap_admin || user.role_name === roleNames.scanner) {
+    if (!user || user.status !== "active" || user.is_bootstrap_admin || user.role_key === "scanner") {
       throw buildError("Select an active normal user account.", 400);
     }
 
-    if (user.role_name === roleNames.systemAdmin) {
+    if (user.role_key === "system_administrator") {
       throw buildError("Scanner accounts are not applicable to System Administrators.", 400);
     }
 
@@ -961,7 +977,8 @@ const updateUser = async (req, res, next) => {
     const existing = existingResult.rows[0];
     const { candidate, role } = await validateUserRecord(client, payload, existing);
     candidate.role_name = role.role_name;
-    if (role.role_name === roleNames.systemAdmin) {
+    candidate.role_key = role.role_key;
+    if (role.role_key === "system_administrator") {
       payload.warehouse_id = null;
       payload.shift_id = null;
       candidate.warehouse_id = null;
@@ -1193,13 +1210,14 @@ const updateUserStatus = async (req, res, next) => {
     const existing = existingResult.rows[0];
     await enforceSystemAdministratorCapacity(client, existing, {
       role_name: existing.role_name,
+      role_key: existing.role_key,
       status
     });
     await protectAdministrativeAccount(
       client,
       req,
       existing,
-      { status, role_name: existing.role_name },
+      { status, role_name: existing.role_name, role_key: existing.role_key },
       status === "inactive" ? "deactivate" : "status"
     );
 
@@ -1417,10 +1435,12 @@ const login = async (req, res, next) => {
         u.bootstrap_completed,
         u.role_id,
         r.role_name,
+        r.role_key,
         scanner_account.id AS scanner_account_id,
         scanner_account.password_hash AS scanner_password_hash,
         scanner_account.status AS scanner_account_status,
         scanner_role.id AS scanner_role_id,
+        scanner_role.role_key AS scanner_role_key,
         u.warehouse_id,
         w.warehouse_name,
         u.shift_id,
@@ -1428,11 +1448,11 @@ const login = async (req, res, next) => {
       FROM users u
       JOIN roles r ON r.id = u.role_id
       LEFT JOIN scanner_accounts scanner_account ON scanner_account.user_id = u.id
-      LEFT JOIN roles scanner_role ON scanner_role.role_name = $2
+      LEFT JOIN roles scanner_role ON scanner_role.role_key = 'scanner'
       LEFT JOIN warehouses w ON w.id = u.warehouse_id
       LEFT JOIN shifts s ON s.id = u.shift_id
       WHERE LOWER(u.username) = LOWER($1)`,
-      [username, roleNames.scanner]
+      [username]
     );
 
     if (result.rowCount === 0) {
@@ -1457,11 +1477,11 @@ const login = async (req, res, next) => {
 
     const isScannerLogin = Boolean(scannerPasswordMatch);
 
-    if (!isScannerLogin && user.role_name === roleNames.scanner) {
+    if (!isScannerLogin && user.role_key === "scanner") {
       throw buildError("Legacy scanner users cannot sign in. Create scanner credentials for a normal user.", 403);
     }
 
-    if (!isScannerLogin && !allowedPortalRoleNames.includes(user.role_name)) {
+    if (!isScannerLogin && !["system_administrator","warehouse_staff","warehouse_supervisor","finance_officer","customs_officer","gate_officer","management"].includes(user.role_key)) {
       throw buildError("No portal is currently available for this role.", 403);
     }
 
@@ -1475,16 +1495,25 @@ const login = async (req, res, next) => {
     await client.query("BEGIN");
     transactionStarted = true;
 
+    const lifetimes = await getAuthLifetimes(client);
+    const sessionExpiresAt = new Date(Date.now() + lifetimes.sessionMs);
     const sessionResult = await createUserSession(
       {
         user_id: user.id,
         identity_type: isScannerLogin ? "scanner" : "user",
         scanner_account_id: isScannerLogin ? user.scanner_account_id : null,
-        ip_address: getClientIp(req)
+        ip_address: getClientIp(req),
+        expires_at: sessionExpiresAt
       },
       client
     );
     const session = sessionResult.rows[0];
+    const refreshCredential = await createRefreshCredential({
+      sessionId: session.id,
+      expiresAt: new Date(Math.min(Date.now() + lifetimes.refreshMs, sessionExpiresAt.getTime())),
+      ipAddress: getClientIp(req),
+      userAgent: req.get?.("user-agent")
+    }, client);
 
     if (isScannerLogin) {
       await updateScannerLastLogin(user.scanner_account_id, client);
@@ -1525,7 +1554,7 @@ const login = async (req, res, next) => {
     await client.query("COMMIT");
     transactionStarted = false;
 
-    const token = buildAuthToken(
+    const compatibilityToken = buildAuthToken(
       user,
       session.id,
       isScannerLogin ? false : user.must_change_password,
@@ -1536,10 +1565,12 @@ const login = async (req, res, next) => {
         }
         : {}
     );
+    const token = issueAccessToken(verifyToken(compatibilityToken), session.id, lifetimes.accessMs);
     const loginRoleName = isScannerLogin ? roleNames.scanner : user.role_name;
     const loginRoleId = isScannerLogin ? user.scanner_role_id : user.role_id;
     const permissions = await loadRolePermissions(loginRoleId, client);
 
+    setRefreshCookie(res, refreshCredential.token, lifetimes.refreshMs);
     res.json({
       success: true,
       message: "Login successful.",
@@ -1548,6 +1579,7 @@ const login = async (req, res, next) => {
       bootstrap_completed: isScannerLogin ? false : user.bootstrap_completed,
       data: {
         token,
+        access_token: token,
         permissions,
         must_change_password: isScannerLogin ? false : user.must_change_password,
         is_bootstrap_admin: isScannerLogin ? false : user.is_bootstrap_admin,
@@ -1607,13 +1639,7 @@ const logout = async (req, res, next) => {
     transactionStarted = true;
 
     if (userId && sessionId) {
-      await closeUserSession(
-        {
-          user_id: userId,
-          session_id: sessionId
-        },
-        client
-      );
+      await revokeSession(sessionId, "logout", client, userId);
 
       await writeAuditLog(
         {
@@ -1629,6 +1655,7 @@ const logout = async (req, res, next) => {
     await client.query("COMMIT");
     transactionStarted = false;
 
+    clearRefreshCookie(res);
     res.json({
       success: true,
       message: "Logout successful."
@@ -1910,52 +1937,25 @@ const changePassword = async (req, res, next) => {
   }
 };
 
-// Refresh token endpoint
 const refreshToken = async (req, res, next) => {
   try {
-    const { refreshToken } = req.body;
-    if (!refreshToken) {
-      throw buildError("Refresh token is required.", 400);
-    }
-    const decoded = verifyToken(refreshToken);
-    if (!decoded) {
-      throw buildError("Invalid or expired refresh token.", 401);
-    }
-    // Issue new access token (short-lived)
-    const newAccessToken = createToken({
-      userId: decoded.userId,
-      user_id: decoded.user_id || decoded.userId,
-      username: decoded.username,
-      role: decoded.role,
-      roleId: decoded.roleId || decoded.role_id,
-      role_id: decoded.role_id || decoded.roleId,
-      warehouseId: decoded.warehouseId || decoded.warehouse_id || null,
-      warehouse_id: decoded.warehouse_id || decoded.warehouseId || null,
-      shiftId: decoded.shiftId || decoded.shift_id || null,
-      shift_id: decoded.shift_id || decoded.shiftId || null,
-      scannerStaffId: decoded.scannerStaffId || decoded.scanner_staff_id || null,
-      scanner_staff_id: decoded.scanner_staff_id || decoded.scannerStaffId || null,
-      scannerAccountId: decoded.scannerAccountId || decoded.scanner_account_id || null,
-      scanner_account_id: decoded.scanner_account_id || decoded.scannerAccountId || null,
-      identityType: decoded.identityType || decoded.identity_type || "user",
-      identity_type: decoded.identity_type || decoded.identityType || "user",
-      sessionId: decoded.sessionId,
-      session_id: decoded.session_id || decoded.sessionId,
-      mustChangePassword: Boolean(decoded.mustChangePassword ?? decoded.must_change_password),
-      must_change_password: Boolean(decoded.must_change_password ?? decoded.mustChangePassword),
-      isSystemUser: Boolean(decoded.isSystemUser ?? decoded.is_system_user),
-      is_system_user: Boolean(decoded.is_system_user ?? decoded.isSystemUser),
-      isBootstrapAdmin: Boolean(decoded.isBootstrapAdmin ?? decoded.is_bootstrap_admin),
-      is_bootstrap_admin: Boolean(decoded.is_bootstrap_admin ?? decoded.isBootstrapAdmin),
-      bootstrapCompleted: Boolean(decoded.bootstrapCompleted ?? decoded.bootstrap_completed),
-      bootstrap_completed: Boolean(decoded.bootstrap_completed ?? decoded.bootstrapCompleted)
-    }, process.env.JWT_EXPIRES_IN || "24h");
+    const submitted = readRefreshCookie(req) || req.body?.refresh_token || req.body?.refreshToken;
+    const rotated = await rotateRefreshCredential({
+      token: submitted,
+      ipAddress: getClientIp(req),
+      userAgent: req.get?.("user-agent")
+    });
+    const lifetimes = await getAuthLifetimes();
+    setRefreshCookie(res, rotated.refreshToken, lifetimes.refreshMs);
     res.json({
       success: true,
-      token: newAccessToken,
+      token: rotated.accessToken,
+      accessToken: rotated.accessToken,
+      access_token: rotated.accessToken,
       message: "Access token refreshed."
     });
   } catch (error) {
+    clearRefreshCookie(res);
     next(error);
   }
 };

@@ -42,11 +42,11 @@ const readSetupComplete = async (executor = db) => {
          SELECT 1
          FROM users u
          JOIN roles r ON r.id = u.role_id
-         WHERE r.role_name = $1
+         WHERE r.role_key = 'system_administrator'
        ) AS setup_complete
      FROM installation_state state
      WHERE state.singleton = TRUE`,
-    [roleNames.systemAdmin]
+    []
   );
   return Boolean(result.rows[0]?.setup_complete);
 };
@@ -85,16 +85,16 @@ const createFirstAdmin = async (req, res, next) => {
     if (await readSetupComplete(client)) {
       throw buildError("Initial setup is permanently disabled because the System Administrator has already been created.", 409);
     }
-    const role = await client.query("SELECT id FROM roles WHERE role_name = $1 LIMIT 1", [roleNames.systemAdmin]);
+    const role = await client.query("SELECT id FROM roles WHERE role_key = 'system_administrator' LIMIT 1");
     if (!role.rowCount) throw buildError("The structural System Administrator role is unavailable.", 503);
     const maximumAdministrators = await getMaximumActiveSystemAdministrators(client);
     const activeAdministrators = await client.query(
       `SELECT COUNT(*)::int AS count
        FROM users u
        JOIN roles r ON r.id = u.role_id
-       WHERE r.role_name = $1
+       WHERE r.role_key = 'system_administrator'
          AND u.status = 'active'`,
-      [roleNames.systemAdmin]
+      []
     );
     if (Number(activeAdministrators.rows[0]?.count || 0) >= maximumAdministrators) {
       throw buildError(

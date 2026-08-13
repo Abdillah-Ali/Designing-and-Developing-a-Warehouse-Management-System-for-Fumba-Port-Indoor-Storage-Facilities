@@ -789,6 +789,34 @@ const runUpdates = async () => {
       "utf8"
     );
     await applySqlMigration(client, "017_lock_builtin_bin_rule_evaluators.sql", lockBuiltinBinRuleEvaluatorsMigration);
+
+    const policyConfigurationFoundationMigration = fs.readFileSync(
+      path.join(__dirname, "migrations", "20260812_policy_configuration_foundation.sql"),
+      "utf8"
+    );
+    await applySqlMigration(client, "018_policy_configuration_foundation.sql", policyConfigurationFoundationMigration);
+
+    const authRefreshTokenSessionsMigration = fs.readFileSync(
+      path.join(__dirname, "migrations", "20260812_auth_refresh_token_sessions.sql"),
+      "utf8"
+    );
+    await applySqlMigration(client, "019_auth_refresh_token_sessions.sql", authRefreshTokenSessionsMigration);
+
+    const cargoRegistrationAuthorityMigration = fs.readFileSync(
+      path.join(__dirname, "migrations", "20260812_cargo_registration_configuration_authority.sql"),
+      "utf8"
+    );
+    await applySqlMigration(client, "020_cargo_registration_configuration_authority.sql", cargoRegistrationAuthorityMigration);
+    const rbacAuthorizationMigration = fs.readFileSync(path.join(__dirname, "migrations", "20260812_rbac_authorization_source_of_truth.sql"), "utf8");
+    await applySqlMigration(client, "021_rbac_authorization_source_of_truth.sql", rbacAuthorizationMigration);
+    const rbacAdministratorHardeningMigration = fs.readFileSync(path.join(__dirname, "migrations", "20260812_rbac_administrator_explicit_permissions.sql"), "utf8");
+    await applySqlMigration(client, "022_rbac_administrator_explicit_permissions.sql", rbacAdministratorHardeningMigration);
+    const binRuleEngineAuthorityMigration = fs.readFileSync(path.join(__dirname, "migrations", "20260812_bin_rule_engine_authority.sql"), "utf8");
+    await applySqlMigration(client, "023_bin_rule_engine_authority.sql", binRuleEngineAuthorityMigration);
+    const cargoWorkflowPolicyMigration = fs.readFileSync(path.join(__dirname, "migrations", "20260812_cargo_workflow_policy.sql"), "utf8");
+    await applySqlMigration(client, "024_cargo_workflow_policy.sql", cargoWorkflowPolicyMigration);
+    const financePolicyAuthorityMigration = fs.readFileSync(path.join(__dirname, "migrations", "20260812_finance_policy_authority.sql"), "utf8");
+    await applySqlMigration(client, "025_finance_policy_authority.sql", financePolicyAuthorityMigration);
   } catch (error) {
     if (transactionOpen) await client.query("ROLLBACK").catch(() => {});
     if (legacyStarted) {

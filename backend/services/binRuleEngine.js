@@ -15,15 +15,13 @@ const loadActiveRules = async (target, executor = db) => {
   const result = await executor.query(
     `SELECT br.public_reference, br.rule_key AS rule_code, br.rule_name, br.description,
             br.rule_type, br.evaluator_type, br.execution_targets, br.violation_action,
-            br.severity, br.priority, br.parameters,
+            br.severity, br.priority, br.parameters, br.required_evaluator_type,
             category.public_reference AS category_reference,
             category.category_code, category.category_name
      FROM bin_rules br
      LEFT JOIN bin_rule_categories category ON category.id = br.category_id
      WHERE br.is_active = TRUE
-       AND br.evaluator_type IS NOT NULL
        AND $1 = ANY(br.execution_targets)
-       AND (category.id IS NULL OR category.is_active = TRUE)
      ORDER BY br.priority ASC, br.created_at ASC, br.public_reference ASC`,
     [target]
   );
@@ -37,7 +35,10 @@ const getWorkflowReadiness = async (target, executor = db, preloadedRules = null
   for (const rule of rules) {
     const definition = evaluatorDefinitions[rule.evaluator_type];
     const errors = validateParameters(rule.evaluator_type, rule.parameters || {});
-    if (!definition || !definition.supported_targets.includes(target) || errors.length) {
+    if (!definition || rule.required_evaluator_type && rule.evaluator_type !== rule.required_evaluator_type
+      || !definition?.supported_targets.includes(target)
+      || !definition?.supported_actions.includes(rule.violation_action)
+      || errors.length) {
       invalid_rules.push({ rule_reference: rule.public_reference, evaluator_type: rule.evaluator_type, errors });
     } else {
       available.add(rule.evaluator_type);
@@ -87,6 +88,7 @@ const evaluateRules = async ({ target, context, executor = db, rules: suppliedRu
       rule_code: rule.rule_code,
       rule_name: rule.rule_name,
       evaluator_type: rule.evaluator_type,
+      evaluator_key: rule.evaluator_type,
       priority: rule.priority,
       severity: rule.severity,
       violation_action: rule.violation_action,
@@ -102,6 +104,7 @@ const evaluateRules = async ({ target, context, executor = db, rules: suppliedRu
     readiness,
     results,
     reason: blocking[0]?.rule_name || "Placement Approved",
+    reason_code: blocking[0] ? "BIN_RULE_BLOCKED" : "BIN_RULES_APPROVED",
     detail: blocking.length ? blocking.map((item) => item.message).join(" ") : "All configured placement rules passed."
   };
 };

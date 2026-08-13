@@ -17,6 +17,26 @@ const LOGIN_ERROR_MESSAGES = Object.freeze({
   INVALID_CREDENTIALS: "Invalid username or password.",
   UNEXPECTED: "An unexpected error occurred. Please try again."
 });
+let refreshPromise = null;
+
+const refreshAccessToken = async () => {
+  if (!refreshPromise) {
+    refreshPromise = fetch(`${API_BASE_URL}/auth/refresh`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    }).then(async (response) => {
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload.success === false || !payload.token) {
+        throw buildApiError("Your session has expired. Please sign in again.", { status: response.status, code: payload.code });
+      }
+      setStoredAuthToken(payload.token);
+      return payload.token;
+    }).finally(() => { refreshPromise = null; });
+  }
+  return refreshPromise;
+};
 
 const buildApiError = (message, details = {}) => {
   const error = new Error(message);
@@ -50,7 +70,7 @@ const getLoginErrorMessage = (response, payload = {}) => {
   return payload.message || LOGIN_ERROR_MESSAGES.UNEXPECTED;
 };
 
-const request = async (path, options = {}) => {
+const request = async (path, options = {}, retried = false) => {
   const headers = new Headers(options.headers || {});
   let body = options.body;
 
@@ -70,6 +90,7 @@ const request = async (path, options = {}) => {
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       ...options,
+      credentials: "include",
       headers,
       body
     });
@@ -80,9 +101,16 @@ const request = async (path, options = {}) => {
   const payload = await response.json().catch(() => ({}));
 
   if (!response.ok || payload.success === false) {
-    if (response.status === 401) {
-      clearStoredAuthToken();
+    if (response.status === 401 && !retried && path !== "/auth/refresh" && getStoredAuthToken()) {
+      try {
+        await refreshAccessToken();
+        return request(path, options, true);
+      } catch {
+        clearStoredAuthToken();
+        throw buildApiError("Your session has expired. Please sign in again.", { status: 401, code: "AUTH_SESSION_EXPIRED" });
+      }
     }
+    if (response.status === 401) clearStoredAuthToken();
 
     throw buildApiError(payload.message || "Request could not be completed.", {
       errors: payload.errors,
@@ -122,6 +150,7 @@ export const login = async (username, password) => {
   try {
     response = await fetch(`${API_BASE_URL}/auth/login`, {
       method: "POST",
+      credentials: "include",
       headers: {
         "Content-Type": "application/json"
       },
@@ -504,10 +533,7 @@ export const changePassword = async (payload) => {
 };
 
 // Refresh token endpoint
-export const refreshToken = (payload) => request("/auth/refresh", {
-  method: "POST",
-  body: payload
-});
+export const refreshToken = () => refreshAccessToken();
 
 // Zone CRUD
 export const createZone = (payload) => request("/zones", {
@@ -660,6 +686,7 @@ export const recordFinancePayment = (payload) => request("/finance/payments", {
   method: "POST",
   body: payload
 });
+export const confirmFinancePayment = (reference) => request(`/finance/payments/${encodeURIComponent(reference)}/confirm`, { method: "POST" });
 export const getFinanceTariffs = (params = {}) => request(`/finance/tariffs${buildQuerySuffix(params)}`);
 export const createFinanceTariff = (payload) => request("/finance/tariffs", {
   method: "POST",

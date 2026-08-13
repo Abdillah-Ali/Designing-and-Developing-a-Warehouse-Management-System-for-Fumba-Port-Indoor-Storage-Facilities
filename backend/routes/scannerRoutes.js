@@ -5,7 +5,7 @@ const {
   refreshScanSession,
   startPlacementScanSession
 } = require("../controllers/scannerController");
-const { requireAuthenticated, requireRole } = require("../middleware/authMiddleware");
+const { requireAuthenticated, requirePermission } = require("../middleware/authMiddleware");
 
 const router = express.Router();
 
@@ -15,12 +15,12 @@ router.get("/sessions/active", getActiveScanSession);
 router.post("/sessions/refresh", refreshScanSession);
 router.post(
   "/sessions/placement",
-  requireRole("Warehouse Staff"),
+  requirePermission("placement.validate"),
   startPlacementScanSession
 );
 router.post(
   "/sessions/:id/cancel",
-  requireRole("Warehouse Staff"),
+  requirePermission("placement.validate"),
   cancelScanSession
 );
 

@@ -1,6 +1,5 @@
 const db = require("../config/db");
 
-const CACHE_TTL_MS = Number(process.env.PERMISSION_CACHE_TTL_MS || 60_000);
 const cache = new Map();
 
 const clearPermissionCache = (roleId = null) => {
@@ -15,11 +14,6 @@ const loadRolePermissions = async (roleId, executor = db) => {
   const numericRoleId = Number(roleId);
   if (!Number.isInteger(numericRoleId) || numericRoleId <= 0) return [];
 
-  const cached = cache.get(numericRoleId);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.permissions;
-  }
-
   const result = await executor.query(
     `SELECT rp.permission_key
      FROM role_permissions rp
@@ -28,10 +22,7 @@ const loadRolePermissions = async (roleId, executor = db) => {
     [numericRoleId]
   );
   const permissions = result.rows.map((row) => row.permission_key);
-  cache.set(numericRoleId, {
-    permissions,
-    expiresAt: Date.now() + CACHE_TTL_MS
-  });
+  cache.set(numericRoleId, { permissions });
   return permissions;
 };
 
@@ -53,6 +44,8 @@ const getRolePermissions = async (roleReference, executor = db) => {
     `SELECT
        r.id,
        r.public_reference,
+       r.role_key,
+       r.system_protected,
        r.role_name,
        r.role_description,
        COALESCE(

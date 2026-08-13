@@ -8,6 +8,7 @@ import {
   PORTAL_ROLES,
   getPortalDefaultPath,
   getStoredAuthRole,
+  hasPortalEntryPermission,
   isStoredBootstrapAdmin,
   isPathAllowedForRole,
   mustChangeStoredPassword,
@@ -52,6 +53,10 @@ function PortalAccessGate({ role, children }) {
 
   if (mustChangePassword) {
     return <Navigate to="/change-password" replace />;
+  }
+
+  if (!hasPortalEntryPermission(role)) {
+    return <Navigate to="/" replace state={{ authorizationError: "Your current permissions do not allow access to this portal." }} />;
   }
 
   if (redirectedByRole) {

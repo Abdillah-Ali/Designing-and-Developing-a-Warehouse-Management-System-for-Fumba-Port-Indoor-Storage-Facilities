@@ -1,6 +1,7 @@
 const db = require("../config/db");
 const {
   cancelInvoice,
+  confirmPayment,
   createOrRegenerateDraftInvoice,
   createTariffVersion,
   getFinanceDashboard,
@@ -208,6 +209,13 @@ const recordInvoicePayment = async (req, res, next) => {
   }
 };
 
+const confirmInvoicePayment = async (req,res,next) => {
+  try {
+    const data=await withTransaction((client)=>confirmPayment({paymentReference:req.params.reference,auth:req.auth,executor:client}));
+    res.json({success:true,data});
+  } catch(error) { next(error); }
+};
+
 const getReports = async (req, res, next) => {
   try {
     const dashboard = await getFinanceDashboard({ filters: req.query });
@@ -239,5 +247,6 @@ module.exports = {
   getTariffs,
   issueInvoiceByNumber,
   recordInvoicePayment,
+  confirmInvoicePayment,
   updateTariff
 };

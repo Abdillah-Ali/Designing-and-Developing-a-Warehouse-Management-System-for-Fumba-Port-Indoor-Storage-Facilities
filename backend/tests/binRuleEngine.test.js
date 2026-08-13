@@ -6,7 +6,7 @@ const { evaluateRules, getWorkflowReadiness } = require("../services/binRuleEngi
 const { validateParameters } = require("../services/binRuleEvaluatorRegistry");
 
 const context = {
-  cargo: { cargo_type: "General Goods", weight: 10, volume: 1, customs_status: "Clear" },
+  cargo: { cargo_type: "General Goods", cargo_type_key: "general_goods", weight: 10, volume: 1, customs_status: "Clear" },
   bin: {
     status: "Available", active: true, level_active: true, rack_active: true, zone_active: true,
     warehouse_status: "active", is_hazard_zone: false, zone_allowed_cargo_type: "General Goods",
@@ -20,12 +20,12 @@ const context = {
 const rules = () => [
   ["capacity_limits", { enforce_weight: true, enforce_volume: true }],
   ["cargo_storage_compatibility", {}],
-  ["hazard_zone_compatibility", { hazardous_cargo_type: "Hazardous Cargo" }],
+  ["hazard_zone_compatibility", { hazardous_cargo_type_key: "hazardous_cargo" }],
   ["storage_status", { allowed_statuses: ["Available", "Occupied"] }],
   ["reserved_storage", {}],
   ["restricted_zone_approval", { restricted_zone_type: "Restricted" }],
   ["customs_hold_storage", { hold_marker: "hold", storage_marker: "customs hold" }],
-  ["fragile_handling", { cargo_type: "Fragile Goods", handling_marker: "fragile" }]
+  ["fragile_handling", { cargo_type_key: "fragile_goods", handling_marker: "fragile" }]
 ].map(([evaluator_type, parameters], index) => ({
   public_reference: `BR-${index}`,
   rule_code: `administrator_code_${index}`,
@@ -110,6 +110,21 @@ test("unknown evaluators and invalid parameters fail readiness safely", async ()
   assert.ok(validateParameters("not_registered", {}).length > 0);
   assert.ok(validateParameters("storage_status", {}).length > 0);
   const invalid = [...rules(), { ...rules()[0], public_reference: "BR-UNKNOWN", evaluator_type: "not_registered" }];
+  const readiness = await getWorkflowReadiness("placement_confirmation", null, invalid);
+  assert.equal(readiness.ready, false);
+  assert.equal(readiness.invalid_rules.length, 1);
+});
+
+test("unsupported workflow actions fail readiness instead of creating fictitious approvals", async () => {
+  const invalid = rules();
+  invalid[0] = { ...invalid[0], violation_action: "customs_approval" };
+  const readiness = await getWorkflowReadiness("placement_confirmation", null, invalid);
+  assert.equal(readiness.ready, false);
+  assert.equal(readiness.invalid_rules.length, 1);
+});
+
+test("a missing evaluator on an active targeted rule is reported as invalid", async () => {
+  const invalid = [...rules(), { ...rules()[0], public_reference: "BR-NULL", evaluator_type: null }];
   const readiness = await getWorkflowReadiness("placement_confirmation", null, invalid);
   assert.equal(readiness.ready, false);
   assert.equal(readiness.invalid_rules.length, 1);

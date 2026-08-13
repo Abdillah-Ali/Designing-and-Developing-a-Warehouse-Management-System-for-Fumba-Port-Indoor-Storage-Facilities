@@ -13,6 +13,8 @@ const fields = [
     field_key: "consignee_name",
     core_field: true,
     field_type: "text",
+    field_classification: "system_required",
+    catalog_key: null,
     system_protected: true,
     required_locked: true,
     editable_locked: false,
@@ -33,6 +35,8 @@ const fields = [
     field_key: "company_name",
     core_field: true,
     field_type: "text",
+    field_classification: "configurable_required",
+    catalog_key: null,
     system_protected: false,
     required_locked: false,
     editable_locked: false,
@@ -60,6 +64,8 @@ const executor = {
         rows: published ? fields.filter((field) => field.active && field.visible) : fields
       };
     }
+    if (sql.includes("FROM cargo_registration_conditions")) return { rowCount: 0, rows: [] };
+    if (sql.includes("FROM cargo_option_catalogs")) return { rowCount: 0, rows: [] };
     throw new Error(`Unexpected query: ${sql}`);
   }
 };
@@ -76,9 +82,17 @@ test("configured defaults and configurable required fields are backend enforced"
   assert.equal(payload.company_name, "Fumba");
 
   fields[1].required = true;
-  const errors = await validateConfiguredCargoPayload({ consignee_name: "Port User" }, executor);
-  assert.deepEqual(errors, ["Company Name is required."]);
+  const errors = await validateConfiguredCargoPayload({ consignee_name: "Port User" }, executor, { skipConfigurationReadiness: true });
+  assert.deepEqual(errors, [{ code: "CARGO_FIELD_REQUIRED", message: "Company Name is required.", field_key: "company_name", impact: "blocked" }]);
   fields[1].required = false;
+});
+
+test("Phase 2 authority migration defines catalogs, stable conditions and classifications", () => {
+  const migration = fs.readFileSync(path.join(__dirname, "..", "database", "migrations", "20260812_cargo_registration_configuration_authority.sql"), "utf8");
+  assert.match(migration, /field_classification/);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS cargo_option_catalogs/);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS cargo_registration_conditions/);
+  assert.match(migration, /hazardous_cargo/);
 });
 
 test("form builder migration provides predefined fields and separate custom values", () => {

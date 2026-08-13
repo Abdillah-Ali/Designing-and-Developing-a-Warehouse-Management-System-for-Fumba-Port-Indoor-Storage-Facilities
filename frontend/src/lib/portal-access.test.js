@@ -9,6 +9,7 @@ import {
   getDisplayRoleName,
   getStoredAuthRole,
   getStoredAuthUserId,
+  hasPortalEntryPermission,
   getStoredPortalRole,
   isStoredBootstrapAdmin,
   isStoredBootstrapCompleted,
@@ -127,6 +128,16 @@ describe("portal access", () => {
     });
 
     expect(extractRoleFromToken(token)).toBe(PORTAL_ROLES.WAREHOUSE_SUPERVISOR);
+  });
+
+  it("uses immutable role keys and current permissions for portal UX", () => {
+    const storage = createMemoryStorage();
+    const token = createUnsignedBrowserToken({ role: "Renamed Operations Label", role_key: "warehouse_staff", exp: Math.floor(Date.now() / 1000) + 60 });
+    setStoredAuthToken(token, storage);
+    expect(getStoredAuthRole(storage)).toBe(PORTAL_ROLES.WAREHOUSE_STAFF);
+    expect(hasPortalEntryPermission(PORTAL_ROLES.WAREHOUSE_STAFF, storage)).toBe(false);
+    storage.setItem("fumba-wms-auth-permissions", JSON.stringify(["cargo.register"]));
+    expect(hasPortalEntryPermission(PORTAL_ROLES.WAREHOUSE_STAFF, storage)).toBe(true);
   });
 
   it("maps finance, customs, and gate database roles to dedicated portals", () => {

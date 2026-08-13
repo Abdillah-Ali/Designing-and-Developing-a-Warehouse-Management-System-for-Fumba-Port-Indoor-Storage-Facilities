@@ -11,7 +11,7 @@ const {
 const getPublished = async (_req, res, next) => {
   try {
     const result = await getPublishedConfiguration();
-    res.json({ success: true, count: result.rowCount, data: result.rows });
+    res.json({ success: true, count: result.rowCount, data: { fields: result.rows, catalogs: result.catalogs, conditions: result.conditions } });
   } catch (error) {
     next(error);
   }

@@ -2,6 +2,7 @@ const db = require("../config/db");
 const { roleNames } = require("../config/systemConfig");
 const { loadRolePermissions } = require("../services/permissionService");
 const { verifyToken } = require("../utils/token");
+const { getRoutePermission } = require("../config/authorizationRegistry");
 
 const PORTAL_ROLES = Object.freeze({
   SYSTEM_ADMIN: "system-admin",
@@ -15,6 +16,12 @@ const PORTAL_ROLES = Object.freeze({
 });
 
 const roleAliases = Object.freeze({
+  "system_administrator": PORTAL_ROLES.SYSTEM_ADMIN,
+  "warehouse_staff": PORTAL_ROLES.WAREHOUSE_STAFF,
+  "warehouse_supervisor": PORTAL_ROLES.WAREHOUSE_SUPERVISOR,
+  "finance_officer": PORTAL_ROLES.FINANCE_OFFICER,
+  "customs_officer": PORTAL_ROLES.CUSTOMS_OFFICER,
+  "gate_officer": PORTAL_ROLES.GATE_OFFICER,
   "system-admin": PORTAL_ROLES.SYSTEM_ADMIN,
   "system admin": PORTAL_ROLES.SYSTEM_ADMIN,
   "system administrator": PORTAL_ROLES.SYSTEM_ADMIN,
@@ -245,6 +252,7 @@ const portalPermissions = Object.freeze({
     { methods: ["POST"], pattern: /^\/finance\/invoices\/draft$/ },
     { methods: ["POST"], pattern: /^\/finance\/invoices\/[^/]+\/(?:issue|cancel)$/ },
     { methods: ["GET", "POST"], pattern: /^\/finance\/payments$/ },
+    { methods: ["POST"], pattern: /^\/finance\/payments\/[^/]+\/confirm$/ },
     { methods: ["GET", "POST"], pattern: /^\/finance\/tariffs$/ },
     { methods: ["PUT"], pattern: /^\/finance\/tariffs\/[^/]+$/ },
     { methods: ["POST"], pattern: /^\/finance\/tariffs\/[^/]+\/(?:activate|deactivate)$/ },
@@ -289,6 +297,11 @@ const canAccessRoute = (role, method, path) => {
   if (method === "GET" && path === "/cargo-registration-form") return Boolean(role);
   if (
     role === PORTAL_ROLES.SYSTEM_ADMIN
+    && method === "POST"
+    && path === "/admin/configuration/validate"
+  ) return true;
+  if (
+    role === PORTAL_ROLES.SYSTEM_ADMIN
     && /^\/cargo-registration-form(?:\/(?:available|validate|reset))?$/.test(path)
     && ["GET", "POST", "PUT"].includes(method)
   ) return true;
@@ -325,7 +338,13 @@ const readAuthContext = (req) => {
     };
   }
 
-  const role = normalizeRole(decoded.role);
+  // Tokens issued before Phase 1 remain access-only until their original expiry.
+  // Every newly issued token carries typ=access.
+  if (decoded.typ && decoded.typ !== "access") {
+    return { error: "This credential cannot authorize API requests.", code: "AUTH_TOKEN_TYPE_INVALID" };
+  }
+
+  const role = normalizeRole(decoded.roleKey || decoded.role_key || decoded.role);
   const userId = Number(decoded.userId || decoded.user_id || decoded.sub);
   const sessionIdValue = decoded.sessionId || decoded.session_id;
   const sessionId = sessionIdValue ? Number(sessionIdValue) : null;
@@ -379,22 +398,25 @@ const getActiveAccountContext = async ({ sessionId, userId, role, scannerAccount
          FALSE AS bootstrap_completed,
          u.id AS scanner_staff_id,
          scanner_account.id AS scanner_account_id,
-         scanner_role.role_name
+         scanner_role.role_name,
+         scanner_role.role_key
        FROM user_sessions us
        JOIN users u ON u.id = us.user_id
        JOIN scanner_accounts scanner_account
          ON scanner_account.id = us.scanner_account_id
         AND scanner_account.user_id = u.id
-       JOIN roles scanner_role ON scanner_role.role_name = $4
+       JOIN roles scanner_role ON scanner_role.role_key = 'scanner'
        WHERE us.id = $1
          AND us.user_id = $2
          AND scanner_account.id = $3
          AND us.identity_type = 'scanner'
-         AND us.session_status = 'active'
+          AND us.session_status = 'active'
+          AND (us.expires_at IS NULL OR us.expires_at > CURRENT_TIMESTAMP)
+          AND us.revoked_at IS NULL
          AND scanner_account.status = 'active'
          AND u.status = 'active'
        LIMIT 1`,
-      [sessionId, userId, scannerAccountId, roleNames.scanner]
+      [sessionId, userId, scannerAccountId]
     );
 
     return scannerResult.rows[0] || null;
@@ -412,7 +434,8 @@ const getActiveAccountContext = async ({ sessionId, userId, role, scannerAccount
       u.bootstrap_completed,
       NULL::integer AS scanner_staff_id,
       NULL::integer AS scanner_account_id,
-      r.role_name
+      r.role_name,
+      r.role_key
     FROM user_sessions us
     JOIN users u ON u.id = us.user_id
     JOIN roles r ON r.id = u.role_id
@@ -420,6 +443,8 @@ const getActiveAccountContext = async ({ sessionId, userId, role, scannerAccount
       AND us.user_id = $2
       AND us.identity_type = 'user'
       AND us.session_status = 'active'
+      AND (us.expires_at IS NULL OR us.expires_at > CURRENT_TIMESTAMP)
+      AND us.revoked_at IS NULL
       AND u.status = 'active'
     LIMIT 1`,
     [sessionId, userId]
@@ -443,6 +468,7 @@ const requireAuthenticated = async (req, res, next) => {
     if (!context?.auth || !account) {
       res.status(401).json({
         success: false,
+        code: context?.code,
         message: context?.error || "A valid signed-in session is required for this API request."
       });
       return;
@@ -452,7 +478,7 @@ const requireAuthenticated = async (req, res, next) => {
 
     req.auth = {
       ...context.auth,
-      role: normalizeRole(account.role_name),
+      role: normalizeRole(account.role_key),
       permissions: permissionKeys,
       roleId: account.role_id,
       warehouseId: account.warehouse_id,
@@ -484,12 +510,13 @@ const requirePortalAccess = async (req, res, next) => {
     if (!context?.auth || !account) {
       res.status(401).json({
         success: false,
+        code: context?.code,
         message: context?.error || "A valid signed-in session is required for this API request."
       });
       return;
     }
 
-    const role = normalizeRole(account.role_name);
+    const role = normalizeRole(account.role_key);
     const permissionKeys = await loadRolePermissions(account.role_id);
     const path = req.path.replace(/\/+$/, "") || "/";
 
@@ -511,7 +538,8 @@ const requirePortalAccess = async (req, res, next) => {
       return;
     }
 
-    if (!canAccessRoute(role, req.method, path)) {
+    const requiredPermission = getRoutePermission(req.method, path);
+    if (!requiredPermission || !hasPermission({ permissions: permissionKeys }, requiredPermission)) {
       if (isWarehouseConfigurationMutation(req.method, path)) {
         await db.query(
           `INSERT INTO audit_logs
@@ -529,7 +557,10 @@ const requirePortalAccess = async (req, res, next) => {
       }
       res.status(403).json({
         success: false,
-        message: "This portal role is not allowed to access that module."
+        code: requiredPermission ? "AUTH_PERMISSION_REQUIRED" : "AUTH_ROUTE_PERMISSION_UNREGISTERED",
+        message: requiredPermission
+          ? "This action requires a permission that your account does not have."
+          : "This protected route has no registered authorization policy."
       });
       return;
     }

@@ -11,6 +11,7 @@ const userSelect = `
     u.phone_number,
     u.role_id,
     r.role_name,
+    r.role_key,
     r.role_description,
     CASE
       WHEN r.role_name IN ('Warehouse Staff', 'Supervisor') THEN 'Warehouse'
@@ -47,8 +48,8 @@ const userSelect = `
 `;
 
 const listUsers = async (filters = {}) => {
-  const values = [roleNames.scanner];
-  const clauses = ["r.role_name <> $1"];
+  const values = ["scanner"];
+  const clauses = ["r.role_key <> $1"];
 
   if (filters.search) {
     values.push(`%${filters.search}%`);
@@ -193,16 +194,28 @@ const invalidateUserSessions = async (userId, executor = db, exceptSessionId = n
     exclusion = `AND id <> $${values.length}`;
   }
 
-  return executor.query(
+  const result = await executor.query(
     `UPDATE user_sessions
      SET logout_time = CURRENT_TIMESTAMP,
-         session_status = 'closed'
+         session_status = 'closed',
+         revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP),
+         revocation_reason = COALESCE(revocation_reason, 'user security state changed')
      WHERE user_id = $1
        AND session_status = 'active'
        ${exclusion}
      RETURNING id`,
     values
   );
+  if (result.rowCount) {
+    await executor.query(
+      `UPDATE session_refresh_tokens
+       SET revoked_at=COALESCE(revoked_at,CURRENT_TIMESTAMP),
+           revocation_reason=COALESCE(revocation_reason,'user security state changed')
+       WHERE session_id = ANY($1::int[]) AND revoked_at IS NULL`,
+      [result.rows.map((row) => row.id)]
+    );
+  }
+  return result;
 };
 
 const listRoles = async () => {
@@ -210,6 +223,8 @@ const listRoles = async () => {
     `SELECT
       r.id,
       r.public_reference,
+      r.role_key,
+      r.system_protected,
       r.role_name,
       r.role_description,
       r.created_at,
@@ -409,14 +424,15 @@ const createUserSession = async ({
   user_id,
   ip_address,
   identity_type = "user",
-  scanner_account_id = null
+  scanner_account_id = null,
+  expires_at = null
 }, executor = db) => {
   return executor.query(
     `INSERT INTO user_sessions
-      (user_id, identity_type, scanner_account_id, ip_address, session_status)
-    VALUES ($1, $2, $3, $4, 'active')
-    RETURNING id, login_time, session_status`,
-    [user_id, identity_type, scanner_account_id, ip_address || null]
+      (user_id, identity_type, scanner_account_id, ip_address, session_status, public_reference, expires_at, last_activity_at)
+    VALUES ($1, $2, $3, $4, 'active', 'SES-' || UPPER(ENCODE(GEN_RANDOM_BYTES(12), 'hex')), $5, CURRENT_TIMESTAMP)
+    RETURNING id, public_reference, login_time, session_status, expires_at`,
+    [user_id, identity_type, scanner_account_id, ip_address || null, expires_at]
   );
 };
 
@@ -424,7 +440,9 @@ const closeUserSession = async ({ session_id, user_id }, executor = db) => {
   return executor.query(
     `UPDATE user_sessions
     SET logout_time = CURRENT_TIMESTAMP,
-        session_status = 'closed'
+        session_status = 'closed',
+        revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP),
+        revocation_reason = COALESCE(revocation_reason, 'logout')
     WHERE id = $1
       AND user_id = $2
       AND session_status = 'active'

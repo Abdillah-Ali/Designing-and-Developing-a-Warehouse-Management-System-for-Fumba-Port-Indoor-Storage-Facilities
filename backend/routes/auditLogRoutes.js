@@ -1,9 +1,9 @@
 const express = require("express");
 const { getAuditLogs } = require("../controllers/adminController");
-const { requireRole } = require("../middleware/authMiddleware");
+const { requirePermission } = require("../middleware/authMiddleware");
 
 const router = express.Router();
 
-router.get("/", requireRole("System Admin"), getAuditLogs);
+router.get("/", requirePermission("system.audit.view"), getAuditLogs);
 
 module.exports = router;

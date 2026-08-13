@@ -39,17 +39,6 @@ import { BarcodeLabel, printBarcodeLabel } from "./BarcodeLabel";
 import { CollapsibleCard } from "./CollapsibleCard";
 import { EnterpriseModal } from "./EnterpriseModal";
 
-const cargoTypes = [
-  "General Goods",
-  "Electronics",
-  "Machinery",
-  "Food Products",
-  "Construction Materials",
-  "Fragile Goods",
-  "Hazardous Cargo",
-  "Mixed Cargo"
-];
-
 const allowedFileTypes = new Set([
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -367,12 +356,14 @@ function checkPassed(validation, keys, fallback = false) {
 }
 
 function cargoFieldConditionMatches(rule, values) {
-  if (!rule?.field) return true;
-  const actual = values[rule.field];
-  if (rule.operator === "equals") return actual === rule.value;
-  if (rule.operator === "not_equals") return actual !== rule.value;
-  if (rule.operator === "in") return Array.isArray(rule.value) && rule.value.includes(actual);
-  return true;
+  const controllingField = rule?.controlling_field_key || rule?.field;
+  if (!controllingField) return true;
+  const actual = values[controllingField];
+  const expected = rule.expected_values || (Array.isArray(rule.value) ? rule.value : [rule.value]);
+  if (rule.operator === "equals") return actual === expected[0];
+  if (rule.operator === "not_equals") return actual !== expected[0];
+  if (rule.operator === "in") return expected.includes(actual);
+  return false;
 }
 
 function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) {
@@ -477,7 +468,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     refreshZones();
     getCargoRegistrationForm()
       .then((response) => {
-        const configuredFields = response.data || [];
+        const configuredFields = response.data?.fields || response.data || [];
         setRegistrationFields(configuredFields);
         setFormData((current) => {
           const next = { ...current };
@@ -955,11 +946,11 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     setSaveNotice(false);
     setFormData((current) => {
       const next = { ...current, [field]: value };
-      if (field === "cargo_type") {
-        const hazardField = registrationFields.find((configured) => configured.field_key === "hazard_class");
-        next.hazard_class = value === "Hazardous Cargo"
-          ? hazardField?.default_value || hazardField?.option_values?.[0] || ""
-          : "";
+      for (const configured of registrationFields) {
+        if (!configured.conditional_rules?.length) continue;
+        if (!configured.conditional_rules.some((rule) => cargoFieldConditionMatches(rule, next))) {
+          next[configured.field_key] = "";
+        }
       }
       return next;
     });
@@ -1045,32 +1036,19 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
   const validateCargoForm = () => {
     const errors = [];
     const positiveNumber = (value) => Number(value) > 0;
-    if (!String(formData.consignee_name || "").trim()) errors.push("Consignee name is required.");
     if (!/^\+?[0-9][0-9\s()-]{6,18}[0-9]$/.test(String(formData.phone_number || "").trim())) {
       errors.push("Enter a valid phone number using digits and an optional leading +.");
     }
     if (!positiveNumber(formData.quantity)) errors.push("Quantity must be greater than zero.");
     if (!positiveNumber(formData.weight)) errors.push("Weight must be greater than zero.");
     if (!positiveNumber(formData.volume)) errors.push("Volume must be greater than zero.");
-    if (formData.source_of_cargo === "Container" && !String(formData.container_number || "").trim()) {
-      errors.push("Container number is required for container cargo.");
-    }
-    if (["Truck", "Manual Delivery"].includes(formData.source_of_cargo) && !String(formData.vehicle_number || "").trim()) {
-      errors.push("Vehicle number is required for truck or manual delivery cargo.");
-    }
-    if (formData.cargo_type === "Hazardous Cargo" && !String(formData.hazard_class || "").trim()) {
-      errors.push("Hazard class is required for hazardous cargo.");
-    }
-    if (formData.cargo_condition !== "Good" && !String(formData.inspection_notes || "").trim()) {
-      errors.push("Inspection notes are required when cargo condition is not Good.");
-    }
     for (const field of registrationFields) {
-      if (["system", "file"].includes(field.field_type)) continue;
-      const conditionalRequired = Boolean(
-        field.conditional_rule?.required
-        && cargoFieldConditionMatches(field.conditional_rule, formData)
-      );
-      if (!field.required && !conditionalRequired) continue;
+      if (field.field_classification === "system_managed" || field.field_type === "file") continue;
+      const conditionalRequired = field.conditional_rules?.some((rule) => cargoFieldConditionMatches(rule, formData));
+      const required = field.field_classification === "system_required"
+        || (field.field_classification === "configurable_required" && field.required)
+        || conditionalRequired;
+      if (!required) continue;
       const value = formData[field.field_key];
       if (value === undefined || value === null || String(value).trim() === "") {
         const message = `${field.label} is required.`;
@@ -1096,10 +1074,10 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     }
 
     try {
-      const response = await createCargo({
-        ...formData,
-        received_datetime: formData.received_datetime || new Date().toISOString()
-      });
+      const submission = Object.fromEntries(registrationFields
+        .filter((field) => field.core_field && field.field_classification !== "system_managed" && field.field_type !== "file")
+        .map((field) => [field.field_key, formData[field.field_key]]));
+      const response = await createCargo(submission);
       const cargo = response.data;
 
       for (const file of files) {
@@ -1230,7 +1208,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     const sections = [];
     const byKey = new Map();
     for (const field of registrationFields) {
-      if (!cargoFieldConditionMatches(field.conditional_rule, formData)) continue;
+      if (field.conditional_rules?.length && !field.conditional_rules.some((rule) => cargoFieldConditionMatches(rule, formData))) continue;
       const sectionKey = field.section_key || "cargo";
       if (!byKey.has(sectionKey)) {
         const section = { key: sectionKey, fields: [] };
@@ -1251,8 +1229,8 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
   };
 
   const renderConfiguredField = (field) => {
-    const conditionalRequired = Boolean(field.conditional_rule?.required);
-    const required = Boolean(field.required || conditionalRequired);
+    const conditionalRequired = field.conditional_rules?.some((rule) => cargoFieldConditionMatches(rule, formData));
+    const required = Boolean(field.field_classification === "system_required" || (field.field_classification === "configurable_required" && field.required) || conditionalRequired);
     const readOnly = !field.editable;
     const label = `${field.label}${required ? " *" : ""}`;
     const commonHelp = field.help_text ? (
@@ -1331,7 +1309,8 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
       return (
         <Field key={field.field_key} label={label}>
           <Select value={formData[field.field_key] ?? ""} disabled={readOnly} onChange={(value) => handleCargoFieldChange(field.field_key, value)} required={required}>
-            {(field.option_values || []).map((option) => <option key={option} value={option}>{option}</option>)}
+            <option value="">Select {field.label}</option>
+            {(field.options || []).map((option) => <option key={option.option_key} value={option.storage_value}>{option.display_label}</option>)}
           </Select>
           {commonHelp}
         </Field>
@@ -1775,7 +1754,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
                 <Field label="Cargo Type">
                   <Select value={trackingFilters.cargoType} onChange={(value) => handleTrackingFilterChange("cargoType", value)}>
                     <option>All</option>
-                    {cargoTypes.map((option) => (
+                    {(registrationFields.find((field) => field.field_key === "cargo_type")?.options || []).map((entry) => entry.storage_value).map((option) => (
                       <option key={option}>{option}</option>
                     ))}
                   </Select>

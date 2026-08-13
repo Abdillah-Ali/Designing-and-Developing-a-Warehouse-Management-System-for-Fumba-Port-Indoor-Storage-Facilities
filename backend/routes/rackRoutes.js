@@ -8,17 +8,17 @@ const {
   updateRackStatus,
   deleteRack
 } = require("../controllers/rackController");
-const { requireRole } = require("../middleware/authMiddleware");
+const { requirePermission } = require("../middleware/authMiddleware");
 const { auditConfigurationAttempt } = require("../services/warehouseConfigurationService");
 
 const router = express.Router();
 
 router.get("/", getRacks);
-router.post("/", requireRole("System Admin"), auditConfigurationAttempt, createRack);
+router.post("/", requirePermission("warehouse.hierarchy.manage"), auditConfigurationAttempt, createRack);
 router.get("/by-zone/:zoneId", getRacksByZone);
-router.patch("/:id/status", requireRole("System Admin"), auditConfigurationAttempt, updateRackStatus);
+router.patch("/:id/status", requirePermission("warehouse.hierarchy.manage"), auditConfigurationAttempt, updateRackStatus);
 router.get("/:id", getRackById);
-router.put("/:id", requireRole("System Admin"), auditConfigurationAttempt, updateRack);
-router.delete("/:id", requireRole("System Admin"), auditConfigurationAttempt, deleteRack);
+router.put("/:id", requirePermission("warehouse.hierarchy.manage"), auditConfigurationAttempt, updateRack);
+router.delete("/:id", requirePermission("warehouse.hierarchy.manage"), auditConfigurationAttempt, deleteRack);
 
 module.exports = router;

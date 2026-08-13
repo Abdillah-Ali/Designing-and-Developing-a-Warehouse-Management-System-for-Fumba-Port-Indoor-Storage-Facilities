@@ -556,7 +556,10 @@ const deleteBin = async (req, res, next) => {
 const recommendBin = async (req, res, next) => {
   try {
     const cargoResult = await db.query(
-      `SELECT * FROM cargo WHERE (cargo_id=$1 OR barcode=$1) AND is_deleted=FALSE LIMIT 1`,
+      `SELECT c.*,
+              (SELECT cov.option_key FROM cargo_option_values cov
+               WHERE cov.catalog_key='cargo_type' AND cov.storage_value=c.cargo_type LIMIT 1) AS cargo_type_key
+       FROM cargo c WHERE (c.cargo_id=$1 OR c.barcode=$1) AND c.is_deleted=FALSE LIMIT 1`,
       [req.params.cargoId]
     );
     if (!cargoResult.rowCount) throw buildError("Cargo record not found.", 404);
@@ -575,11 +578,14 @@ const recommendBin = async (req, res, next) => {
     const rules = await loadActiveRules("placement_recommendation");
     const eligible = [];
     for (const bin of candidates.rows) {
+      const remainingWeight = Number(bin.max_weight || 0) - Number(bin.current_weight || 0);
+      const remainingVolume = Number(bin.max_volume || 0) - Number(bin.current_volume || 0);
+      if (Number(cargo.weight || 0) > remainingWeight || Number(cargo.volume || 0) > remainingVolume) continue;
       const evaluation = await evaluateRules({
         target: "placement_recommendation", rules,
         context: { cargo, bin, approvals: { supervisor_override: null }, derived: {
-          remaining_weight: Number(bin.max_weight || 0) - Number(bin.current_weight || 0),
-          remaining_volume: Number(bin.max_volume || 0) - Number(bin.current_volume || 0),
+          remaining_weight: remainingWeight,
+          remaining_volume: remainingVolume,
           already_placed_in_bin: Number(cargo.current_bin_id) === Number(bin.id)
         } }
       });

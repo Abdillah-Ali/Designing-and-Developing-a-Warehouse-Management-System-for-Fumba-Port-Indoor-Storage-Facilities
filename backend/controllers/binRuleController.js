@@ -79,6 +79,7 @@ const validateCompleteRule = (rule) => {
     throw buildError("One or more execution targets are not supported by the selected evaluator.", 400);
   }
   if ((definition.rule_type || "validation") !== rule.rule_type) throw buildError(`This evaluator requires rule type ${definition.rule_type || "validation"}.`, 400);
+  if (!definition.supported_actions.includes(rule.violation_action)) throw buildError("The selected action is not supported by this trusted evaluator.", 400);
   const errors = validateParameters(rule.evaluator_type, rule.parameters || {});
   if (errors.length) throw buildError("Rule parameters are invalid.", 400, errors);
 };

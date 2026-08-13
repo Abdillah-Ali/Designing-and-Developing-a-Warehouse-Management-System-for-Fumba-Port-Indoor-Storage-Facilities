@@ -1,5 +1,4 @@
 const db = require("../config/db");
-const { roleNames } = require("../config/systemConfig");
 const { writeAuditLog } = require("../models/adminModel");
 const { buildError } = require("../utils/apiError");
 const {
@@ -126,7 +125,8 @@ const getStaffUserForScanner = async (scannerAuth, executor = db) => {
        staff.shift_id,
        staff.status,
        staff.role_id,
-       roles.role_name
+       roles.role_name,
+       roles.role_key
      FROM users staff
      JOIN roles ON roles.id = staff.role_id
      WHERE staff.id = $1
@@ -135,7 +135,7 @@ const getStaffUserForScanner = async (scannerAuth, executor = db) => {
   );
   const staff = result.rows[0];
 
-  if (!staff || staff.status !== "active" || staff.role_name === roleNames.scanner) {
+  if (!staff || staff.status !== "active" || staff.role_key === "scanner") {
     throw buildError("The linked user account is not active.", 403);
   }
 
@@ -162,9 +162,9 @@ const buildStaffAuth = async (staffUserId, executor = db) => {
      JOIN roles r ON r.id = u.role_id
      WHERE u.id = $1
        AND u.status = 'active'
-       AND r.role_name = $2
+       AND r.role_key = 'warehouse_staff'
      LIMIT 1`,
-    [staffUserId, roleNames.warehouseStaff]
+    [staffUserId]
   );
   const staff = result.rows[0];
 

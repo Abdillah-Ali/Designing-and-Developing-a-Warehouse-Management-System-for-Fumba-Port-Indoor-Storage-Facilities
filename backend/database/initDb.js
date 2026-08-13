@@ -160,6 +160,20 @@ const applySchema = async () => {
   const lockBuiltinBinRuleEvaluatorsMigrationPath = path.join(
     __dirname, "migrations", "20260811_lock_builtin_bin_rule_evaluators.sql"
   );
+  const policyConfigurationFoundationMigrationPath = path.join(
+    __dirname, "migrations", "20260812_policy_configuration_foundation.sql"
+  );
+  const authRefreshTokenSessionsMigrationPath = path.join(
+    __dirname, "migrations", "20260812_auth_refresh_token_sessions.sql"
+  );
+  const cargoRegistrationAuthorityMigrationPath = path.join(
+    __dirname, "migrations", "20260812_cargo_registration_configuration_authority.sql"
+  );
+  const rbacAuthorizationMigrationPath = path.join(__dirname, "migrations", "20260812_rbac_authorization_source_of_truth.sql");
+  const rbacAdministratorHardeningMigrationPath = path.join(__dirname, "migrations", "20260812_rbac_administrator_explicit_permissions.sql");
+  const binRuleEngineAuthorityMigrationPath = path.join(__dirname, "migrations", "20260812_bin_rule_engine_authority.sql");
+  const cargoWorkflowPolicyMigrationPath = path.join(__dirname, "migrations", "20260812_cargo_workflow_policy.sql");
+  const financePolicyAuthorityMigrationPath = path.join(__dirname, "migrations", "20260812_finance_policy_authority.sql");
   const financeCustomsGateMigration = await fs.readFile(financeCustomsGateMigrationPath, "utf8");
   const zoneWarehouseScopeMigration = await fs.readFile(zoneWarehouseScopeMigrationPath, "utf8");
   const warehouseConfigurationMigration = await fs.readFile(warehouseConfigurationMigrationPath, "utf8");
@@ -177,6 +191,14 @@ const applySchema = async () => {
   const repairBuiltinBinRuleEvaluatorsMigration = await fs.readFile(repairBuiltinBinRuleEvaluatorsMigrationPath, "utf8");
   const correctReservedBinRuleEvaluatorMigration = await fs.readFile(correctReservedBinRuleEvaluatorMigrationPath, "utf8");
   const lockBuiltinBinRuleEvaluatorsMigration = await fs.readFile(lockBuiltinBinRuleEvaluatorsMigrationPath, "utf8");
+  const policyConfigurationFoundationMigration = await fs.readFile(policyConfigurationFoundationMigrationPath, "utf8");
+  const authRefreshTokenSessionsMigration = await fs.readFile(authRefreshTokenSessionsMigrationPath, "utf8");
+  const cargoRegistrationAuthorityMigration = await fs.readFile(cargoRegistrationAuthorityMigrationPath, "utf8");
+  const rbacAuthorizationMigration = await fs.readFile(rbacAuthorizationMigrationPath, "utf8");
+  const rbacAdministratorHardeningMigration = await fs.readFile(rbacAdministratorHardeningMigrationPath, "utf8");
+  const binRuleEngineAuthorityMigration = await fs.readFile(binRuleEngineAuthorityMigrationPath, "utf8");
+  const cargoWorkflowPolicyMigration = await fs.readFile(cargoWorkflowPolicyMigrationPath, "utf8");
+  const financePolicyAuthorityMigration = await fs.readFile(financePolicyAuthorityMigrationPath, "utf8");
 
   try {
     await moveIncompatibleTables(client);
@@ -200,6 +222,14 @@ const applySchema = async () => {
     await applySqlMigration(client, "015_repair_builtin_bin_rule_evaluators.sql", repairBuiltinBinRuleEvaluatorsMigration);
     await applySqlMigration(client, "016_correct_reserved_bin_rule_evaluator.sql", correctReservedBinRuleEvaluatorMigration);
     await applySqlMigration(client, "017_lock_builtin_bin_rule_evaluators.sql", lockBuiltinBinRuleEvaluatorsMigration);
+    await applySqlMigration(client, "018_policy_configuration_foundation.sql", policyConfigurationFoundationMigration);
+    await applySqlMigration(client, "019_auth_refresh_token_sessions.sql", authRefreshTokenSessionsMigration);
+    await applySqlMigration(client, "020_cargo_registration_configuration_authority.sql", cargoRegistrationAuthorityMigration);
+    await applySqlMigration(client, "021_rbac_authorization_source_of_truth.sql", rbacAuthorizationMigration);
+    await applySqlMigration(client, "022_rbac_administrator_explicit_permissions.sql", rbacAdministratorHardeningMigration);
+    await applySqlMigration(client, "023_bin_rule_engine_authority.sql", binRuleEngineAuthorityMigration);
+    await applySqlMigration(client, "024_cargo_workflow_policy.sql", cargoWorkflowPolicyMigration);
+    await applySqlMigration(client, "025_finance_policy_authority.sql", financePolicyAuthorityMigration);
     await client.query(
       `INSERT INTO role_permissions (role_id, permission_key)
        SELECT r.id, p.permission_key
@@ -220,13 +250,21 @@ const applySchema = async () => {
 const seedOperationalConfiguration = async (client) => {
   await ensureRolePublicReferences(client);
 
+  const protectedRoleKeys = new Map([
+    [roleNames.systemAdmin, "system_administrator"], [roleNames.warehouseStaff, "warehouse_staff"],
+    [roleNames.warehouseSupervisor, "warehouse_supervisor"], [roleNames.financeOfficer, "finance_officer"],
+    [roleNames.customsOfficer, "customs_officer"], [roleNames.gateOfficer, "gate_officer"],
+    [roleNames.management, "management"], [roleNames.scanner, "scanner"]
+  ]);
+
   for (const role of defaultRoleDefinitions) {
+    const roleKey = protectedRoleKeys.get(role.name) || `custom_${String(role.name).toLowerCase().replace(/[^a-z0-9]+/g, "_")}`;
     await client.query(
-      `INSERT INTO roles (role_name, role_description, public_reference)
-       VALUES ($1, $2, generate_role_public_reference())
+      `INSERT INTO roles (role_name, role_description, public_reference, role_key)
+       VALUES ($1, $2, generate_role_public_reference(), $3)
        ON CONFLICT (role_name) DO UPDATE
        SET role_description = EXCLUDED.role_description`,
-      [role.name, role.description || null]
+      [role.name, role.description || null, roleKey]
     );
   }
 

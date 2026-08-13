@@ -54,6 +54,10 @@ function actionLabel(action) {
     .join(" ");
 }
 
+const getAllowedCargoReviewActions = (cargo, approval) => new Set(
+  (cargo?.allowed_actions || approval?.allowed_actions || []).map((action) => action.transition_key)
+);
+
 function CargoReviewModal({
   open,
   approval,
@@ -125,20 +129,21 @@ function CargoReviewModal({
     if (preview.data?.url) URL.revokeObjectURL(preview.data.url);
   }, [preview.data?.url]);
 
+  const allowedActions = getAllowedCargoReviewActions(cargo, approval);
   const footer = cargo && (
     <>
       <button type="button" onClick={onClose} disabled={busy} className="rounded border border-border bg-secondary px-4 py-2 text-xs font-semibold">
         Close
       </button>
-      <button type="button" onClick={() => onRequestCorrection?.(cargo)} disabled={busy} className="rounded bg-warning px-4 py-2 text-xs font-semibold text-warning-foreground disabled:opacity-50">
+      {allowedActions.has("request_registration_correction") && <button type="button" onClick={() => onRequestCorrection?.(cargo)} disabled={busy} className="rounded bg-warning px-4 py-2 text-xs font-semibold text-warning-foreground disabled:opacity-50">
         Request Correction
-      </button>
-      <button type="button" onClick={() => onReject?.(cargo)} disabled={busy} className="rounded bg-destructive px-4 py-2 text-xs font-semibold text-destructive-foreground disabled:opacity-50">
+      </button>}
+      {allowedActions.has("reject_registration") && <button type="button" onClick={() => onReject?.(cargo)} disabled={busy} className="rounded bg-destructive px-4 py-2 text-xs font-semibold text-destructive-foreground disabled:opacity-50">
         Reject
-      </button>
-      <button type="button" onClick={() => onApprove?.(cargo)} disabled={busy} className="rounded bg-success px-4 py-2 text-xs font-semibold text-success-foreground disabled:opacity-50">
+      </button>}
+      {allowedActions.has("approve_registration") && <button type="button" onClick={() => onApprove?.(cargo)} disabled={busy} className="rounded bg-success px-4 py-2 text-xs font-semibold text-success-foreground disabled:opacity-50">
         Approve
-      </button>
+      </button>}
     </>
   );
 
@@ -322,4 +327,4 @@ function CargoReviewModal({
   );
 }
 
-export { CargoReviewModal };
+export { CargoReviewModal, getAllowedCargoReviewActions };

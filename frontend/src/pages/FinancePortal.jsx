@@ -31,6 +31,7 @@ import { formatDateTime, getErrorMessage, statusTone } from "@/lib/wms-operation
 import {
   activateFinanceTariff,
   cancelFinanceInvoice,
+  confirmFinancePayment,
   createFinanceTariff,
   generateFinanceDraftInvoice,
   deactivateFinanceTariff,
@@ -475,7 +476,7 @@ function PaymentsPage() {
     try {
       await recordFinancePayment(form);
       setForm({ invoice_number: "", amount: "", bank_name: "", bank_reference: "", payment_date: "", notes: "" });
-      setMessage("Payment recorded and confirmed.");
+      setMessage("Payment recorded. It will not affect the balance until explicitly confirmed.");
       await payments.refresh();
     } catch (error) {
       setMessage(getErrorMessage(error));
@@ -484,7 +485,7 @@ function PaymentsPage() {
 
   return (
     <>
-      <PageHeader eyebrow="Finance" title="Payments" description="Record and confirm bank-based partial or full payments." />
+      <PageHeader eyebrow="Finance" title="Payments" description="Record payments as pending, then explicitly confirm them to affect financial clearance." />
       <div className="flex-1 overflow-auto p-4">
         <SectionCard title="Record Payment" icon={CreditCard}>
           <form className="grid gap-3 md:grid-cols-3" onSubmit={submit}>
@@ -507,7 +508,7 @@ function PaymentsPage() {
             <div className="flex items-end">
               <button type="submit" className="inline-flex h-9 items-center gap-2 rounded bg-info px-3 text-xs font-semibold text-info-foreground">
                 <Save className="h-4 w-4" />
-                Confirm Payment
+                Record Payment
               </button>
             </div>
           </form>
@@ -528,6 +529,8 @@ function PaymentsPage() {
                 { key: "bank_name", label: "Bank" },
                 { key: "bank_reference", label: "Bank Ref" },
                 { key: "payment_date", label: "Payment Date", render: (row) => formatDateTime(row.payment_date) }
+                ,{ key: "status", label: "Status", render: (row) => <StatusBadge tone={row.status === "Confirmed" ? "success" : "warning"}>{row.status}</StatusBadge> }
+                ,{ key: "actions", label: "Actions", render: (row) => row.status === "Pending Confirmation" ? <button type="button" onClick={async()=>{ setMessage(""); try { await confirmFinancePayment(row.payment_reference); setMessage(`${row.payment_reference} confirmed.`); await payments.refresh(); } catch(error) { setMessage(getErrorMessage(error)); } }} className="rounded bg-success px-2 py-1 text-[11px] font-semibold text-success-foreground">Confirm Payment</button> : null }
               ]}
             />
           </SectionCard>
@@ -610,10 +613,10 @@ function TariffsPage() {
         <SectionCard title="New Tariff Version" icon={Plus}>
           <form className="grid gap-3 md:grid-cols-3 xl:grid-cols-4" onSubmit={submit}>
             <FormInput label="Tariff Name" value={form.tariff_name} onChange={(value) => setForm((current) => ({ ...current, tariff_name: value }))} required />
-            <FormInput label="Cargo Type" value={form.cargo_type} onChange={(value) => setForm((current) => ({ ...current, cargo_type: value }))} required />
+            <FormInput label="Cargo Type Key (or default)" value={form.cargo_type} onChange={(value) => setForm((current) => ({ ...current, cargo_type: value }))} required />
             <SelectField label="Charging Unit" value={form.charging_unit} onChange={(value) => setForm((current) => ({ ...current, charging_unit: value }))} options={["per_cargo_per_day", "per_kilogram_per_day", "per_tonne_per_day", "per_cubic_metre_per_day", "fixed_daily_charge"]} />
             <FormInput label="Daily Rate" type="number" value={form.daily_rate} onChange={(value) => setForm((current) => ({ ...current, daily_rate: value }))} required />
-            <FormInput label="Currency" value={form.currency} onChange={(value) => setForm((current) => ({ ...current, currency: value.toUpperCase() }))} required />
+            <FormInput label="Currency" value="TZS" onChange={() => {}} required />
             <FormInput label="Minimum Days" type="number" value={form.minimum_billable_days} onChange={(value) => setForm((current) => ({ ...current, minimum_billable_days: value }))} />
             <FormInput label="Grace Days" type="number" value={form.grace_period_days} onChange={(value) => setForm((current) => ({ ...current, grace_period_days: value }))} />
             <SelectField label="Penalty Type" value={form.penalty_type} onChange={(value) => setForm((current) => ({ ...current, penalty_type: value }))} options={["none", "percentage", "fixed"]} />
@@ -703,7 +706,7 @@ function TariffEditDialog({ tariff, onClose, onSave }) {
         </div>
         <div className="mt-4 grid gap-3 md:grid-cols-3">
           <FormInput label="Tariff Name" value={form.tariff_name || ""} onChange={(value) => setForm((current) => ({ ...current, tariff_name: value }))} required />
-          <FormInput label="Cargo Type" value={form.cargo_type || ""} onChange={(value) => setForm((current) => ({ ...current, cargo_type: value }))} required />
+          <FormInput label="Cargo Type Key (or default)" value={form.cargo_type_key || form.cargo_type || ""} onChange={(value) => setForm((current) => ({ ...current, cargo_type_key: value }))} required />
           <SelectField label="Charging Unit" value={form.charging_unit || "per_cargo_per_day"} onChange={(value) => setForm((current) => ({ ...current, charging_unit: value }))} options={["per_cargo_per_day", "per_kilogram_per_day", "per_tonne_per_day", "per_cubic_metre_per_day", "fixed_daily_charge"]} />
           <FormInput label="Daily Rate" type="number" value={form.daily_rate || ""} onChange={(value) => setForm((current) => ({ ...current, daily_rate: value }))} required />
           <FormInput label="Minimum Days" type="number" value={form.minimum_billable_days || 1} onChange={(value) => setForm((current) => ({ ...current, minimum_billable_days: value }))} />

@@ -11,6 +11,8 @@ const { verifyToken } = require("../utils/token");
 const response = () => ({
   statusCode: 200,
   payload: null,
+  headers: {},
+  setHeader(name, value) { this.headers[name] = value; return this; },
   status(code) {
     this.statusCode = code;
     return this;
@@ -114,6 +116,16 @@ test("scanner password signs in through the normal login endpoint with scanner-o
           rowCount: 1,
           rows: [{ id: 22, login_time: new Date().toISOString(), session_status: "active" }]
         };
+      }
+      if (sql.includes("FROM system_setting_definitions")) {
+        return { rowCount: 1, rows: [{ setting_key: params[0], value_type: "duration_ms", criticality: "critical_policy", validation_schema: { minimum: 60000 }, is_secret: false, description: "test", is_active: true }] };
+      }
+      if (sql.includes("FROM system_settings WHERE setting_key")) {
+        const value = params[0] === "auth_access_token_lifetime_ms" ? 900000 : 2592000000;
+        return { rowCount: 1, rows: [{ setting_value: value, revision: 1, validation_status: "valid" }] };
+      }
+      if (sql.includes("INSERT INTO session_refresh_tokens")) {
+        return { rowCount: 1, rows: [{ id: 31, token_family_id: "11111111-1111-4111-8111-111111111111", expires_at: params[4] }] };
       }
       if (sql.includes("UPDATE scanner_accounts")) return { rowCount: 1, rows: [] };
       if (sql.includes("FROM role_permissions rp")) return { rowCount: 0, rows: [] };

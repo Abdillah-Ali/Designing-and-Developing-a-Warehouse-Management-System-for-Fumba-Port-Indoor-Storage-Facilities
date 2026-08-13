@@ -1,4 +1,5 @@
 const { rejectionConditions } = require("../config/systemConfig");
+const { executeTransition } = require("./cargoWorkflowEngine");
 
 const REGISTRATION_STATUS = Object.freeze({
   PENDING_REVIEW: "Pending Review",
@@ -307,7 +308,7 @@ const getCorrectionContext = async (executor, cargo) => {
 
 const completeCargoResubmission = async (
   executor,
-  { cargo, userId, remarks, buildError }
+  { cargo, userId, roleId, remarks, buildError }
 ) => {
   const context = await getCorrectionContext(executor, cargo);
 
@@ -342,20 +343,19 @@ const completeCargoResubmission = async (
     );
   }
 
-  const updateResult = await updateCargoRegistrationStatus(
+  const transition = await executeTransition({
+    workflowKey: "cargo_registration",
+    transitionKey: "resubmit_registration",
+    cargoId: cargo.id,
+    actor: { userId, roleId },
+    input: { notes: remarks, confirmed: true, audit_metadata: { changes: context.changes } },
     executor,
-    cargo.id,
-    REGISTRATION_STATUS.PENDING_REVIEW,
-    {
-      correction_fields: [],
-      correction_notes: null,
-      correction_last_changes: context.changes,
-      approved_by: null,
-      approved_at: null,
-      rejected_by: null,
-      rejected_at: null
-    }
-  );
+    lockedCargo: cargo
+  });
+  const updateResult = await updateCargoRegistrationStatus(executor, cargo.id, REGISTRATION_STATUS.PENDING_REVIEW, {
+    correction_fields: [], correction_notes: null, correction_last_changes: context.changes,
+    approved_by: null, approved_at: null, rejected_by: null, rejected_at: null
+  });
 
   await executor.query(
     `UPDATE approval_requests
@@ -397,7 +397,7 @@ const completeCargoResubmission = async (
   );
 
   return {
-    cargo: updateResult.rows[0],
+      cargo: updateResult.rows[0],
     ...context
   };
 };

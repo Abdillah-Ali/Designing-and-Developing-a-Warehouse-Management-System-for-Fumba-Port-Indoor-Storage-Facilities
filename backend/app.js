@@ -88,7 +88,8 @@ app.use(cors({
 
     callback(new Error("Origin is not allowed by CORS."));
   },
-  allowedHeaders: ["Content-Type", "Authorization"]
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true
 }));
 app.use(express.json({ limit: "15mb" }));
 
