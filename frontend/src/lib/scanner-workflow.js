@@ -1,14 +1,11 @@
-export const SCAN_COOLDOWN_MS = 1600;
-
 export const getSessionStepKey = (session) => (
   session?.status === "active"
     ? `${session.id}:${Number(session.current_step_index || 0)}`
     : ""
 );
 
-export const shouldSuppressDuplicate = (barcode, lastSubmission, now = Date.now()) => (
-  lastSubmission.value === barcode
-  && now - lastSubmission.at < SCAN_COOLDOWN_MS
+export const isTerminalScannerSession = (session) => (
+  ["completed", "cancelled", "expired"].includes(session?.status)
 );
 
 export const readCurrentStepError = (session) => {

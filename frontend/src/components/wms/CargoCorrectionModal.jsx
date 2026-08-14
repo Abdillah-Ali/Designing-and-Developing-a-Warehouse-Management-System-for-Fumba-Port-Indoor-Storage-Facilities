@@ -6,11 +6,12 @@ import {
   cargoCorrectionFieldMap,
   cargoCorrectionGroups,
   correctionValueChanged,
-  normalizeCorrectionDisplayValue
+  normalizeCorrectionDisplayValue,
+  withAuthoritativeCargoOptions
 } from "@/lib/cargo-correction-fields";
 import { cn } from "@/lib/utils";
 import { getErrorMessage } from "@/lib/wms-operational";
-import { resubmitCargo, updateCargo } from "@/services/api";
+import { getCargoRegistrationForm, resubmitCargo, updateCargo } from "@/services/api";
 
 const unchangedMessage = "The selected correction fields have not been updated. Please modify the highlighted fields before resubmitting.";
 
@@ -24,6 +25,8 @@ function CargoCorrectionModal({ open, cargo, onClose, onCompleted }) {
   const [form, setForm] = useState({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [catalogs, setCatalogs] = useState({});
+  const configuredGroups = useMemo(() => withAuthoritativeCargoOptions(cargoCorrectionGroups, catalogs), [catalogs]);
 
   const isCorrectionRequired = cargo?.registration_status === "Correction Required";
   const selectedFields = useMemo(
@@ -54,6 +57,11 @@ function CargoCorrectionModal({ open, cargo, onClose, onCompleted }) {
     setError("");
   }, [cargo, open]);
 
+  useEffect(() => {
+    if (!open) return;
+    getCargoRegistrationForm().then((response) => setCatalogs(response.data?.catalogs || response.catalogs || {})).catch(() => setCatalogs({}));
+  }, [open]);
+
   const comparisons = comparisonFields.map((field) => ({
     field,
     label: cargoCorrectionFieldMap[field]?.label || field,
@@ -67,7 +75,10 @@ function CargoCorrectionModal({ open, cargo, onClose, onCompleted }) {
   const updateField = (field, value) => {
     setForm((current) => {
       const next = { ...current, [field]: value };
-      if (field === "cargo_type" && value !== "Hazardous Cargo") next.hazard_class = "";
+      if (field === "cargo_type") {
+        const selected = (catalogs.cargo_type || []).find((option) => option.storage_value === value);
+        if (selected?.option_key !== "hazardous_cargo") next.hazard_class = "";
+      }
       return next;
     });
   };
@@ -146,7 +157,7 @@ function CargoCorrectionModal({ open, cargo, onClose, onCompleted }) {
           </section>
           {error && <ErrorState message={error} />}
 
-          {cargoCorrectionGroups.map((group) => (
+          {configuredGroups.map((group) => (
             <section key={group.key} className="overflow-hidden rounded-md border border-border bg-card">
               <h3 className="border-b border-border bg-panel-header px-4 py-2.5 text-xs font-semibold">{group.label}</h3>
               <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
@@ -166,8 +177,8 @@ function CargoCorrectionModal({ open, cargo, onClose, onCompleted }) {
                       </span>
                       {field.type === "select" ? (
                         <select value={form[field.key] ?? ""} onChange={(event) => updateField(field.key, event.target.value)} className={inputClasses}>
-                          {!field.options?.includes("") && <option value="">Select {field.label.toLowerCase()}</option>}
-                          {(field.options || []).map((option) => <option key={option || "empty"} value={option}>{option || "Not applicable"}</option>)}
+                          <option value="">{field.optional ? "Not applicable" : `Select ${field.label.toLowerCase()}`}</option>
+                          {(field.options || []).map((option) => <option key={option.key} value={option.value}>{option.label}</option>)}
                         </select>
                       ) : field.type === "textarea" ? (
                         <textarea value={form[field.key] ?? ""} onChange={(event) => updateField(field.key, event.target.value)} className={inputClasses} />

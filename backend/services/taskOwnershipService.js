@@ -1,4 +1,3 @@
-const { roleNames } = require("../config/systemConfig");
 const {
   PLACEMENT_STATUS,
   REGISTRATION_STATUS
@@ -10,8 +9,8 @@ const TRANSFER_BLOCKED_MESSAGE =
 const STAFF_TASK_OWNER_SQL = "COALESCE(c.assigned_staff_id, c.created_by, c.received_by_user_id)";
 const APPROVAL_ASSIGNEE_SQL = "COALESCE(ar.assigned_to, ar.assigned_supervisor_id)";
 
-const isWarehouseStaffRole = (roleName) => roleName === roleNames.warehouseStaff;
-const isWarehouseSupervisorRole = (roleName) => roleName === roleNames.warehouseSupervisor;
+const isWarehouseStaffRole = (roleKey) => roleKey === "warehouse_staff";
+const isWarehouseSupervisorRole = (roleKey) => roleKey === "warehouse_supervisor";
 
 const countRows = async (executor, sql, values) => {
   const result = await executor.query(sql, values);
@@ -95,14 +94,14 @@ const getSupervisorPendingTasks = async (executor, userId) => {
   return tasks;
 };
 
-const getPendingWarehouseTaskSummary = async (executor, userId, roleName) => {
+const getPendingWarehouseTaskSummary = async (executor, userId, roleKey) => {
   const tasks = [];
 
-  if (!roleName || isWarehouseStaffRole(roleName)) {
+  if (!roleKey || isWarehouseStaffRole(roleKey)) {
     tasks.push(...await getStaffPendingTasks(executor, userId));
   }
 
-  if (!roleName || isWarehouseSupervisorRole(roleName)) {
+  if (!roleKey || isWarehouseSupervisorRole(roleKey)) {
     tasks.push(...await getSupervisorPendingTasks(executor, userId));
   }
 

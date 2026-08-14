@@ -116,7 +116,8 @@ export function NotificationDetailModal({
   const type = notification.notification_type;
   const role = getStoredAuthRole();
   const action = getNotificationAction(notification, role);
-  const workflow = ACTION_DESCRIPTIONS[type];
+  const workflow = notification.actionable ? (ACTION_DESCRIPTIONS[type] || { description: "Complete the linked business workflow to resolve this notification." }) : null;
+  const archiveBlocked = notification.actionable === true && notification.status === "pending";
   const showActionButton = !isReadOnly && action.actionRequired && Boolean(action.targetRoute);
   const relatedRecord = action.recordIdentifier || notification.related_record_reference || notification.related_cargo_identifier || "";
 
@@ -175,7 +176,8 @@ export function NotificationDetailModal({
           {isArchived ? (
             <button
               type="button"
-              disabled={busy}
+              disabled={busy || archiveBlocked}
+              title={archiveBlocked ? "Complete the required workflow before archiving." : "Archive notification"}
               onClick={handleRestoreClick}
               className="inline-flex items-center gap-2 rounded border border-info/35 bg-info/10 px-4 py-2 text-xs font-semibold text-info transition hover:bg-info/15 disabled:opacity-50"
             >

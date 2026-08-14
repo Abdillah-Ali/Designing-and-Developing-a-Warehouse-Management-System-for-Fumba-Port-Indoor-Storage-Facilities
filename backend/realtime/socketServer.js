@@ -110,8 +110,10 @@ const authenticateSocket = async (socket, next) => {
            AND scanner_account.id = $3
            AND us.identity_type = 'scanner'
            AND us.session_status = 'active'
+           AND us.expires_at > CURRENT_TIMESTAMP
            AND scanner_account.status = 'active'
            AND u.status = 'active'
+           AND scanner_role.role_key = 'scanner'
          LIMIT 1`,
         [sessionId, userId, scannerAccountId, "Scanner"]
       )
@@ -134,6 +136,7 @@ const authenticateSocket = async (socket, next) => {
            AND us.user_id = $2
            AND us.identity_type = 'user'
            AND us.session_status = 'active'
+           AND us.expires_at > CURRENT_TIMESTAMP
            AND u.status = 'active'
          LIMIT 1`,
         [sessionId, userId]
@@ -155,6 +158,7 @@ const authenticateSocket = async (socket, next) => {
       shiftId: account.shift_id,
       scannerStaffId: account.scanner_staff_id,
       scannerAccountId: account.scanner_account_id,
+      sessionId,
       token
     };
 
@@ -162,6 +166,22 @@ const authenticateSocket = async (socket, next) => {
   } catch (error) {
     next(error);
   }
+};
+
+const revalidateSocketAuthority = async (auth) => {
+  const result = await db.query(
+    `SELECT us.id
+     FROM user_sessions us
+     JOIN users u ON u.id=us.user_id AND u.status='active'
+     LEFT JOIN scanner_accounts sa ON sa.id=us.scanner_account_id AND sa.user_id=u.id
+     WHERE us.id=$1 AND us.user_id=$2 AND us.session_status='active'
+       AND us.expires_at > CURRENT_TIMESTAMP
+       AND (($3::boolean=FALSE AND us.identity_type='user') OR
+            ($3::boolean=TRUE AND us.identity_type='scanner' AND sa.id=$4 AND sa.status='active'))
+     LIMIT 1`,
+    [auth.sessionId, auth.userId, auth.role === "scanner", auth.scannerAccountId || null]
+  );
+  if (!result.rowCount) throw Object.assign(new Error("Scanner authentication session is no longer active."), { statusCode: 401, errorCode: "AUTH_SESSION_INVALID" });
 };
 
 const emitToSessionParties = (event, session, extra = {}) => {
@@ -197,6 +217,7 @@ const serializeSocketError = (error) => ({
   success: false,
   message: error?.message || "Request could not be completed.",
   status: error?.statusCode || 500,
+  code: error?.errorCode || error?.code || undefined,
   errors: error?.errors || undefined
 });
 
@@ -234,6 +255,7 @@ const initSocketServer = (server) => {
 
     socket.on("scanner:request-active-session", async (_payload, callback) => {
       try {
+        await revalidateSocketAuthority(auth);
         const session = await getActiveSessionForAuth(auth);
         callback?.({ success: true, data: session });
       } catch (error) {
@@ -243,6 +265,7 @@ const initSocketServer = (server) => {
 
     socket.on("scanner:submit-scan", async (payload, callback) => {
       try {
+        await revalidateSocketAuthority(auth);
         const result = await submitScan(payload || {}, auth);
 
         if (result.session) {
@@ -274,6 +297,7 @@ const initSocketServer = (server) => {
 
     socket.on("scanner:cancel-scan", async (payload, callback) => {
       try {
+        await revalidateSocketAuthority(auth);
         const result = await abandonSessionByScanner(payload?.sessionId || payload?.session_id, auth);
 
         if (result.session) {

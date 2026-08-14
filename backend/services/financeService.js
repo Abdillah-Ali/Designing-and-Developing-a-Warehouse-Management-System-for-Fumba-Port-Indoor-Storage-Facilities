@@ -248,13 +248,17 @@ const getApplicableTariff = async (cargo, asOf, executor = db) => {
      ORDER BY CASE WHEN tv.cargo_type_key = $1 THEN 0 ELSE 1 END,
               tv.effective_from DESC,
               tv.id DESC
-     LIMIT 1`,
+     LIMIT 2`,
     [cargo.cargo_type_key, tariffDate]
   );
 
   if (result.rowCount === 0) {
-    throw buildError(`No active tariff is configured for ${cargo.cargo_type || "this cargo type"}.`, 409);
+    throw buildError(`No active tariff is configured for ${cargo.cargo_type || "this cargo type"}.`, 409, undefined, "TARIFF_CONFIGURATION_REQUIRED");
   }
+
+  const firstSpecificity = result.rows[0].cargo_type_key === cargo.cargo_type_key ? "cargo_type" : "default";
+  const sameSpecificity = result.rows.filter((row) => (row.cargo_type_key === cargo.cargo_type_key ? "cargo_type" : "default") === firstSpecificity);
+  if (sameSpecificity.length > 1) throw buildError("Tariff coverage is ambiguous for this cargo type.",409,undefined,"TARIFF_CONFIGURATION_INVALID");
 
   return result.rows[0];
 };
@@ -915,8 +919,8 @@ const createTariffVersion = async ({ payload, auth, executor = db }) => {
        penalty_type, penalty_rate, fixed_penalty, effective_from, effective_to,
        is_active, notes, created_by, activated_by, activated_at
      )
-     VALUES ($1,$2,$3,$4,$5,$18,$19,'storage_started_day','ready',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-             CASE WHEN $15 THEN $17 ELSE NULL END, CASE WHEN $15 THEN CURRENT_TIMESTAMP ELSE NULL END)
+     VALUES ($1,$2,$3,$4,$5,$18,$19,'storage_started_day','ready',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::boolean,$16,$17::integer,
+             CASE WHEN $15::boolean THEN $17::integer ELSE NULL END, CASE WHEN $15::boolean THEN CURRENT_TIMESTAMP ELSE NULL END)
      RETURNING *`,
     [
       versionRef,
@@ -1274,32 +1278,61 @@ const createOrRegenerateDraftInvoice = async ({ payload, auth, executor = db }) 
 
   let invoiceResult;
   if (existingDraftResult.rowCount > 0) {
-    invoiceValues.push(existingDraftResult.rows[0].id);
+    const existingDraft = existingDraftResult.rows[0];
+    if (
+      normalizeTimestamp(existingDraft.billing_period_start)?.getTime() === billingStart.getTime()
+      && normalizeTimestamp(existingDraft.billing_period_end)?.getTime() === billingEnd.getTime()
+    ) {
+      throw buildError(
+        "An invoice already exists for this cargo and billing period.",
+        409,
+        null,
+        "INVOICE_PERIOD_ALREADY_EXISTS"
+      );
+    }
+    const updateValues = [
+      tariff.id,
+      billingStart,
+      billingEnd,
+      chargeStart,
+      releaseEnd || null,
+      calculation.billable_days,
+      calculation.currency,
+      calculation.base_charge,
+      calculation.penalties,
+      calculation.adjustments,
+      calculation.total_amount,
+      calculation.total_amount,
+      JSON.stringify(tariffSnapshot),
+      JSON.stringify(calculationSnapshot),
+      auth?.userId || null,
+      existingDraft.id
+    ];
     invoiceResult = await executor.query(
       `UPDATE invoices
-       SET tariff_version_id = $3,
-           billing_period_start = $4,
-           billing_period_end = $5,
-           charge_start_at = $6,
-           charge_end_at = $7,
-           billable_days = $8,
-           currency = $9,
-           base_charge = $10,
-           penalties = $11,
-           adjustments = $12,
-           total_amount = $13,
+       SET tariff_version_id = $1,
+           billing_period_start = $2,
+           billing_period_end = $3,
+           charge_start_at = $4,
+           charge_end_at = $5,
+           billable_days = $6,
+           currency = $7,
+           base_charge = $8,
+           penalties = $9,
+           adjustments = $10,
+           total_amount = $11,
            amount_paid = 0,
-           outstanding_balance = $14,
+           outstanding_balance = $12,
            payment_status = 'Unpaid',
-           tariff_snapshot = $15::jsonb,
-           calculation_snapshot = $16::jsonb,
-           generated_by = $17,
+           tariff_snapshot = $13::jsonb,
+           calculation_snapshot = $14::jsonb,
+           generated_by = $15,
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = $18
+       WHERE id = $16
        RETURNING *`,
-      invoiceValues
+      updateValues
     );
-    await executor.query("DELETE FROM invoice_line_items WHERE invoice_id = $1", [existingDraftResult.rows[0].id]);
+    await executor.query("DELETE FROM invoice_line_items WHERE invoice_id = $1", [existingDraft.id]);
   } else {
     invoiceResult = await executor.query(
       `INSERT INTO invoices (

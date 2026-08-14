@@ -48,7 +48,7 @@ const AUTHORIZATION_ROUTES = Object.freeze([
   route(["GET"], /^\/management\/dashboard$/, "management.dashboard.view"), route(["GET"], /^\/management\/reports$/, "management.reports.view"),
   route(["GET"], /^\/users(?:\/.*)?$/, "system.users.view"), route(["POST", "PUT", "PATCH", "DELETE"], /^\/users(?:\/.*)?$/, "system.users.manage"),
   route(["GET"], /^\/roles$/, "system.roles.view"), route(["GET"], /^\/audit-logs$/, "system.audit.view"), route(["GET"], /^\/user-sessions$/, "system.sessions.view"),
-  route(["GET"], /^\/notifications(?:\/.*)?$/, "notifications.view"), route(["PATCH", "DELETE"], /^\/notifications(?:\/.*)?$/, "notifications.manage"),
+  route(["GET", "PUT"], /^\/notifications\/policies(?:\/.*)?$/, "system.notifications.configure"), route(["GET"], /^\/notifications(?:\/.*)?$/, "notifications.view"), route(["PATCH", "DELETE"], /^\/notifications(?:\/.*)?$/, "notifications.manage"),
   route(["POST"], /^\/notifications\/system-announcement$/, "system.notifications.announce"),
   route(["GET"], /^\/admin\/roles$/, "system.roles.view"), route(["GET"], /^\/admin\/permissions$/, "system.permissions.view"),
   route(["GET"], /^\/admin\/roles\/[^/]+\/permissions$/, "system.permissions.view"), route(["PUT"], /^\/admin\/roles\/[^/]+\/permissions$/, "system.permissions.manage"),

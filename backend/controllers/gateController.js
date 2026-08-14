@@ -13,6 +13,8 @@ const {
   getServerNow,
   updateCargoFinancialStatus
 } = require("../services/financeService");
+const { evaluateEligibility, activeDispatch } = require("../services/releaseEligibilityService");
+const { executeTransition } = require("../services/cargoWorkflowEngine");
 
 const cleanString = (value) => String(value ?? "").trim();
 
@@ -105,7 +107,7 @@ const getActiveDispatchRequest = async (executor, cargoId, { lock = false } = {}
   return result.rows[0] || null;
 };
 
-const buildEligibility = async ({ executor = db, cargo, at = null }) => {
+const buildEligibilityLegacy = async ({ executor = db, cargo, at = null }) => {
   const calculationTime = at || await getServerNow(executor);
   const dispatchRequest = await getActiveDispatchRequest(executor, cargo.id || cargo.cargo_record_id);
   const blocked = [];
@@ -168,6 +170,12 @@ const buildEligibility = async ({ executor = db, cargo, at = null }) => {
     blocked_requirements: blocked,
     dispatch_reference: dispatchRequest ? "Approved Dispatch Request" : null
   };
+};
+const buildEligibility=async({executor=db,cargo,at=null})=>{
+ const result=await evaluateEligibility({target:'normal_gate_release',cargo,executor,at});
+ const aliases={financial_clearance:'payment',customs_clearance:'customs',dispatch_approval:'dispatch',registration_state:'supervisor_approval',release_state:'gate_out'};
+ const blocked=result.blocked_requirements.map(item=>({...item,requirement:aliases[item.evaluator_key]||item.evaluator_key}));
+ return {...result,blocked_requirements:blocked,billable_days:0,current_accrued_charge:'0.00',amount_paid:'0.00',dispatch_reference:result.dispatch_request?'Approved Dispatch Request':null};
 };
 
 const getDashboard = async (req, res, next) => {
@@ -313,7 +321,7 @@ const confirmGateOut = async (req, res, next) => {
         throw buildError("Cargo has already been released.", 409);
       }
       const releaseAt = await getServerNow(client);
-      const dispatchRequest = await getActiveDispatchRequest(client, cargo.id, { lock: true });
+      const dispatchRequest = await activeDispatch(client, cargo.id, true);
       const eligibility = await buildEligibility({ executor: client, cargo, at: releaseAt });
       let releaseType = "Normal";
       let emergencyRequest = null;
@@ -337,32 +345,24 @@ const confirmGateOut = async (req, res, next) => {
             eligibility.blocked_requirements
           );
         }
-        const emergencyResult = await client.query(
-          `SELECT *
-           FROM emergency_release_requests
-           WHERE public_reference = $1
-             AND cargo_id = $2
-             AND status = 'Approved'
-           LIMIT 1
-           FOR UPDATE`,
-          [emergencyReference, cargo.id]
-        );
-        if (emergencyResult.rowCount === 0) {
+        const emergencyEligibility=await evaluateEligibility({target:'emergency_gate_release',cargo,executor:client,at:releaseAt,emergencyReference,lock:true});
+        if (!emergencyEligibility.eligible) {
           throw buildError("Approved emergency release request was not found for this cargo.", 404);
         }
-        emergencyRequest = emergencyResult.rows[0];
+        emergencyRequest = emergencyEligibility.emergency_authorization;
         releaseType = "Emergency";
       }
 
       const gateReference = await generatePublicReference("GTO", client, "gate_out_records", "public_reference");
       const bin = await releaseBinIfNeeded(client, cargo);
+      await executeTransition({workflowKey:'cargo_placement',transitionKey:'finalize_gate_release',cargoId:cargo.id,actor:req.auth,input:{confirmed:true},executor:client,lockedCargo:cargo});
       const gateResult = await client.query(
         `INSERT INTO gate_out_records (
            public_reference, cargo_id, dispatch_request_id, release_type,
            vehicle_number, driver_name, gate_notes, released_at, released_by,
-           outstanding_amount_snapshot, eligibility_snapshot
+           outstanding_amount_snapshot, eligibility_snapshot,eligibility_policy_key,eligibility_policy_revision,emergency_request_id
          )
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14)
          RETURNING *`,
         [
           gateReference,
@@ -375,19 +375,18 @@ const confirmGateOut = async (req, res, next) => {
           releaseAt,
           req.auth?.userId || null,
           eligibility.outstanding_amount,
-          JSON.stringify(eligibility)
+          JSON.stringify(eligibility),eligibility.policy_key,eligibility.revision,emergencyRequest?.id||null
         ]
       );
       await client.query(
         `UPDATE cargo
-         SET placement_status = 'Dispatched',
-             current_bin_id = NULL,
+         SET current_bin_id = NULL,
              charge_end_at = $1,
              released_at = $1,
-             dispatch_status = $2,
-             gate_out_status = $3,
+             dispatch_status = $2::varchar,
+             gate_out_status = $3::varchar,
              financial_status = CASE
-               WHEN $4::numeric > 0 AND $3 = 'Emergency Released' THEN 'Released With Balance'
+               WHEN $4::numeric > 0 AND $3::varchar = 'Emergency Released'::varchar THEN 'Released With Balance'::varchar
                WHEN $4::numeric > 0 THEN financial_status
                ELSE 'Fully Paid'
              END,
@@ -417,6 +416,8 @@ const confirmGateOut = async (req, res, next) => {
            SET status = 'Completed',
                gate_confirmed_by = $1,
                gate_confirmed_at = $2,
+               consumed_at = $2,
+               consumed_by = $1,
                updated_at = CURRENT_TIMESTAMP
            WHERE id = $3`,
           [req.auth?.userId || null, releaseAt, emergencyRequest.id]
@@ -466,6 +467,8 @@ const confirmGateOut = async (req, res, next) => {
           client
         );
       }
+      const { resolveNotificationStrategy } = require("../services/notificationAuthorityService");
+      await resolveNotificationStrategy("gate_released", { subjectReference: cargo.cargo_id, executor: client });
       return {
         gate_out_reference: gateResult.rows[0].public_reference,
         cargo_reference: cargo.cargo_id,
@@ -681,12 +684,12 @@ const decideEmergencyRequest = async (req, res, next, decision) => {
       }
       const result = await client.query(
         `UPDATE emergency_release_requests
-         SET status = $1,
+           SET status = $1::varchar,
              decision_notes = $2,
-             approved_by = CASE WHEN $1 = 'Approved' THEN $3 ELSE approved_by END,
-             approved_at = CASE WHEN $1 = 'Approved' THEN CURRENT_TIMESTAMP ELSE approved_at END,
-             rejected_by = CASE WHEN $1 = 'Rejected' THEN $3 ELSE rejected_by END,
-             rejected_at = CASE WHEN $1 = 'Rejected' THEN CURRENT_TIMESTAMP ELSE rejected_at END,
+             approved_by = CASE WHEN $1::varchar = 'Approved'::varchar THEN $3 ELSE approved_by END,
+             approved_at = CASE WHEN $1::varchar = 'Approved'::varchar THEN CURRENT_TIMESTAMP ELSE approved_at END,
+             rejected_by = CASE WHEN $1::varchar = 'Rejected'::varchar THEN $3 ELSE rejected_by END,
+             rejected_at = CASE WHEN $1::varchar = 'Rejected'::varchar THEN CURRENT_TIMESTAMP ELSE rejected_at END,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = $4
          RETURNING *`,

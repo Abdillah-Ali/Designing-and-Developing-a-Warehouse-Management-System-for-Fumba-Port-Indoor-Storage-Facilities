@@ -63,6 +63,7 @@ const createPlacementQueryMock = ({
     cargo_id: "CARGO-2026-OWN",
     barcode: "CARGO-2026-OWN",
     cargo_type: "General Goods",
+    cargo_type_key: "general_goods",
     weight: 10,
     volume: 1,
     hazard_class: null,
@@ -96,7 +97,9 @@ const createPlacementQueryMock = ({
     zone_name: "General Goods",
     zone_type: "Standard",
     zone_allowed_cargo_type: "General Goods",
+    zone_allowed_cargo_type_key: "general_goods",
     allowed_cargo_type: "General Goods",
+    allowed_cargo_type_key: "general_goods",
     is_hazard_zone: false,
     zone_active: true,
     warehouse_id: cargoWarehouseId,
@@ -458,7 +461,9 @@ test("relocation applies destination compatibility and capacity rules", async ()
     binOverrides: {
       zone_code: "Z-D",
       zone_allowed_cargo_type: "Food Products",
+      zone_allowed_cargo_type_key: "food_products",
       allowed_cargo_type: "Food Products",
+      allowed_cargo_type_key: "food_products",
       max_weight: 5,
       max_volume: 0.5
     }

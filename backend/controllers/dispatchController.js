@@ -10,6 +10,7 @@ const {
   REGISTRATION_STATUS
 } = require("../services/cargoWorkflowService");
 const { STAFF_TASK_OWNER_SQL } = require("../services/taskOwnershipService");
+const { evaluateEligibility } = require("../services/releaseEligibilityService");
 
 const REQUEST_NOT_AVAILABLE_MESSAGE = "This request could not be found or is not available to your account.";
 
@@ -69,12 +70,8 @@ const requestDispatchAuthorization = async (req, res, next) => {
     ) {
       throw buildError(REQUEST_NOT_AVAILABLE_MESSAGE, 404);
     }
-    if (cargo.registration_status !== REGISTRATION_STATUS.APPROVED) {
-      throw buildError("Cargo registration must be approved before dispatch processing.", 400);
-    }
-    if (![PLACEMENT_STATUS.PLACED, PLACEMENT_STATUS.RELOCATED].includes(cargo.placement_status)) {
-      throw buildError("Only placed cargo can be submitted for dispatch authorization.", 400);
-    }
+    const eligibility=await evaluateEligibility({target:'dispatch_request',cargo,executor:client});
+    if(!eligibility.eligible) throw buildError('Cargo is not eligible for dispatch authorization.',409,eligibility.blocked_requirements,'DISPATCH_REQUEST_NOT_ALLOWED');
 
     const existing = await client.query(
       "SELECT id FROM dispatch_requests WHERE cargo_id = $1 AND status = 'Pending' LIMIT 1",
@@ -109,6 +106,7 @@ const requestDispatchAuthorization = async (req, res, next) => {
       {
         cargo,
         dispatchRequestId: result.rows[0].id,
+        dispatchPublicReference: result.rows[0].public_reference,
         requesterId: req.auth?.userId || null,
         actorId: req.auth?.userId || null
       },
@@ -250,13 +248,8 @@ const decideDispatchRequest = async (req, res, next, decision) => {
     );
 
     // Resolve matching pending dispatch notifications
-    const { resolveNotificationsByEntity } = require("../services/notificationService");
-    await resolveNotificationsByEntity({
-      relatedEntityType: "cargo",
-      relatedEntityId: request.cargo_record_id,
-      notificationTypes: ["dispatch_request"],
-      executor: client
-    });
+    const { resolveNotificationStrategy } = require("../services/notificationAuthorityService");
+    await resolveNotificationStrategy("dispatch_decided", { subjectReference: request.cargo_id, actionReference: request.public_reference, executor: client });
 
     const result = await client.query(`${dispatchSelect} WHERE dr.id = $1`, [request.id]);
     await client.query("COMMIT");

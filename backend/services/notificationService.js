@@ -1,8 +1,8 @@
 const crypto = require("node:crypto");
 const db = require("../config/db");
-const { roleNames } = require("../config/systemConfig");
 const { writeAuditLog } = require("../models/adminModel");
 const { buildError } = require("../utils/apiError");
+const emitPolicyEvent = (eventKey, context, executor) => require("./notificationAuthorityService").emitNotificationEvent(eventKey, context, executor);
 
 const NOTIFICATION_TYPES = Object.freeze({
   PENDING_APPROVAL: "pending_approval",
@@ -34,6 +34,15 @@ const ACTIONABLE_WORKFLOW_TYPES = new Set([
 const publicNotificationFields = `
   n.public_reference,
   n.notification_type,
+  n.event_key,
+  n.policy_revision,
+  n.actionable,
+  n.recipient_strategy,
+  n.deep_link_builder_key,
+  n.resolution_strategy_key,
+  n.archive_policy_key,
+  n.subject_reference,
+  n.action_reference,
   n.title,
   n.message,
   n.related_module,
@@ -46,7 +55,7 @@ const publicNotificationFields = `
   n.created_at,
   n.expires_at,
   n.archived_at,
-  n.notification_type AS safe_action_type,
+  CASE WHEN n.actionable THEN n.event_key ELSE NULL END AS safe_action_type,
   CASE
     WHEN n.metadata->>'deep_link' ~ '^/(admin|staff|supervisor|finance|customs|gate)(/|\\?|$)'
       THEN n.metadata->>'deep_link'
@@ -357,9 +366,13 @@ const createNotification = async (payload, executor = db, options = {}) => {
           status,
           created_by,
           expires_at,
-          metadata
+          metadata,
+          event_key, policy_revision, actionable, recipient_strategy,
+          deep_link_builder_key, resolution_strategy_key, archive_policy_key,
+          subject_reference, action_reference, policy_mapping_status
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending', $12, $13, $14::jsonb)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending',$12,$13,$14::jsonb,
+          $15,$16,$17,$18,$19,$20,$21,$22,$23,'ready')
         RETURNING
           public_reference,
           notification_type,
@@ -390,6 +403,15 @@ const createNotification = async (payload, executor = db, options = {}) => {
           readPositiveId(payload.created_by),
           cleanString(payload.expires_at) || null,
           JSON.stringify(payload.metadata || {})
+          ,cleanString(payload.event_key) || null
+          ,payload.policy_revision || null
+          ,payload.actionable === true
+          ,cleanString(payload.recipient_strategy) || null
+          ,cleanString(payload.deep_link_builder_key) || null
+          ,cleanString(payload.resolution_strategy_key) || null
+          ,cleanString(payload.archive_policy_key) || null
+          ,cleanString(payload.subject_reference) || null
+          ,cleanString(payload.action_reference) || null
         ]
       );
       notification = result.rows[0];
@@ -401,6 +423,16 @@ const createNotification = async (payload, executor = db, options = {}) => {
         attempt < maxAttempts - 1
       ) {
         continue;
+      }
+      if (error.code === "23505" && error.constraint === "idx_notifications_active_action_dedup" && options.deduplicate) {
+        const existing = await executor.query(
+          `SELECT public_reference,notification_type,title,message,related_module,related_entity_type,priority,status,
+                  completed_at,is_read,read_at,created_at,expires_at,archived_at
+           FROM notifications WHERE recipient_user_id=$1 AND event_key=$2 AND subject_reference=$3
+             AND COALESCE(action_reference,'')=COALESCE($4,'') AND actionable=TRUE AND status='pending' AND archived_at IS NULL LIMIT 1`,
+          [readPositiveId(payload.recipient_user_id),cleanString(payload.event_key),cleanString(payload.subject_reference)||null,cleanString(payload.action_reference)||null]
+        );
+        notification=existing.rows[0]; break;
       }
       throw error;
     }
@@ -432,7 +464,7 @@ const createNotification = async (payload, executor = db, options = {}) => {
 };
 
 const findAudienceUsers = async (
-  { userIds = [], roleId = null, roleName = "", warehouseId = null, allActive = false },
+  { userIds = [], roleId = null, roleKey = "", roleName = "", warehouseId = null, allActive = false },
   executor = db
 ) => {
   const values = [];
@@ -451,6 +483,10 @@ const findAudienceUsers = async (
     if (roleName) {
       values.push(roleName);
       clauses.push(`r.role_name = $${values.length}`);
+    }
+    if (roleKey) {
+      values.push(roleKey);
+      clauses.push(`r.role_key = $${values.length}`);
     }
     if (warehouseId) {
       values.push(warehouseId);
@@ -488,7 +524,9 @@ const createNotificationsForAudience = async (payload, audience = {}, executor =
   }
 
   if (notifications.length === 0 && options.fallbackBroadTarget) {
-    const fallbackRoleId = audience.roleId || await getRoleIdByName(audience.roleName, executor);
+    let fallbackRoleId=audience.roleId||null;
+    if(!fallbackRoleId&&audience.roleKey) fallbackRoleId=(await executor.query("SELECT id FROM roles WHERE role_key=$1",[audience.roleKey])).rows[0]?.id||null;
+    if(!fallbackRoleId) fallbackRoleId=await getRoleIdByName(audience.roleName, executor);
     notifications.push(await createNotification(
       {
         ...payload,
@@ -586,7 +624,7 @@ const archiveNotification = async ({ auth, publicRef, executor = db }) => {
   const selectClauses = ["n.public_reference = $1"];
   addVisibleNotificationClauses(auth, selectClauses, selectValues, "n", { includeArchived: true });
   const selectRes = await executor.query(
-    `SELECT public_reference, notification_type, status
+    `SELECT public_reference, notification_type, event_key, actionable, archive_policy_key, status
      FROM notifications n
      WHERE ${selectClauses.join(" AND ")}
      LIMIT 1`,
@@ -595,8 +633,9 @@ const archiveNotification = async ({ auth, publicRef, executor = db }) => {
   const notification = selectRes.rows[0];
   if (!notification) return null;
 
-  if (ACTIONABLE_WORKFLOW_TYPES.has(notification.notification_type) && notification.status === "pending") {
-    throw buildError("Complete the required workflow action before archiving this notification.", 409);
+  const { canArchive } = require("./notificationLifecycleRegistry");
+  if (!canArchive(notification)) {
+    throw buildError("Complete the required workflow action before archiving this notification.", 409, null, "NOTIFICATION_ACTION_REQUIRED");
   }
 
   const values = [auth?.userId || null, publicRef];
@@ -781,67 +820,15 @@ const createSystemAnnouncement = async (payload, auth, executor = db) => {
 };
 
 const notifyCargoRegistrationPending = async ({ cargo, approvalRequestId, actorId }, executor = db) => (
-  createNotificationsForAudience(
-    {
-      notification_type: NOTIFICATION_TYPES.PENDING_APPROVAL,
-      title: "New cargo registration pending review",
-      message: `New cargo registration pending review: ${cargo.cargo_id}`,
-      related_module: "Cargo Approvals",
-      related_entity_type: "cargo",
-      related_entity_id: cargo.id,
-      priority: "normal",
-      created_by: actorId || null,
-      metadata: { approval_request_id: approvalRequestId || null }
-    },
-    { roleName: roleNames.warehouseSupervisor, warehouseId: cargo.warehouse_id || cargo.warehouse_id_at_registration },
-    executor,
-    { actorId: actorId || null, fallbackBroadTarget: true }
-  )
+  emitPolicyEvent("cargo.review_required",{cargo,warehouse_id:cargo.warehouse_id||cargo.warehouse_id_at_registration,actor_id:actorId,action_reference:cargo.approval_public_reference,metadata:{approval_request_id:approvalRequestId||null}},executor)
 );
 
 const notifyFinanceChargeStarted = async ({ cargo, actorId }, executor = db) => (
-  createNotificationsForAudience(
-    {
-      notification_type: NOTIFICATION_TYPES.FINANCE_CHARGE_STARTED,
-      title: `Cargo registered and charging started: ${cargo.cargo_id}`,
-      message: `Storage charging started from registration time for ${cargo.cargo_id}.`,
-      related_module: "Billing and Payment",
-      related_entity_type: "cargo",
-      related_entity_id: cargo.id,
-      priority: "normal",
-      created_by: actorId || null,
-      metadata: {
-        cargo_identifier: cargo.cargo_id,
-        charge_start_at: cargo.charge_start_at || cargo.created_at,
-        deep_link: `/finance/cargo-charges?search=${encodeURIComponent(cargo.cargo_id)}`
-      }
-    },
-    { roleName: roleNames.financeOfficer },
-    executor,
-    { actorId: actorId || null, fallbackBroadTarget: true }
-  )
+  emitPolicyEvent("finance.charge_started",{cargo,actor_id:actorId,metadata:{charge_start_at:cargo.charge_start_at||cargo.created_at}},executor)
 );
 
 const notifyCustomsAwaitingInspection = async ({ cargo, actorId }, executor = db) => (
-  createNotificationsForAudience(
-    {
-      notification_type: NOTIFICATION_TYPES.CUSTOMS_INSPECTION,
-      title: `Cargo awaiting customs inspection: ${cargo.cargo_id}`,
-      message: `Cargo ${cargo.cargo_id} is registered and available for customs processing.`,
-      related_module: "Customs Management",
-      related_entity_type: "cargo",
-      related_entity_id: cargo.id,
-      priority: "normal",
-      created_by: actorId || null,
-      metadata: {
-        cargo_identifier: cargo.cargo_id,
-        deep_link: `/customs/inspection-queue?search=${encodeURIComponent(cargo.cargo_id)}`
-      }
-    },
-    { roleName: roleNames.customsOfficer },
-    executor,
-    { actorId: actorId || null, fallbackBroadTarget: true }
-  )
+  emitPolicyEvent("customs.inspection_required",{cargo,actor_id:actorId},executor)
 );
 
 const getPendingReviewEscalationThresholdHours = async (executor = db) => {
@@ -896,16 +883,9 @@ const notifyPendingReviewEscalations = async ({ thresholdHours, targetRoleName }
   const created = [];
   for (const row of result.rows) {
     const waitingHours = Number(row.waiting_hours || 0);
-    const notifications = await createNotificationsForAudience(
-      {
-        notification_type: NOTIFICATION_TYPES.WAREHOUSE_ALERT,
-        title: `Cargo approval overdue: ${row.cargo_id}`,
-        message: `${row.cargo_id} has waited ${waitingHours.toFixed(1)} hours for supervisor approval.`,
-        related_module: "Cargo Approvals",
-        related_entity_type: "cargo",
-        related_entity_id: row.cargo_record_id,
-        priority: "high",
-        created_by: null,
+    const notifications = await emitPolicyEvent("cargo.review_overdue",{
+        cargo:{id:row.cargo_record_id,cargo_id:row.cargo_id,warehouse_id:row.warehouse_id},
+        warehouse_id:row.warehouse_id,waiting_hours:waitingHours,
         metadata: {
           escalation_type: "pending_review",
           approval_request_id: row.approval_request_id,
@@ -917,13 +897,9 @@ const notifyPendingReviewEscalations = async ({ thresholdHours, targetRoleName }
           assigned_supervisor: row.assigned_supervisor_name || row.assigned_supervisor_username || null,
           waiting_hours: waitingHours,
           threshold_hours: hours,
-          priority: "high"
+          legacy_target_role_setting: targetRoleName || null
         }
-      },
-      { roleName: targetRoleName || roleNames.systemAdmin },
-      executor,
-      { fallbackBroadTarget: true }
-    );
+      },executor);
     created.push(...notifications);
   }
 
@@ -933,134 +909,30 @@ const notifyPendingReviewEscalations = async ({ thresholdHours, targetRoleName }
 const notifyCorrectionRequested = async ({ cargo, approvalRequestId, correctionFields = [], notes, actorId }, executor = db) => {
   const ownerId = getStaffOwnerId(cargo);
   if (!ownerId) return [];
-  return createNotificationsForAudience(
-    {
-      notification_type: NOTIFICATION_TYPES.CORRECTION_REQUEST,
-      title: `Correction required for ${cargo.cargo_id}`,
-      message: notes || "Supervisor requested registration changes.",
-      related_module: "Cargo Corrections",
-      related_entity_type: "cargo",
-      related_entity_id: cargo.id || cargo.cargo_record_id,
-      priority: "high",
-      created_by: actorId || null,
-      metadata: {
-        approval_request_id: approvalRequestId || null,
-        correction_fields: correctionFields
-      }
-    },
-    { userIds: [ownerId] },
-    executor,
-    { actorId: actorId || null }
-  );
+  return emitPolicyEvent("cargo.correction_requested",{cargo:{...cargo,id:cargo.id||cargo.cargo_record_id},recipient_user_id:ownerId,notes,actor_id:actorId,metadata:{approval_request_id:approvalRequestId||null,correction_fields:correctionFields}},executor);
 };
 
 const notifyRegistrationDecision = async ({ cargo, approvalRequestId, decision, notes, actorId }, executor = db) => {
   const ownerId = getStaffOwnerId(cargo);
   if (!ownerId) return [];
-  const approved = decision === "Approved";
-  return createNotificationsForAudience(
-    {
-      notification_type: NOTIFICATION_TYPES.APPROVAL_DECISION,
-      title: approved ? `Cargo registration approved: ${cargo.cargo_id}` : `Cargo registration rejected: ${cargo.cargo_id}`,
-      message: notes || (approved ? "Cargo registration was approved." : "Cargo registration was rejected."),
-      related_module: "Cargo Approvals",
-      related_entity_type: "cargo",
-      related_entity_id: cargo.id || cargo.cargo_record_id,
-      priority: approved ? "normal" : "high",
-      created_by: actorId || null,
-      metadata: {
-        approval_request_id: approvalRequestId || null,
-        decision
-      }
-    },
-    { userIds: [ownerId] },
-    executor,
-    { actorId: actorId || null }
-  );
+  return emitPolicyEvent(decision === "Approved" ? "cargo.registration_approved" : "cargo.registration_rejected",{cargo:{...cargo,id:cargo.id||cargo.cargo_record_id},recipient_user_id:ownerId,decision,notes,actor_id:actorId,metadata:{approval_request_id:approvalRequestId||null}},executor);
 };
 
 const notifyPlacementOverridePending = async ({ cargo, bin, approvalRequestId, actorId }, executor = db) => (
-  createNotificationsForAudience(
-    {
-      notification_type: NOTIFICATION_TYPES.PLACEMENT_OVERRIDE,
-      title: "Placement override pending approval",
-      message: `Placement override request pending approval${cargo?.cargo_id ? ` for ${cargo.cargo_id}` : ""}.`,
-      related_module: "Cargo Placement",
-      related_entity_type: "cargo",
-      related_entity_id: cargo?.id || null,
-      priority: "high",
-      created_by: actorId || null,
-      metadata: {
-        approval_request_id: approvalRequestId || null,
-        bin_id: bin?.id || null,
-        bin_barcode: bin?.barcode || null
-      }
-    },
-    { roleName: roleNames.warehouseSupervisor, warehouseId: cargo?.warehouse_id },
-    executor,
-    { actorId: actorId || null, fallbackBroadTarget: true }
-  )
+  emitPolicyEvent("placement.override_requested",{cargo,warehouse_id:cargo?.warehouse_id,actor_id:actorId,metadata:{approval_request_id:approvalRequestId||null,bin_barcode:bin?.barcode||null}},executor)
 );
 
 const notifyPlacementOverrideDecision = async ({ cargo, approval, decision, notes, actorId }, executor = db) => {
   const requesterId = readPositiveId(approval?.requested_by);
   if (!requesterId) return [];
-  return createNotificationsForAudience(
-    {
-      notification_type: NOTIFICATION_TYPES.APPROVAL_DECISION,
-      title: decision === "Approved" ? "Placement override approved" : "Placement override rejected",
-      message: notes || `${decision} placement override request${cargo?.cargo_id ? ` for ${cargo.cargo_id}` : ""}.`,
-      related_module: "Cargo Placement",
-      related_entity_type: "cargo",
-      related_entity_id: cargo?.id || approval?.cargo_record_id || null,
-      priority: decision === "Approved" ? "normal" : "high",
-      created_by: actorId || null,
-      metadata: {
-        approval_request_id: approval?.id || null,
-        decision
-      }
-    },
-    { userIds: [requesterId] },
-    executor,
-    { actorId: actorId || null }
-  );
+  return emitPolicyEvent(decision === "Approved" ? "placement.override_approved" : "placement.override_rejected",{cargo:{...cargo,id:cargo?.id||approval?.cargo_record_id},recipient_user_id:requesterId,decision,notes,actor_id:actorId,metadata:{approval_request_id:approval?.id||null}},executor);
 };
 
-const notifyDispatchSubmitted = async ({ cargo, dispatchRequestId, requesterId, actorId }, executor = db) => {
-  const notifications = await createNotificationsForAudience(
-    {
-      notification_type: NOTIFICATION_TYPES.DISPATCH_REQUEST,
-      title: "Dispatch request pending action",
-      message: `Dispatch request submitted for ${cargo.cargo_id}.`,
-      related_module: "Dispatch Operations",
-      related_entity_type: "cargo",
-      related_entity_id: cargo.id,
-      priority: "high",
-      created_by: actorId || null,
-      metadata: { dispatch_request_id: dispatchRequestId || null }
-    },
-    { roleName: roleNames.warehouseSupervisor, warehouseId: cargo.warehouse_id },
-    executor,
-    { actorId: actorId || null, fallbackBroadTarget: true }
-  );
+const notifyDispatchSubmitted = async ({ cargo, dispatchRequestId, dispatchPublicReference, requesterId, actorId }, executor = db) => {
+  const notifications = await emitPolicyEvent("dispatch.requested",{cargo,warehouse_id:cargo.warehouse_id,actor_id:actorId,action_reference:dispatchPublicReference,metadata:{dispatch_request_id:dispatchRequestId||null}},executor);
 
   if (requesterId) {
-    notifications.push(...await createNotificationsForAudience(
-      {
-        notification_type: NOTIFICATION_TYPES.DISPATCH_UPDATE,
-        title: "Dispatch request submitted",
-        message: `Dispatch request submitted for ${cargo.cargo_id}.`,
-        related_module: "Dispatch Operations",
-        related_entity_type: "cargo",
-        related_entity_id: cargo.id,
-        priority: "normal",
-        created_by: actorId || null,
-        metadata: { dispatch_request_id: dispatchRequestId || null }
-      },
-      { userIds: [requesterId] },
-      executor,
-      { actorId: actorId || null }
-    ));
+    notifications.push(...await emitPolicyEvent("dispatch.submitted",{cargo,recipient_user_id:requesterId,actor_id:actorId,metadata:{dispatch_request_id:dispatchRequestId||null}},executor));
   }
 
   return notifications;
@@ -1070,162 +942,30 @@ const notifyDispatchDecision = async ({ cargo, dispatchRequest, decision, notes,
   const requesterId = readPositiveId(dispatchRequest?.requested_by);
   const notifications = [];
   if (requesterId) {
-    notifications.push(...await createNotificationsForAudience(
-    {
-      notification_type: NOTIFICATION_TYPES.DISPATCH_UPDATE,
-      title: decision === "Approved" ? "Dispatch request approved" : "Dispatch request rejected",
-      message: notes || `Dispatch request ${decision.toLowerCase()} for ${cargo.cargo_id}.`,
-      related_module: "Dispatch Operations",
-      related_entity_type: "cargo",
-      related_entity_id: cargo.id || dispatchRequest?.cargo_record_id || null,
-      priority: decision === "Approved" ? "normal" : "high",
-      created_by: actorId || null,
-      metadata: {
-        dispatch_request_id: dispatchRequest?.id || null,
-        decision
-      }
-    },
-    { userIds: [requesterId] },
-    executor,
-    { actorId: actorId || null }
-    ));
+    notifications.push(...await emitPolicyEvent(decision === "Approved" ? "dispatch.approved" : "dispatch.rejected",{cargo:{...cargo,id:cargo.id||dispatchRequest?.cargo_record_id},recipient_user_id:requesterId,decision,notes,actor_id:actorId,metadata:{dispatch_request_id:dispatchRequest?.id||null}},executor));
   }
 
   if (decision === "Approved") {
-    notifications.push(...await createNotificationsForAudience(
-      {
-        notification_type: NOTIFICATION_TYPES.GATE_RELEASE_UPDATE,
-        title: `Cargo approved for gate release: ${cargo.cargo_id}`,
-        message: `Dispatch was approved for ${cargo.cargo_id}. Validate customs and payment before release.`,
-        related_module: "Dispatch and Gate",
-        related_entity_type: "cargo",
-        related_entity_id: cargo.id || dispatchRequest?.cargo_record_id || null,
-        priority: "high",
-        created_by: actorId || null,
-        metadata: {
-          dispatch_request_id: dispatchRequest?.id || null,
-          cargo_identifier: cargo.cargo_id,
-          deep_link: `/gate/release-queue?search=${encodeURIComponent(cargo.cargo_id)}`
-        }
-      },
-      { roleName: roleNames.gateOfficer },
-      executor,
-      { actorId: actorId || null, fallbackBroadTarget: true }
-    ));
+    notifications.push(...await emitPolicyEvent("gate.release_ready",{cargo:{...cargo,id:cargo.id||dispatchRequest?.cargo_record_id},actor_id:actorId,action_reference:dispatchRequest?.public_reference,metadata:{dispatch_request_id:dispatchRequest?.id||null}},executor));
   }
 
   return notifications;
 };
 
 const notifyGateReleaseBlocked = async ({ cargo, outstandingAmount, blockedRequirements = [], actorId }, executor = db) => {
-  const financeNotifications = await createNotificationsForAudience(
-    {
-      notification_type: NOTIFICATION_TYPES.FINANCE_PAYMENT_UPDATE,
-      title: `Dispatch blocked by unpaid charges: ${cargo.cargo_id}`,
-      message: `Gate release for ${cargo.cargo_id} is blocked. Outstanding balance: ${outstandingAmount || "0.00"}.`,
-      related_module: "Billing and Payment",
-      related_entity_type: "cargo",
-      related_entity_id: cargo.id,
-      priority: "high",
-      created_by: actorId || null,
-      metadata: {
-        cargo_identifier: cargo.cargo_id,
-        outstanding_amount: outstandingAmount || "0.00",
-        blocked_requirements: blockedRequirements,
-        deep_link: `/finance/cargo-charges?search=${encodeURIComponent(cargo.cargo_id)}`
-      }
-    },
-    { roleName: roleNames.financeOfficer },
-    executor,
-    { actorId: actorId || null, fallbackBroadTarget: true }
-  );
-
-  const gateNotifications = await createNotificationsForAudience(
-    {
-      notification_type: NOTIFICATION_TYPES.GATE_RELEASE_UPDATE,
-      title: `Release blocked: ${cargo.cargo_id}`,
-      message: `Release for ${cargo.cargo_id} is blocked. Finance confirmation is required.`,
-      related_module: "Dispatch and Gate",
-      related_entity_type: "cargo",
-      related_entity_id: cargo.id,
-      priority: "high",
-      created_by: actorId || null,
-      metadata: {
-        cargo_identifier: cargo.cargo_id,
-        outstanding_amount: outstandingAmount || "0.00",
-        blocked_requirements: blockedRequirements,
-        deep_link: `/gate/release-queue?search=${encodeURIComponent(cargo.cargo_id)}`
-      }
-    },
-    { roleName: roleNames.gateOfficer },
-    executor,
-    { actorId: actorId || null, fallbackBroadTarget: true }
-  );
+  const context={cargo,actor_id:actorId,outstanding_amount:outstandingAmount||"0.00",metadata:{outstanding_amount:outstandingAmount||"0.00",blocked_requirements:blockedRequirements}};
+  const financeNotifications=await emitPolicyEvent("finance.release_blocked",context,executor);
+  const gateNotifications=await emitPolicyEvent("gate.release_blocked",context,executor);
 
   return [...financeNotifications, ...gateNotifications];
 };
 
 const notifyEmergencyReleaseCompleted = async ({ cargo, outstandingAmount, actorId }, executor = db) => (
-  createNotificationsForAudience(
-    {
-      notification_type: NOTIFICATION_TYPES.FINANCE_PAYMENT_UPDATE,
-      title: `Emergency release completed with balance: ${cargo.cargo_id}`,
-      message: `Emergency release completed for ${cargo.cargo_id}. Outstanding balance remains ${outstandingAmount || "0.00"}.`,
-      related_module: "Billing and Payment",
-      related_entity_type: "cargo",
-      related_entity_id: cargo.id,
-      priority: "urgent",
-      created_by: actorId || null,
-      metadata: {
-        cargo_identifier: cargo.cargo_id,
-        outstanding_amount: outstandingAmount || "0.00",
-        deep_link: `/finance/cargo-charges?search=${encodeURIComponent(cargo.cargo_id)}`
-      }
-    },
-    { roleName: roleNames.financeOfficer },
-    executor,
-    { actorId: actorId || null, fallbackBroadTarget: true }
-  )
+  emitPolicyEvent("finance.emergency_balance",{cargo,actor_id:actorId,outstanding_amount:outstandingAmount||"0.00",metadata:{outstanding_amount:outstandingAmount||"0.00"}},executor)
 );
 
 const notifyWarehouseAlert = async ({ title, message, warehouseId, relatedEntityType, relatedEntityId, priority = "high", metadata = {}, actorId = null }, executor = db) => {
-  const supervisors = await createNotificationsForAudience(
-    {
-      notification_type: NOTIFICATION_TYPES.WAREHOUSE_ALERT,
-      title,
-      message,
-      related_module: "Warehouse Alerts",
-      related_entity_type: relatedEntityType || null,
-      related_entity_id: relatedEntityId || null,
-      priority,
-      recipient_warehouse_id: warehouseId || null,
-      created_by: actorId,
-      metadata
-    },
-    { roleName: roleNames.warehouseSupervisor, warehouseId },
-    executor,
-    { actorId, fallbackBroadTarget: true }
-  );
-
-  const admins = await createNotificationsForAudience(
-    {
-      notification_type: NOTIFICATION_TYPES.WAREHOUSE_ALERT,
-      title,
-      message,
-      related_module: "Warehouse Alerts",
-      related_entity_type: relatedEntityType || null,
-      related_entity_id: relatedEntityId || null,
-      priority,
-      recipient_warehouse_id: warehouseId || null,
-      created_by: actorId,
-      metadata
-    },
-    { roleName: roleNames.systemAdmin },
-    executor,
-    { actorId, fallbackBroadTarget: true }
-  );
-
-  return [...supervisors, ...admins];
+  return emitPolicyEvent("warehouse.alert",{title,message,warehouse_id:warehouseId,related_entity_type:relatedEntityType,related_entity_id:relatedEntityId,actor_id:actorId,metadata},executor);
 };
 
 module.exports = {

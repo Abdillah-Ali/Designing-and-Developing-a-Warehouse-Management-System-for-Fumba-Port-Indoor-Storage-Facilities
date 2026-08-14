@@ -28,57 +28,13 @@ const cargoFields = [
   "delivery_note_number"
 ];
 
-const sourceOptions = new Set([
-  "Container",
-  "Truck",
-  "Ship Transfer",
-  "Manual Delivery",
-  "Customs Hold Release",
-  "Other"
-]);
-
-const cargoTypes = new Set([
-  "General Goods",
-  "Electronics",
-  "Machinery",
-  "Food Products",
-  "Construction Materials",
-  "Fragile Goods",
-  "Hazardous Cargo",
-  "Mixed Cargo"
-]);
-
-const packagingTypes = new Set([
-  "Boxes",
-  "Cartons",
-  "Pallets",
-  "Crates",
-  "Bags",
-  "Drums",
-  "Loose Cargo",
-  "Containerized",
-  "Other"
-]);
-
-const cargoConditions = new Set([
-  "Good",
-  "Damaged",
-  "Wet",
-  "Leaking",
-  "Broken Packaging",
-  "Requires Inspection"
-]);
-
-const hazardClasses = new Set([
-  "Flammable",
-  "Corrosive",
-  "Explosive",
-  "Toxic",
-  "Oxidizing",
-  "Compressed Gas",
-  "Radioactive",
-  "Other Hazardous"
-]);
+const OPTION_KEYS = Object.freeze({
+  HAZARDOUS_CARGO: "hazardous_cargo",
+  CONTAINER: "container",
+  TRUCK: "truck",
+  MANUAL_DELIVERY: "manual_delivery",
+  GOOD: "good"
+});
 
 const nullableText = (value) => {
   if (value === undefined || value === null) return null;
@@ -113,23 +69,13 @@ const validateCargoPayload = (payload = {}) => {
     errors.push("Cargo type is required.");
   }
 
-  if (payload.source_of_cargo && !sourceOptions.has(String(payload.source_of_cargo).trim())) {
-    errors.push("Source of cargo is not valid.");
-  }
-
-  if (payload.cargo_type && !cargoTypes.has(String(payload.cargo_type).trim())) {
-    errors.push("Cargo type is not valid.");
-  }
-
-  if (payload.packaging_type && !packagingTypes.has(String(payload.packaging_type).trim())) {
-    errors.push("Packaging type is not valid.");
-  }
-
   if (!nullableText(payload.cargo_condition)) {
     errors.push("Cargo condition is required.");
-  } else if (!cargoConditions.has(String(payload.cargo_condition).trim())) {
-    errors.push("Cargo condition is not valid.");
   }
+
+  if (!nullableText(payload.source_of_cargo_key)) errors.push("Stable cargo source identity is required.");
+  if (!nullableText(payload.cargo_type_key)) errors.push("Stable cargo type identity is required.");
+  if (!nullableText(payload.cargo_condition_key)) errors.push("Stable cargo condition identity is required.");
 
   if (payload.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(payload.email))) {
     errors.push("Email address is not valid.");
@@ -142,30 +88,28 @@ const validateCargoPayload = (payload = {}) => {
     }
   });
 
-  if (payload.cargo_type === "Hazardous Cargo") {
+  if (payload.cargo_type_key === OPTION_KEYS.HAZARDOUS_CARGO) {
     if (!nullableText(payload.hazard_class)) {
       errors.push("Hazard class is required for hazardous cargo.");
-    } else if (!hazardClasses.has(String(payload.hazard_class).trim())) {
-      errors.push("Hazard class is not valid.");
     }
   }
 
-  if (payload.source_of_cargo === "Container" && !nullableText(payload.container_number)) {
+  if (payload.source_of_cargo_key === OPTION_KEYS.CONTAINER && !nullableText(payload.container_number)) {
     errors.push("Container number is required when source of cargo is Container.");
   }
 
-  if (["Truck", "Manual Delivery"].includes(payload.source_of_cargo) && !nullableText(payload.vehicle_number)) {
+  if ([OPTION_KEYS.TRUCK, OPTION_KEYS.MANUAL_DELIVERY].includes(payload.source_of_cargo_key) && !nullableText(payload.vehicle_number)) {
     errors.push("Vehicle number is required for truck or manual delivery cargo.");
   }
 
-  if (payload.cargo_condition && payload.cargo_condition !== "Good" && !nullableText(payload.inspection_notes)) {
+  if (payload.cargo_condition_key && payload.cargo_condition_key !== OPTION_KEYS.GOOD && !nullableText(payload.inspection_notes)) {
     errors.push("Inspection notes are required when cargo condition is not Good.");
   }
 
   return errors;
 };
 
-const normalizeCargoPayload = (payload = {}) => {
+const normalizeCargoPayload = (payload = {}, optionKeys = {}) => {
   const normalized = {};
 
   cargoFields.forEach((field) => {
@@ -182,8 +126,15 @@ const normalizeCargoPayload = (payload = {}) => {
     normalized[field] = nullableText(payload[field]);
   });
 
-  if (normalized.cargo_type !== "Hazardous Cargo") {
+  normalized.source_of_cargo_key = optionKeys.source_of_cargo || payload.source_of_cargo_key || null;
+  normalized.cargo_type_key = optionKeys.cargo_type || payload.cargo_type_key || null;
+  normalized.cargo_condition_key = optionKeys.cargo_condition || payload.cargo_condition_key || null;
+  normalized.packaging_type_key = optionKeys.packaging_type || payload.packaging_type_key || null;
+  normalized.hazard_class_key = optionKeys.hazard_class || payload.hazard_class_key || null;
+
+  if (normalized.cargo_type_key !== OPTION_KEYS.HAZARDOUS_CARGO) {
     normalized.hazard_class = null;
+    normalized.hazard_class_key = null;
   }
 
   return normalized;
@@ -318,8 +269,10 @@ const validatePlacement = async (payload = {}, executor = db) => {
       z.name AS zone_name,
       z.zone_type,
       z.allowed_cargo_type AS zone_allowed_cargo_type,
+      zone_option.option_key AS zone_allowed_cargo_type_key,
       z.handling_condition,
       COALESCE(b.allowed_cargo_type, z.allowed_cargo_type) AS allowed_cargo_type,
+      COALESCE(bin_option.option_key, zone_option.option_key) AS allowed_cargo_type_key,
       z.is_hazard_zone,
       z.active AS zone_active,
       z.warehouse_id,
@@ -331,6 +284,8 @@ const validatePlacement = async (payload = {}, executor = db) => {
     JOIN racks r ON r.id = l.rack_id
     JOIN zones z ON z.id = r.zone_id
     LEFT JOIN warehouses w ON w.id = z.warehouse_id
+    LEFT JOIN cargo_option_values zone_option ON zone_option.catalog_key='cargo_type' AND zone_option.storage_value=z.allowed_cargo_type
+    LEFT JOIN cargo_option_values bin_option ON bin_option.catalog_key='cargo_type' AND bin_option.storage_value=b.allowed_cargo_type
     WHERE b.id::text = $1 OR UPPER(b.barcode) = $1 OR UPPER(b.code) = $1
     LIMIT 1`,
     [binIdentifier]
@@ -557,6 +512,7 @@ const validatePlacement = async (payload = {}, executor = db) => {
 };
 
 module.exports = {
+  OPTION_KEYS,
   cargoFields,
   validateCargoPayload,
   normalizeCargoPayload,

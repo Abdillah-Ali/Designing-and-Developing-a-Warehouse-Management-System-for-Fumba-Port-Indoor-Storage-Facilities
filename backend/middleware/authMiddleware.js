@@ -338,9 +338,7 @@ const readAuthContext = (req) => {
     };
   }
 
-  // Tokens issued before Phase 1 remain access-only until their original expiry.
-  // Every newly issued token carries typ=access.
-  if (decoded.typ && decoded.typ !== "access") {
+  if (decoded.typ !== "access") {
     return { error: "This credential cannot authorize API requests.", code: "AUTH_TOKEN_TYPE_INVALID" };
   }
 

@@ -4,7 +4,7 @@ const { buildError } = require("../utils/apiError");
 const { workflowConditionRegistry, validateCondition } = require("./workflowConditionRegistry");
 const { workflowEffectRegistry } = require("./workflowEffectRegistry");
 
-const WORKFLOW_COLUMNS = Object.freeze({ cargo_registration: "registration_status", cargo_placement: "placement_status" });
+const WORKFLOW_COLUMNS = Object.freeze({ cargo_registration: "registration_status", cargo_placement: "placement_status", customs: "customs_status" });
 
 const loadPolicy = async (workflowKey, transitionKey, currentStorageValue, executor) => {
   const result = await executor.query(

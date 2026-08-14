@@ -2,41 +2,20 @@ const db = require("../config/db");
 const { writeAuditLog } = require("../models/adminModel");
 const { notifyPendingReviewEscalations } = require("./notificationService");
 const { logEvent } = require("../utils/logger");
+const {getBooleanSetting,getDecimalSetting,getDurationSetting,requireValidSetting}=require("./systemConfigurationService");
 
-const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
 let schedulerHandle = null;
 
-const parseSettingValue = (value, fallback) => {
-  if (value === undefined || value === null) return fallback;
-  if (typeof value === "object") return value;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return value;
-  }
-};
-
 const readEscalationSettings = async (executor = db) => {
-  const result = await executor.query(
-    `SELECT setting_key, setting_value
-     FROM system_settings
-     WHERE setting_key IN (
-       'cargo_pending_review_escalation_enabled',
-       'cargo_pending_review_escalation_hours',
-       'cargo_pending_review_escalation_interval_ms',
-       'cargo_pending_review_escalation_target_role'
-     )`
-  );
-  const settings = Object.fromEntries(result.rows.map((row) => [
-    row.setting_key,
-    parseSettingValue(row.setting_value, null)
-  ]));
-
+  const [enabled,threshold,interval]=await Promise.all([
+    getBooleanSetting("cargo_pending_review_escalation_enabled",{},executor),
+    getDecimalSetting("cargo_pending_review_escalation_hours",{},executor),
+    getDurationSetting("cargo_pending_review_escalation_interval_ms",{},executor)
+  ]);
   return {
-    enabled: settings.cargo_pending_review_escalation_enabled !== false,
-    thresholdHours: Number(settings.cargo_pending_review_escalation_hours || 2),
-    intervalMs: Math.max(Number(settings.cargo_pending_review_escalation_interval_ms || DEFAULT_INTERVAL_MS), 60_000),
-    targetRoleName: String(settings.cargo_pending_review_escalation_target_role || "System Admin")
+    enabled: requireValidSetting(enabled),
+    thresholdHours: requireValidSetting(threshold),
+    intervalMs: requireValidSetting(interval)
   };
 };
 
@@ -57,8 +36,7 @@ const runPendingReviewEscalationJob = async () => {
 
     try {
       const notifications = await notifyPendingReviewEscalations({
-        thresholdHours: settings.thresholdHours,
-        targetRoleName: settings.targetRoleName
+        thresholdHours: settings.thresholdHours
       }, client);
 
       await writeAuditLog({
@@ -68,7 +46,7 @@ const runPendingReviewEscalationJob = async () => {
         metadata: {
           created_notification_count: notifications.length,
           threshold_hours: settings.thresholdHours,
-          target_role: settings.targetRoleName,
+          recipient_authority: "cargo.review_overdue:users_with_permission:cargo.approve:warehouse",
           notification_references: notifications.map((item) => item.public_reference).filter(Boolean)
         }
       }, client);

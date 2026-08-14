@@ -9,30 +9,17 @@ const {
   confirmPlacementOperation,
   recordPlacementAttempt
 } = require("./placementService");
+const { requireScannerPolicy } = require("./scannerPolicyService");
+const { getScannerWorkflow, PLACEMENT_WORKFLOW } = require("./scannerWorkflowRegistry");
 
 const STAFF_ROLE = "warehouse-staff";
 const SCANNER_ROLE = "scanner";
-const PLACEMENT_WORKFLOW = "cargo_placement";
-const STEP_TRANSITION_DUPLICATE_MS = 3000;
 const PLACEMENT_OPERATION = Object.freeze({
   PLACEMENT: "placement",
   RELOCATION: "relocation"
 });
 
-const placementSteps = Object.freeze([
-  Object.freeze({
-    key: "cargo",
-    scan_type: "cargo",
-    workflow_name: "Cargo Placement",
-    instruction: "Scan Cargo Barcode"
-  }),
-  Object.freeze({
-    key: "bin",
-    scan_type: "bin",
-    workflow_name: "Cargo Placement",
-    instruction: "Scan Bin Barcode"
-  })
-]);
+const placementSteps = getScannerWorkflow(PLACEMENT_WORKFLOW).steps;
 
 const parseJson = (value, fallback) => {
   if (value === undefined || value === null) return fallback;
@@ -48,12 +35,12 @@ const parseJson = (value, fallback) => {
 
 const normalizeBarcode = (value) => String(value || "").trim().toUpperCase();
 
-const isStepTransitionDuplicate = (session, barcode, now = Date.now()) => {
+const isStepTransitionDuplicate = (session, barcode, now, duplicateWindowMs) => {
   const cargoAcceptedAt = Date.parse(session?.context?.cargo_scan_accepted_at || "");
   return (
     normalizeBarcode(barcode) === normalizeBarcode(session?.context?.scanned_cargo_barcode)
     && Number.isFinite(cargoAcceptedAt)
-    && now - cargoAcceptedAt < STEP_TRANSITION_DUPLICATE_MS
+    && now - cargoAcceptedAt < duplicateWindowMs
   );
 };
 
@@ -86,6 +73,9 @@ const serializeSession = (row) => {
     updated_at: row.updated_at,
     completed_at: row.completed_at || null,
     cancelled_at: row.cancelled_at || null
+    ,last_activity_at: row.last_activity_at || null
+    ,expires_at: row.expires_at || null
+    ,expired_at: row.expired_at || null
   };
 };
 
@@ -97,7 +87,32 @@ const fetchSessionById = async (sessionId, executor = db) => {
   return serializeSession(result.rows[0]);
 };
 
+const expireSessionIfDue = async (session, executor = db) => {
+  if (!session || session.status !== "active") return session;
+  const result = await executor.query(
+    `UPDATE scanner_sessions SET status='expired', expired_at=CURRENT_TIMESTAMP,
+       updated_at=CURRENT_TIMESTAMP, last_error='Scanner session expired due to inactivity.'
+     WHERE id=$1 AND status='active' AND expires_at <= CURRENT_TIMESTAMP RETURNING *`,
+    [session.id]
+  );
+  const expired = serializeSession(result.rows[0]);
+  if (result.rowCount) await writeAuditLog({
+    target_user_id: session.staff_user_id,
+    action: "SCAN_SESSION_EXPIRED",
+    module: "Barcode Scanner",
+    description: `Scanner session ${session.id} expired due to inactivity.`,
+    metadata: { scanner_session_id: session.id, workflow_type: session.workflow_type, expiry_source: "request" }
+  }, executor);
+  return expired || session;
+};
+
 const getActiveSessionForStaff = async (staffUserId, executor = db) => {
+  await executor.query(
+    `UPDATE scanner_sessions SET status='expired', expired_at=CURRENT_TIMESTAMP,
+       updated_at=CURRENT_TIMESTAMP, last_error='Scanner session expired due to inactivity.'
+     WHERE staff_user_id=$1 AND status='active' AND expires_at <= CURRENT_TIMESTAMP`,
+    [staffUserId]
+  );
   const result = await executor.query(
     `SELECT *
      FROM scanner_sessions
@@ -282,6 +297,8 @@ const createPlacementScanSession = async (payload, auth) => {
   try {
     await client.query("BEGIN");
 
+    const policy = await requireScannerPolicy(client);
+
     const active = await getActiveSessionForStaff(auth.userId, client);
     if (active) {
       throw buildError("This staff account already has an active scan session. Complete or cancel it before starting another.", 409);
@@ -301,8 +318,10 @@ const createPlacementScanSession = async (payload, auth) => {
 
     const result = await client.query(
       `INSERT INTO scanner_sessions
-       (staff_user_id, workflow_type, workflow_name, current_step_index, steps, context, last_success)
-       VALUES ($1, $2, $3, 0, $4::jsonb, $5::jsonb, $6)
+       (staff_user_id, workflow_type, workflow_name, current_step_index, steps, context, last_success,
+        last_activity_at, expires_at)
+       VALUES ($1, $2, $3, 0, $4::jsonb, $5::jsonb, $6,
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP + ($7 * INTERVAL '1 minute'))
        RETURNING *`,
       [
         auth.userId,
@@ -322,7 +341,8 @@ const createPlacementScanSession = async (payload, auth) => {
           current_bin_id: cargo.current_bin_id || null,
           location: cargo.location || null
         }),
-        "Placement scan session started."
+        "Placement scan session started.",
+        policy.timeout_minutes
       ]
     );
 
@@ -378,10 +398,24 @@ const updateSessionState = async (sessionId, fields, executor = db) => {
   return serializeSession(result.rows[0]);
 };
 
+const refreshSessionActivity = async (sessionId, timeoutMinutes, executor = db) => {
+  const result = await executor.query(
+    `UPDATE scanner_sessions
+     SET last_activity_at=CURRENT_TIMESTAMP,
+         expires_at=CURRENT_TIMESTAMP + ($2 * INTERVAL '1 minute'),
+         updated_at=CURRENT_TIMESTAMP
+     WHERE id=$1 AND status IN ('active','completed') RETURNING *`,
+    [sessionId, timeoutMinutes]
+  );
+  return serializeSession(result.rows[0]);
+};
+
 const cancelSessionByStaff = async (sessionId, auth) => {
-  const session = await fetchSessionById(sessionId);
+  let session = await fetchSessionById(sessionId);
   if (!session) throw buildError("Scan session not found.", 404);
   assertStaffSessionAccess(auth, session);
+
+  session = await expireSessionIfDue(session);
 
   if (session.status !== "active") return session;
 
@@ -409,52 +443,42 @@ const cancelSessionByStaff = async (sessionId, auth) => {
 };
 
 const abandonSessionByScanner = async (sessionId, auth) => {
-  const session = await fetchSessionById(sessionId);
+  let session = await fetchSessionById(sessionId);
   if (!session) return { session: null, abandoned: false };
   await assertScannerAuth(auth, session);
 
+  session = await expireSessionIfDue(session);
+
   if (session.status !== "active") {
-    return {
-      session: await getActiveSessionForAuth(auth),
-      abandoned: false
-    };
+    return { session, abandoned: false };
   }
 
-  const context = {
-    ...session.context,
-    scanned_cargo_barcode: null,
-    scanned_bin_barcode: null,
-    validation: null,
-    cargo_scan_accepted_at: null,
-    last_scan_attempt: null
-  };
-  const reset = await updateSessionState(session.id, {
-    current_step_index: 0,
-    context,
-    last_error: "Scan cancelled by Scanner.",
-    last_success: null
+  const cancelled = await updateSessionState(session.id, {
+    status: "cancelled",
+    last_error: "Scan session cancelled by Scanner.",
+    cancelled_at: new Date()
   });
 
   await writeAuditLog(
     {
       user_id: auth.userId || null,
       target_user_id: session.staff_user_id,
-      action: "SCAN_STEP_CANCELLED_BY_SCANNER",
+      action: "SCAN_SESSION_CANCELLED",
       module: "Barcode Scanner",
-      description: `Scanner cancelled the current scan step for session ${session.id}.`,
+      description: `Scanner cancelled session ${session.id}.`,
       metadata: {
         scanner_session_id: session.id,
         workflow_type: session.workflow_type,
-        restarted_from_step: 1
+        cancelled_by: "scanner"
       }
     }
   );
 
-  return { session: reset, abandoned: true };
+  return { session: cancelled, abandoned: true };
 };
 
-const rejectScan = async (session, message, scannerAuth, extraContext = {}) => {
-  const updated = await updateSessionState(session.id, {
+const rejectScan = async (session, message, scannerAuth, extraContext = {}, executor = db) => {
+  let updated = await updateSessionState(session.id, {
     last_error: message,
     last_success: null,
     context: {
@@ -466,7 +490,7 @@ const rejectScan = async (session, message, scannerAuth, extraContext = {}) => {
         accepted: false
       }
     }
-  });
+  }, executor);
 
   await writeAuditLog(
     {
@@ -480,7 +504,7 @@ const rejectScan = async (session, message, scannerAuth, extraContext = {}) => {
         workflow_type: session.workflow_type,
         current_step_index: session.current_step_index
       }
-    }
+    }, executor
   );
 
   return {
@@ -491,18 +515,18 @@ const rejectScan = async (session, message, scannerAuth, extraContext = {}) => {
   };
 };
 
-const submitPlacementCargoScan = async (session, barcode, scannerAuth) => {
-  const cargo = await findPlacementCargo(barcode);
+const submitPlacementCargoScan = async (session, barcode, scannerAuth, policy, executor = db) => {
+  const cargo = await findPlacementCargo(barcode, executor);
   if (!cargo) {
-    return rejectScan(session, "Cargo does not exist.", scannerAuth);
+    return rejectScan(session, "Cargo does not exist.", scannerAuth, {}, executor);
   }
 
-  const staffAuth = await buildStaffAuth(session.staff_user_id);
+  const staffAuth = await buildStaffAuth(session.staff_user_id, executor);
   const operationType = session.context.operation_type || PLACEMENT_OPERATION.PLACEMENT;
   try {
     assertPlacementCargoAvailable(cargo, staffAuth, operationType);
   } catch (error) {
-    return rejectScan(session, error.message, scannerAuth);
+    return rejectScan(session, error.message, scannerAuth, {}, executor);
   }
 
   const context = {
@@ -523,12 +547,13 @@ const submitPlacementCargoScan = async (session, barcode, scannerAuth) => {
     },
     validation: null
   };
-  const updated = await updateSessionState(session.id, {
+  let updated = await updateSessionState(session.id, {
     current_step_index: 1,
     context,
     last_error: null,
     last_success: `Cargo ${cargo.cargo_id} scan accepted.`
-  });
+  }, executor);
+  updated = await refreshSessionActivity(session.id, policy.timeout_minutes, executor);
 
   await writeAuditLog(
     {
@@ -542,7 +567,7 @@ const submitPlacementCargoScan = async (session, barcode, scannerAuth) => {
         cargo_id: cargo.id,
         cargo_identifier: cargo.cargo_id
       }
-    }
+    }, executor
   );
 
   return {
@@ -552,7 +577,7 @@ const submitPlacementCargoScan = async (session, barcode, scannerAuth) => {
   };
 };
 
-const submitPlacementBinScan = async (session, barcode, scannerAuth) => {
+const submitPlacementBinScan = async (session, barcode, scannerAuth, policy, executor = db) => {
   const staffAuth = await buildStaffAuth(session.staff_user_id);
   const payload = {
     cargo_id: session.context.cargo_id || session.context.cargo_barcode,
@@ -587,7 +612,7 @@ const submitPlacementBinScan = async (session, barcode, scannerAuth) => {
       },
       last_error: result.validation.detail,
       last_success: null
-    });
+    }, executor);
 
     return {
       session: updated,
@@ -598,7 +623,7 @@ const submitPlacementBinScan = async (session, barcode, scannerAuth) => {
     };
   }
 
-  const updated = await updateSessionState(session.id, {
+  let updated = await updateSessionState(session.id, {
     status: "completed",
     current_step_index: session.steps.length,
     context: {
@@ -621,7 +646,8 @@ const submitPlacementBinScan = async (session, barcode, scannerAuth) => {
     last_error: null,
     last_success: "Placement completed successfully.",
     completed_at: new Date()
-  });
+  }, executor);
+  updated = await refreshSessionActivity(session.id, policy.timeout_minutes, executor);
 
   await writeAuditLog(
     {
@@ -638,7 +664,7 @@ const submitPlacementBinScan = async (session, barcode, scannerAuth) => {
         bin_id: result.bin?.id || result.validation?.bin?.id || null,
         bin_barcode: result.bin?.barcode || result.validation?.bin?.barcode || null
       }
-    }
+    }, executor
   );
 
   return {
@@ -652,50 +678,63 @@ const submitPlacementBinScan = async (session, barcode, scannerAuth) => {
 const submitScan = async ({ sessionId, barcode }, auth) => {
   const normalizedBarcode = normalizeBarcode(barcode);
   if (!normalizedBarcode) {
-    throw buildError("Barcode value is required.", 400);
+    throw buildError("Barcode value is required.", 400, undefined, "SCANNER_REFERENCE_REQUIRED");
   }
+  const client = await db.pool.connect();
+  try {
+    await client.query("BEGIN");
+    const policy = await requireScannerPolicy(client);
+    const locked = await client.query("SELECT * FROM scanner_sessions WHERE id=$1 FOR UPDATE", [sessionId]);
+    let session = serializeSession(locked.rows[0]);
+    if (!session) throw buildError("Scan session not found.", 404, undefined, "SCANNER_SESSION_NOT_FOUND");
+    await assertScannerAuth(auth, session, client);
+    session = await expireSessionIfDue(session, client);
+    if (session.status === "expired") {
+      await client.query("COMMIT");
+      throw buildError("Scanner session expired due to inactivity.", 409, undefined, "SCANNER_SESSION_EXPIRED");
+    }
+    if (session.status !== "active") throw buildError("Scanner session is not active.", 409, undefined, "SCANNER_SESSION_NOT_ACTIVE");
+    const workflow = getScannerWorkflow(session.workflow_type);
+    if (!workflow) throw buildError("Scanner workflow is not supported.", 409, undefined, "SCANNER_WORKFLOW_NOT_SUPPORTED");
 
-  const session = await fetchSessionById(sessionId);
-  if (!session) throw buildError("Scan session not found.", 404);
-  await assertScannerAuth(auth, session);
-
-  if (session.status !== "active") {
-    return {
-      session: await getActiveSessionForAuth(auth),
-      accepted: false,
-      completed: false,
-      error: "No active scan session is assigned."
-    };
-  }
-
-  const attemptedStepIndex = session.current_step_index;
-
-  if (session.workflow_type !== PLACEMENT_WORKFLOW) {
-    throw buildError("This scanner workflow is not supported yet.", 400);
-  }
-
-  const step = session.current_step;
-  if (step?.scan_type === "cargo") {
-    const result = await submitPlacementCargoScan(session, normalizedBarcode, auth);
-    return { ...result, attempted_step_index: attemptedStepIndex };
-  }
-
-  if (step?.scan_type === "bin") {
-    if (isStepTransitionDuplicate(session, normalizedBarcode)) {
-      return {
-        session,
-        accepted: false,
-        completed: false,
-        ignoredDuplicate: true,
-        attempted_step_index: attemptedStepIndex
-      };
+    const attemptedStepIndex = session.current_step_index;
+    const duplicate = await client.query(
+      `SELECT id FROM scanner_scan_attempts
+       WHERE scanner_session_id=$1 AND step_index=$2 AND normalized_reference=$3
+         AND created_at > CURRENT_TIMESTAMP - ($4 * INTERVAL '1 millisecond')
+       ORDER BY created_at DESC LIMIT 1`,
+      [session.id, attemptedStepIndex, normalizedBarcode, policy.duplicate_window_ms]
+    );
+    if (duplicate.rowCount) {
+      await client.query(
+        `INSERT INTO scanner_scan_attempts(scanner_session_id,step_index,normalized_reference,outcome)
+         VALUES($1,$2,$3,'duplicate')`,
+        [session.id, attemptedStepIndex, normalizedBarcode]
+      );
+      await client.query("COMMIT");
+      return { session, accepted: false, completed: false, ignoredDuplicate: true,
+        code: "SCANNER_DUPLICATE_SCAN", attempted_step_index: attemptedStepIndex };
     }
 
-    const result = await submitPlacementBinScan(session, normalizedBarcode, auth);
-    return { ...result, attempted_step_index: attemptedStepIndex };
-  }
+    const step = session.current_step;
+    let result;
+    if (step?.scan_type === "cargo") result = await submitPlacementCargoScan(session, normalizedBarcode, auth, policy, client);
+    else if (step?.scan_type === "bin") result = await submitPlacementBinScan(session, normalizedBarcode, auth, policy, client);
+    else throw buildError("The active scan session has no scannable step.", 409, undefined, "SCANNER_INVALID_STEP");
 
-  throw buildError("The active scan session has no scannable step.", 400);
+    await client.query(
+      `INSERT INTO scanner_scan_attempts(scanner_session_id,step_index,normalized_reference,outcome)
+       VALUES($1,$2,$3,$4)`,
+      [session.id, attemptedStepIndex, normalizedBarcode, result.accepted ? "accepted" : "rejected"]
+    );
+    await client.query("COMMIT");
+    return { ...result, attempted_step_index: attemptedStepIndex };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 };
 
 module.exports = {
@@ -705,11 +744,13 @@ module.exports = {
   cancelSessionByStaff,
   createPlacementScanSession,
   fetchSessionById,
+  expireSessionIfDue,
   getActiveSessionForAuth,
   getActiveSessionForStaff,
   getPlacementCargoValidationError,
   getPlacementOperation,
   isStepTransitionDuplicate,
+  refreshSessionActivity,
   serializeSession,
   submitScan
 };

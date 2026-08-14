@@ -2,11 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, Info, LogOut, Wifi, WifiOff, XCircle } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { clearStoredAuthToken } from "@/lib/portal-access";
-import {
-  SCAN_COOLDOWN_MS,
-  getSessionStepKey,
-  shouldSuppressDuplicate
-} from "@/lib/scanner-workflow";
+import { getSessionStepKey } from "@/lib/scanner-workflow";
 import { getActiveScanSession, logout, refreshScanSession } from "@/services/api";
 import { createScannerSocket } from "@/services/scannerSocket";
 
@@ -23,7 +19,9 @@ const sendWithAck = (socket, event, payload) => new Promise((resolve, reject) =>
 
   socket.emit(event, payload, (response) => {
     if (!response?.success) {
-      reject(new Error(response?.message || "Scanner request failed."));
+      const error = new Error(response?.message || "Scanner request failed.");
+      error.code = response?.code;
+      reject(error);
       return;
     }
 
@@ -189,7 +187,6 @@ function ScannerPortal() {
   const animationRef = useRef(0);
   const detectorRef = useRef(null);
   const scanLockedRef = useRef(false);
-  const lastScanRef = useRef({ value: "", at: 0 });
   const lastScannedCodeRef = useRef("");
   const cameraDetectionRef = useRef({ value: "", lastSeenAt: 0 });
   const currentStepKeyRef = useRef("");
@@ -236,7 +233,7 @@ function ScannerPortal() {
       };
     }
 
-    if (session.status === "cancelled") {
+    if (["cancelled", "expired"].includes(session.status)) {
       return {
         workflow: "Waiting for Scan Session",
         progress: "No active scanning task assigned.",
@@ -386,14 +383,12 @@ function ScannerPortal() {
     const barcode = String(value || "").trim().toUpperCase();
     if (!barcode || !activeSession?.id) return false;
 
-    const now = Date.now();
-    if (scanLockedRef.current || shouldSuppressDuplicate(barcode, lastScanRef.current, now)) {
+    if (scanLockedRef.current) {
       clearScannerInput();
       return false;
     }
 
     scanLockedRef.current = true;
-    lastScanRef.current = { value: barcode, at: now };
     lastScannedCodeRef.current = barcode;
     clearScannerInput();
     setActionError("");
@@ -423,7 +418,7 @@ function ScannerPortal() {
         }, nextSession);
 
         if (!result.completed && getSessionStepKey(result.session) === getSessionStepKey(activeSession)) {
-          releaseScanLock(SCAN_COOLDOWN_MS);
+          releaseScanLock();
         }
         return true;
       }
@@ -441,6 +436,11 @@ function ScannerPortal() {
       return false;
     } catch (error) {
       const message = error.message || "Scan could not be submitted.";
+      if (error.code === "SCANNER_SESSION_EXPIRED" || error.code === "SCANNER_SESSION_NOT_ACTIVE") {
+        stopCamera();
+        setSession(null);
+        await loadActiveSession();
+      }
       setActionError(message);
       showNotice({
         type: "error",
@@ -450,7 +450,7 @@ function ScannerPortal() {
       releaseScanLock();
       return false;
     }
-  }, [activeSession, clearScannerInput, playScanTone, releaseScanLock, showNotice]);
+  }, [activeSession, clearScannerInput, loadActiveSession, playScanTone, releaseScanLock, showNotice, stopCamera]);
 
   useEffect(() => {
     loadActiveSession();
@@ -752,7 +752,6 @@ function ScannerPortal() {
   const cancelScan = async () => {
     clearScannerInput();
     cameraDetectionRef.current = { value: "", lastSeenAt: 0 };
-    lastScanRef.current = { value: "", at: 0 };
     scanLockedRef.current = true;
 
     if (!activeSession?.id) {

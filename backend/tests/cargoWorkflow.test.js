@@ -12,13 +12,16 @@ const validCargo = {
   consignee_name: "Fumba Trading",
   phone_number: "+255777123456",
   source_of_cargo: "Truck",
+  source_of_cargo_key: "truck",
   vehicle_number: "T 123 ABC",
   cargo_type: "General Goods",
+  cargo_type_key: "general_goods",
   packaging_type: "Pallets",
   quantity: 4,
   weight: 250,
   volume: 2,
-  cargo_condition: "Good"
+  cargo_condition: "Good",
+  cargo_condition_key: "good"
 };
 
 test("generated cargo identifiers follow the operational format", () => {
@@ -37,6 +40,7 @@ test("hazardous cargo requires a real hazard class", () => {
   const errors = validateCargoPayload({
     ...validCargo,
     cargo_type: "Hazardous Cargo",
+    cargo_type_key: "hazardous_cargo",
     hazard_class: ""
   });
 
@@ -47,6 +51,7 @@ test("damaged cargo requires inspection notes", () => {
   const errors = validateCargoPayload({
     ...validCargo,
     cargo_condition: "Damaged",
+    cargo_condition_key: "damaged",
     inspection_notes: ""
   });
 

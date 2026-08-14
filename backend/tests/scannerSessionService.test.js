@@ -20,15 +20,15 @@ test("immediate cargo frame duplicates are ignored after advancing to the bin st
   };
 
   assert.equal(
-    isStepTransitionDuplicate(session, "cargo-2026-00002", acceptedAt + 1000),
+    isStepTransitionDuplicate(session, "cargo-2026-00002", acceptedAt + 1000, 3000),
     true
   );
   assert.equal(
-    isStepTransitionDuplicate(session, "BIN-A-03", acceptedAt + 1000),
+    isStepTransitionDuplicate(session, "BIN-A-03", acceptedAt + 1000, 3000),
     false
   );
   assert.equal(
-    isStepTransitionDuplicate(session, "CARGO-2026-00002", acceptedAt + 3000),
+    isStepTransitionDuplicate(session, "CARGO-2026-00002", acceptedAt + 3000, 3000),
     false
   );
 });
@@ -88,6 +88,7 @@ test("scanner cargo validation is based on backend queue rules, not the session'
 
 test("a scanner session adopts a different valid scanned cargo", async () => {
   const originalQuery = db.query;
+  const originalConnect = db.pool.connect;
   const sessionRow = {
     id: 40,
     staff_user_id: 7,
@@ -104,7 +105,9 @@ test("a scanner session adopts a different valid scanned cargo", async () => {
       cargo_db_id: 1,
       cargo_id: "CARGO-ORIGINAL",
       cargo_barcode: "CARGO-ORIGINAL"
-    }
+    },
+    expires_at: "2099-01-01T00:00:00.000Z",
+    last_activity_at: "2026-08-13T00:00:00.000Z"
   };
   const scannedCargo = {
     id: 2,
@@ -118,8 +121,22 @@ test("a scanner session adopts a different valid scanned cargo", async () => {
     assigned_staff_id: 7,
     is_deleted: false
   };
+  let updatedContext = sessionRow.context;
 
   db.query = async (sql, values = []) => {
+    if (["BEGIN", "COMMIT", "ROLLBACK"].includes(sql)) return { rowCount: 0, rows: [] };
+    if (sql.includes("FROM system_setting_definitions")) {
+      const key = values[0];
+      const types = { scanner_session_timeout_minutes: "integer", scanner_duplicate_scan_window_ms: "duration_ms", scanner_session_cleanup_interval_ms: "duration_ms" };
+      return { rowCount: 1, rows: [{ setting_key: key, value_type: types[key], criticality: "critical_policy", validation_schema: { minimum: 1 }, is_active: true }] };
+    }
+    if (sql.includes("FROM system_settings WHERE setting_key")) {
+      const value = values[0] === "scanner_session_timeout_minutes" ? 20 : values[0] === "scanner_duplicate_scan_window_ms" ? 3000 : 60000;
+      return { rowCount: 1, rows: [{ setting_value: value, revision: 1 }] };
+    }
+    if (sql.includes("SELECT * FROM scanner_sessions WHERE id=$1 FOR UPDATE")) return { rowCount: 1, rows: [sessionRow] };
+    if (sql.includes("FROM scanner_scan_attempts")) return { rowCount: 0, rows: [] };
+    if (sql.includes("INSERT INTO scanner_scan_attempts")) return { rowCount: 1, rows: [{ id: 1 }] };
     if (sql.includes("FROM scanner_sessions") && sql.includes("WHERE id = $1")) {
       return { rowCount: 1, rows: [sessionRow] };
     }
@@ -133,7 +150,8 @@ test("a scanner session adopts a different valid scanned cargo", async () => {
           warehouse_id: 3,
           shift_id: 1,
           status: "active",
-          role_name: "Warehouse Staff"
+          role_name: "Warehouse Staff",
+          role_key: "warehouse_staff"
         }]
       };
     }
@@ -152,12 +170,15 @@ test("a scanner session adopts a different valid scanned cargo", async () => {
       };
     }
     if (sql.startsWith("UPDATE scanner_sessions")) {
+      if (sql.includes("status='expired'")) return { rowCount: 0, rows: [] };
+      if (sql.includes("last_activity_at=CURRENT_TIMESTAMP")) return { rowCount: 1, rows: [{ ...sessionRow, current_step_index: 1, context: updatedContext, expires_at: "2099-01-01T00:20:00.000Z" }] };
+      updatedContext = JSON.parse(values[1]);
       return {
         rowCount: 1,
         rows: [{
           ...sessionRow,
           current_step_index: values[0],
-          context: JSON.parse(values[1]),
+          context: updatedContext,
           last_error: values[2],
           last_success: values[3]
         }]
@@ -168,6 +189,7 @@ test("a scanner session adopts a different valid scanned cargo", async () => {
     }
     throw new Error(`Unexpected query: ${sql}`);
   };
+  db.pool.connect = async () => ({ query: (...args) => db.query(...args), release() {} });
 
   try {
     const result = await submitScan(
@@ -185,5 +207,6 @@ test("a scanner session adopts a different valid scanned cargo", async () => {
     assert.equal(result.session.current_step.scan_type, "bin");
   } finally {
     db.query = originalQuery;
+    db.pool.connect = originalConnect;
   }
 });

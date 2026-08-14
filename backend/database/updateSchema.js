@@ -283,7 +283,10 @@ const runUpdates = async () => {
         updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         completed_at TIMESTAMP,
         cancelled_at TIMESTAMP,
-        CHECK (status IN ('active', 'completed', 'cancelled')),
+        last_activity_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        expires_at TIMESTAMP,
+        expired_at TIMESTAMP,
+        CHECK (status IN ('active', 'completed', 'cancelled', 'expired')),
         CHECK (current_step_index >= 0)
       );
 
@@ -817,6 +820,14 @@ const runUpdates = async () => {
     await applySqlMigration(client, "024_cargo_workflow_policy.sql", cargoWorkflowPolicyMigration);
     const financePolicyAuthorityMigration = fs.readFileSync(path.join(__dirname, "migrations", "20260812_finance_policy_authority.sql"), "utf8");
     await applySqlMigration(client, "025_finance_policy_authority.sql", financePolicyAuthorityMigration);
+    const customsWorkflowAuthorityMigration = fs.readFileSync(path.join(__dirname, "migrations", "20260813_customs_workflow_authority.sql"), "utf8");
+    await applySqlMigration(client, "026_customs_workflow_authority.sql", customsWorkflowAuthorityMigration);
+    const dispatchGatePolicyAuthorityMigration = fs.readFileSync(path.join(__dirname, "migrations", "20260813_dispatch_gate_policy_authority.sql"), "utf8");
+    await applySqlMigration(client, "027_dispatch_gate_policy_authority.sql", dispatchGatePolicyAuthorityMigration);
+    const scannerPolicyAuthorityMigration = fs.readFileSync(path.join(__dirname, "migrations", "20260813_scanner_policy_authority.sql"), "utf8");
+    await applySqlMigration(client, "028_scanner_policy_authority.sql", scannerPolicyAuthorityMigration);
+    const notificationPolicyAuthorityMigration = fs.readFileSync(path.join(__dirname, "migrations", "20260813_notification_policy_authority.sql"), "utf8");
+    await applySqlMigration(client, "029_notification_policy_authority.sql", notificationPolicyAuthorityMigration);
   } catch (error) {
     if (transactionOpen) await client.query("ROLLBACK").catch(() => {});
     if (legacyStarted) {

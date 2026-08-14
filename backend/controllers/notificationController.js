@@ -1,7 +1,6 @@
 const db = require("../config/db");
 const { buildError } = require("../utils/apiError");
 const {
-  ACTIONABLE_WORKFLOW_TYPES,
   addVisibleNotificationClauses,
   archiveNotification,
   createSystemAnnouncement,
@@ -12,6 +11,7 @@ const {
   markNotificationRead,
   restoreNotification
 } = require("../services/notificationService");
+const {listNotificationPolicies,updateNotificationPolicy}=require("../services/notificationAuthorityService");
 
 const sendNotFound = () => {
   throw buildError("Notification not found.", 404);
@@ -173,7 +173,7 @@ const resolveNotificationRoute = async (req, res, next) => {
     const findClauses = ["n.public_reference = $1"];
     addVisibleNotificationClauses(req.auth, findClauses, findValues);
     const findResult = await client.query(
-      `SELECT public_reference, notification_type, status
+      `SELECT public_reference, notification_type, actionable, status
        FROM notifications n
        WHERE ${findClauses.join(" AND ")}
        LIMIT 1`,
@@ -184,7 +184,7 @@ const resolveNotificationRoute = async (req, res, next) => {
       throw buildError("Notification not found.", 404);
     }
 
-    if (ACTIONABLE_WORKFLOW_TYPES.has(notification.notification_type)) {
+    if (notification.actionable) {
       throw buildError("Complete the required workflow action to resolve this notification.", 409);
     }
 
@@ -195,9 +195,7 @@ const resolveNotificationRoute = async (req, res, next) => {
     const result = await client.query(
       `UPDATE notifications n
        SET status = 'completed',
-           completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
-           is_read = TRUE,
-           read_at = COALESCE(read_at, CURRENT_TIMESTAMP)
+           completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)
        WHERE ${clauses.join(" AND ")}
        RETURNING
          public_reference,
@@ -224,14 +222,19 @@ const resolveNotificationRoute = async (req, res, next) => {
   }
 };
 
+const getNotificationPolicies=async(req,res,next)=>{try{const rows=await listNotificationPolicies();res.json({success:true,count:rows.length,data:rows});}catch(error){next(error);}};
+const updateNotificationPolicyRoute=async(req,res,next)=>{const client=await db.pool.connect();try{await client.query("BEGIN");const row=await updateNotificationPolicy(req.params.eventKey,req.body||{},req.auth?.userId,client);await client.query("COMMIT");res.json({success:true,data:row});}catch(error){await client.query("ROLLBACK");next(error);}finally{client.release();}};
+
 module.exports = {
   archiveNotificationForUser,
   createSystemAnnouncementNotification,
   getNotifications,
+  getNotificationPolicies,
   getNotificationSummaryForUser,
   getUnreadNotificationCount,
   markAllNotificationsAsRead,
   markNotificationAsRead,
   restoreNotificationForUser,
-  resolveNotificationRoute
+  resolveNotificationRoute,
+  updateNotificationPolicyRoute
 };

@@ -14,7 +14,7 @@ export const cargoCorrectionGroups = [
     key: "logistics",
     label: "Logistics Information",
     fields: [
-      { key: "source_of_cargo", label: "Source of Cargo", type: "select", options: ["Container", "Truck", "Ship Transfer", "Manual Delivery", "Customs Hold Release", "Other"] },
+      { key: "source_of_cargo", label: "Source of Cargo", type: "select", catalogKey: "cargo_source" },
       { key: "container_number", label: "Container Number" },
       { key: "vehicle_number", label: "Vehicle Number" },
       { key: "delivery_note_number", label: "Delivery Note Number" }
@@ -24,15 +24,15 @@ export const cargoCorrectionGroups = [
     key: "cargo",
     label: "Cargo Information",
     fields: [
-      { key: "cargo_type", label: "Cargo Type", type: "select", options: ["General Goods", "Electronics", "Machinery", "Food Products", "Construction Materials", "Fragile Goods", "Hazardous Cargo", "Mixed Cargo"] },
-      { key: "packaging_type", label: "Packaging Type", type: "select", options: ["Boxes", "Cartons", "Pallets", "Crates", "Bags", "Drums", "Loose Cargo", "Containerized", "Other"] },
+      { key: "cargo_type", label: "Cargo Type", type: "select", catalogKey: "cargo_type" },
+      { key: "packaging_type", label: "Packaging Type", type: "select", catalogKey: "packaging_type" },
       { key: "quantity", label: "Quantity", type: "number" },
       { key: "weight", label: "Weight", type: "number" },
       { key: "volume", label: "Volume", type: "number" },
       { key: "cargo_description", label: "Cargo Description", type: "textarea" },
-      { key: "cargo_condition", label: "Cargo Condition", type: "select", options: ["Good", "Damaged", "Wet", "Leaking", "Broken Packaging", "Requires Inspection"] },
+      { key: "cargo_condition", label: "Cargo Condition", type: "select", catalogKey: "cargo_condition" },
       { key: "inspection_notes", label: "Inspection Notes", type: "textarea" },
-      { key: "hazard_class", label: "Hazard Class", type: "select", options: ["", "Flammable", "Corrosive", "Explosive", "Toxic", "Oxidizing", "Compressed Gas", "Radioactive", "Other Hazardous"] }
+      { key: "hazard_class", label: "Hazard Class", type: "select", catalogKey: "hazard_class", optional: true }
     ]
   }
 ];
@@ -42,6 +42,17 @@ export const cargoCorrectionFields = cargoCorrectionGroups.flatMap((group) => gr
 export const cargoCorrectionFieldMap = Object.fromEntries(
   cargoCorrectionFields.map((field) => [field.key, field])
 );
+
+export function withAuthoritativeCargoOptions(groups, catalogs = {}) {
+  return groups.map((group) => ({
+    ...group,
+    fields: group.fields.map((field) => field.catalogKey ? {
+      ...field,
+      options: (catalogs[field.catalogKey] || []).filter((option) => option.active !== false)
+        .map((option) => ({ key: option.option_key, value: option.storage_value, label: option.display_label }))
+    } : field)
+  }));
+}
 
 export function normalizeCorrectionDisplayValue(value) {
   if (value === undefined || value === null || value === "") return "Empty";

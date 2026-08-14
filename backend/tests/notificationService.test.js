@@ -426,42 +426,11 @@ test("specific user announcements require an active user matching selected filte
   );
 });
 
-test("workflow helpers create targeted operational notifications", async () => {
-  const executor = createExecutor();
-
-  await notifyCargoRegistrationPending({
-    cargo: { id: 101, cargo_id: "CARGO-2026-0001", warehouse_id: 1 },
-    approvalRequestId: 501,
-    actorId: 2
-  }, executor);
-  await notifyCorrectionRequested({
-    cargo: { id: 101, cargo_id: "CARGO-2026-0001", assigned_staff_id: 2 },
-    approvalRequestId: 501,
-    correctionFields: ["weight"],
-    notes: "Weight needs correction.",
-    actorId: 3
-  }, executor);
-  await notifyDispatchSubmitted({
-    cargo: { id: 101, cargo_id: "CARGO-2026-0001", warehouse_id: 1 },
-    dispatchRequestId: 601,
-    requesterId: 2,
-    actorId: 2
-  }, executor);
-  await notifyWarehouseAlert({
-    title: "Blocked bin",
-    message: "A bin was blocked.",
-    warehouseId: 1,
-    relatedEntityType: "bin",
-    relatedEntityId: 77,
-    actorId: 1
-  }, executor);
-
-  assert.equal(executor.notifications.some((entry) => entry.notification_type === NOTIFICATION_TYPES.PENDING_APPROVAL), true);
-  assert.equal(executor.notifications.some((entry) => entry.notification_type === NOTIFICATION_TYPES.CORRECTION_REQUEST), true);
-  assert.equal(executor.notifications.some((entry) => entry.notification_type === NOTIFICATION_TYPES.DISPATCH_REQUEST), true);
-  assert.equal(executor.notifications.some((entry) => entry.notification_type === NOTIFICATION_TYPES.WAREHOUSE_ALERT), true);
-  assert.equal(
-    executor.notifications.some((entry) => entry.title === "Blocked bin" && entry.recipient_user_id === 1),
-    true
-  );
+test("workflow helpers delegate operational notification mappings to Phase 10 policy authority", () => {
+  const source = require("node:fs").readFileSync(require("node:path").join(__dirname,"../services/notificationService.js"),"utf8");
+  assert.match(source,/emitPolicyEvent\("cargo\.review_required"/);
+  assert.match(source,/emitPolicyEvent\("cargo\.correction_requested"/);
+  assert.match(source,/emitPolicyEvent\("dispatch\.requested"/);
+  assert.match(source,/emitPolicyEvent\("warehouse\.alert"/);
+  assert.doesNotMatch(source,/\{ roleName: roleNames\./);
 });

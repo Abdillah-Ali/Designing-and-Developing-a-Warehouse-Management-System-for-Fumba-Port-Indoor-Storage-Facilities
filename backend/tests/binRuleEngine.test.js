@@ -10,7 +10,8 @@ const context = {
   bin: {
     status: "Available", active: true, level_active: true, rack_active: true, zone_active: true,
     warehouse_status: "active", is_hazard_zone: false, zone_allowed_cargo_type: "General Goods",
-    allowed_cargo_type: "General Goods", reserved_for_cargo_type: null, zone_type: "Standard",
+    zone_allowed_cargo_type_key: "general_goods", allowed_cargo_type: "General Goods",
+    allowed_cargo_type_key: "general_goods", reserved_for_cargo_type: null, zone_type: "Standard",
     cargo_restrictions: null, handling_condition: null
   },
   approvals: { supervisor_override: null },
@@ -98,6 +99,14 @@ test("administrator rule names and codes do not affect evaluator execution", asy
   assert.equal(originalResult.approved, true);
   assert.equal(renamedResult.approved, true);
   assert.deepEqual(originalResult.results.map((item) => item.passed), renamedResult.results.map((item) => item.passed));
+});
+
+test("cargo compatibility fails closed without a stable cargo-type key", async () => {
+  const missingKeyContext = { ...context, cargo: { ...context.cargo, cargo_type_key: null } };
+  const evaluated = await evaluateRules({ target: "placement_confirmation", context: missingKeyContext, rules: rules() });
+  const compatibility = evaluated.results.find((item) => item.evaluator_type === "cargo_storage_compatibility");
+  assert.equal(compatibility.passed, false);
+  assert.equal(compatibility.details.reason_code, "CARGO_TYPE_KEY_MISSING");
 });
 
 test("evaluation results follow database priority order", async () => {

@@ -54,7 +54,7 @@ const getLoginErrorMessage = (response, payload = {}) => {
   }
 
   if (response.status === 503) {
-    return payload.message === LOGIN_ERROR_MESSAGES.DATABASE_UNAVAILABLE
+    return payload.code === "DATABASE_UNAVAILABLE"
       ? LOGIN_ERROR_MESSAGES.DATABASE_UNAVAILABLE
       : LOGIN_ERROR_MESSAGES.AUTHENTICATION_UNAVAILABLE;
   }
@@ -667,6 +667,7 @@ export const updateBinRule = (reference, payload) => request(`/bin-rules/${encod
 
 // Finance endpoints
 export const getFinanceDashboard = (params = {}) => request(`/finance/dashboard${buildQuerySuffix(params)}`);
+export const getSystemReadiness = () => request("/admin/readiness");
 export const getFinanceCargoCharges = (params = {}) => request(`/finance/cargo-charges${buildQuerySuffix(params)}`);
 export const getFinanceInvoices = (params = {}) => request(`/finance/invoices${buildQuerySuffix(params)}`);
 export const getFinanceInvoice = (invoiceNumber) => request(`/finance/invoices/${encodeURIComponent(invoiceNumber)}`);

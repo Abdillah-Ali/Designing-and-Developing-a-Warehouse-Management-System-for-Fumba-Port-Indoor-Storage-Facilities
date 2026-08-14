@@ -34,6 +34,7 @@ const { findPossibleDuplicateCargo } = require("../services/cargoDuplicateServic
 const { writeAuditLog } = require("../models/adminModel");
 const { STAFF_TASK_OWNER_SQL } = require("../services/taskOwnershipService");
 const { getPlacementActivity } = require("../services/placementActivityService");
+const { getApplicableTariff, getServerNow } = require("../services/financeService");
 const {
   notifyCustomsAwaitingInspection,
   notifyCargoRegistrationPending,
@@ -46,10 +47,11 @@ const allowedDocumentTypes = new Map(Object.entries(documentTypes));
 const registrationStatuses = new Set(Object.values(REGISTRATION_STATUS));
 const placementStatuses = new Set(Object.values(PLACEMENT_STATUS));
 
-const buildError = (message, statusCode = 400, errors) => {
+const buildError = (message, statusCode = 400, errors, code) => {
   const error = new Error(message);
   error.statusCode = statusCode;
   error.errors = errors;
+  error.code = code;
   return error;
 };
 
@@ -409,12 +411,14 @@ const createCargo = async (req, res, next) => {
     }
 
     const catalogResult = await normalizeCatalogPayload(configuredPayload, client);
-    const payload = normalizeCargoPayload(catalogResult.payload);
+    const payload = normalizeCargoPayload(catalogResult.payload, catalogResult.option_keys);
     payload.received_by = req.auth?.username || "Warehouse Staff";
     const registrationStatus = REGISTRATION_STATUS.PENDING_REVIEW;
     const placementStatus = PLACEMENT_STATUS.UNPLACED;
 
     await client.query("BEGIN");
+
+    await getApplicableTariff(payload, await getServerNow(client), client);
 
     const duplicateMatches = await findPossibleDuplicateCargo(client, payload, { lock: true });
     if (duplicateMatches.length > 0) {
@@ -472,6 +476,7 @@ const createCargo = async (req, res, next) => {
       "barcode",
       "reference_number",
       ...cargoFields,
+      "cargo_type_key",
       "registration_status",
       "placement_status",
       "location",
@@ -480,12 +485,14 @@ const createCargo = async (req, res, next) => {
       "received_by_user_id",
       "created_by",
       "assigned_staff_id"
+      ,"customs_status_key"
     ];
     const values = [
       identifiers.cargo_id,
       identifiers.barcode,
       identifiers.reference_number,
       ...cargoFields.map((field) => payload[field]),
+      payload.cargo_type_key,
       registrationStatus,
       placementStatus,
       null,
@@ -494,6 +501,7 @@ const createCargo = async (req, res, next) => {
       req.auth?.userId || null,
       req.auth?.userId || null,
       req.auth?.userId || null
+      ,"pending_inspection"
     ];
     const placeholders = values.map((_, index) => `$${index + 1}`).join(", ");
 
@@ -754,13 +762,8 @@ const resubmitCargo = async (req, res, next) => {
     );
 
     // Resolve matching pending correction request notifications
-    const { resolveNotificationsByEntity } = require("../services/notificationService");
-    await resolveNotificationsByEntity({
-      relatedEntityType: "cargo",
-      relatedEntityId: cargo.id,
-      notificationTypes: ["correction_request"],
-      executor: client
-    });
+    const { resolveNotificationStrategy } = require("../services/notificationAuthorityService");
+    await resolveNotificationStrategy("correction_resubmitted", { subjectReference: cargo.cargo_id, executor: client });
 
     await client.query("COMMIT");
     res.json({ success: true, data: resubmission.cargo });
@@ -1036,7 +1039,7 @@ const updateCargo = async (req, res, next) => {
     }
 
     const catalogResult = await normalizeCatalogPayload(mergedPayload, client, { allowInactive: true });
-    const payload = normalizeCargoPayload(catalogResult.payload);
+    const payload = normalizeCargoPayload(catalogResult.payload, catalogResult.option_keys);
     if (existingCargo.registration_status === REGISTRATION_STATUS.APPROVED) {
       const revisionCandidates = updates.filter((field) => CORRECTION_FIELDS[field]);
       const candidateSnapshot = captureCorrectionValues(existingCargo, revisionCandidates);
@@ -1072,9 +1075,11 @@ const updateCargo = async (req, res, next) => {
       existingCargo.correction_fields = revisedFields;
     }
 
-    const values = updates.map((field) => payload[field]);
+    const persistedUpdates = [...updates];
+    if (updates.includes("cargo_type")) persistedUpdates.push("cargo_type_key");
+    const values = persistedUpdates.map((field) => payload[field]);
 
-    const setClause = updates
+    const setClause = persistedUpdates
       .map((field, index) => `${field} = $${index + 1}`)
       .join(", ");
 

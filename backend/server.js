@@ -5,8 +5,16 @@ const { testConnection } = require("./config/db");
 const { initSocketServer } = require("./realtime/socketServer");
 const { startNotificationSchedulers } = require("./services/notificationScheduler");
 const { getSystemReadiness } = require("./services/readinessService");
+const { startScannerSessionCleanup } = require("./services/scannerSessionCleanupService");
 
 const PORT = Number(process.env.PORT || 5000);
+
+const startConfiguredBusinessServices = async (readiness) => {
+  if (readiness.domains.notifications.ready) await startNotificationSchedulers();
+  else console.log(JSON.stringify({operation:"notification_scheduler_startup",result:"configuration_required"}));
+  if (readiness.domains.scanner.ready) await startScannerSessionCleanup();
+  else console.log(JSON.stringify({operation:"scanner_cleanup_startup",result:"configuration_required"}));
+};
 
 const startServer = async () => {
   try {
@@ -25,7 +33,7 @@ const startServer = async () => {
     }));
     const server = http.createServer(app);
     initSocketServer(server);
-    await startNotificationSchedulers();
+    await startConfiguredBusinessServices(readiness);
 
     server.listen(PORT, () => {
       console.log(JSON.stringify({
@@ -45,4 +53,6 @@ const startServer = async () => {
   }
 };
 
-startServer();
+if (require.main === module) startServer();
+
+module.exports = { startConfiguredBusinessServices, startServer };

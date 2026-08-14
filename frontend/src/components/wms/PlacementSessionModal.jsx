@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { EnterpriseModal } from "./EnterpriseModal";
 import { ErrorState, StatusBadge } from "./OperationalUi";
-import { cancelScanSession } from "@/services/api";
+import { cancelScanSession, getActiveScanSession } from "@/services/api";
 import { createScannerSocket } from "@/services/scannerSocket";
 import { readCurrentStepError } from "@/lib/scanner-workflow";
 import { getErrorMessage } from "@/lib/wms-operational";
@@ -104,6 +104,26 @@ function PlacementSessionModal({ cargo, open, initialSession, onClose, onComplet
       socket.disconnect();
     };
   }, [open]);
+
+  useEffect(() => {
+    if (!open || session?.status !== "active") return undefined;
+    const checkServerSession = async () => {
+      try {
+        const response = await getActiveScanSession();
+        const current = response.data || null;
+        if (current?.id === session.id) {
+          setSession(current);
+          return;
+        }
+        await onCompleted?.();
+        onClose?.();
+      } catch (error) {
+        setOperationError(getErrorMessage(error));
+      }
+    };
+    const handle = window.setInterval(checkServerSession, 5000);
+    return () => window.clearInterval(handle);
+  }, [onClose, onCompleted, open, session?.id, session?.status]);
 
   useEffect(() => {
     if (!completed || completionNotifiedRef.current) return;

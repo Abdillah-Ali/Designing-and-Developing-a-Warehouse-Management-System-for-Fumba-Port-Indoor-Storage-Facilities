@@ -341,10 +341,12 @@ const confirmPlacementOperation = async (payload, auth = {}) => {
   const client = await db.pool.connect();
   let normalized;
   let validation;
+  let requestedOperation;
 
   try {
     await client.query("BEGIN");
     ({ normalized, validation } = await validatePlacementOperation(payload, auth, client));
+    requestedOperation = normalized.operation_type || validation.operation_type;
 
     if (!validation.approved) {
       await client.query("ROLLBACK");
@@ -360,6 +362,15 @@ const confirmPlacementOperation = async (payload, auth = {}) => {
     }
 
     const cargo = cargoResult.rows[0];
+    const currentOperation = cargo.current_bin_id ? "relocation" : "placement";
+    if (requestedOperation !== currentOperation) {
+      throw buildError(
+        "Cargo placement state changed before this operation was applied.",
+        409,
+        null,
+        "WORKFLOW_TRANSITION_NOT_ALLOWED"
+      );
+    }
     const binIds = [...new Set(
       [Number(validation.bin.id), Number(cargo.current_bin_id)]
         .filter((id) => Number.isInteger(id) && id > 0)

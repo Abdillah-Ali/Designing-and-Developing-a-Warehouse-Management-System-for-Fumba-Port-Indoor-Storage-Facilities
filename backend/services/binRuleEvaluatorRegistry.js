@@ -18,24 +18,19 @@ const placementTargets = Object.freeze([
   "relocation"
 ]);
 
-const splitTypes = (value) => String(value || "")
+const splitKeys = (value) => String(value || "")
   .split(",")
   .map((item) => item.trim().toLowerCase())
   .filter(Boolean);
 
-const cargoAllowed = (cargoType, configuredTypes) => {
-  const allowed = splitTypes(configuredTypes);
-  if (allowed.length === 0 || allowed.includes("all")) return true;
-  if (allowed.includes(String(cargoType || "").toLowerCase())) return true;
-  return allowed.includes("mixed cargo") && String(cargoType) !== "Hazardous Cargo";
+const cargoAllowed = (cargoTypeKey, configuredKeys) => {
+  if (!cargoTypeKey) return false;
+  const allowed = splitKeys(configuredKeys);
+  return allowed.includes("all") || allowed.includes(String(cargoTypeKey).toLowerCase());
 };
 
 const result = (passed, message, details = {}) => ({ passed, message, details });
-const cargoTypeKey = (cargo) => cargo.cargo_type_key || ({
-  "Hazardous Cargo": "hazardous_cargo",
-  "Fragile Goods": "fragile_goods",
-  "General Goods": "general_goods"
-}[cargo.cargo_type] || null);
+const cargoTypeKey = (cargo) => String(cargo.cargo_type_key || "").trim() || null;
 
 const evaluatorDefinitions = Object.freeze({
   capacity_limits: {
@@ -69,11 +64,19 @@ const evaluatorDefinitions = Object.freeze({
     supported_actions: Object.freeze(["warning", "block"]),
     parameter_schema: { type: "object", properties: {}, additionalProperties: false },
     evaluate: ({ cargo, bin }) => {
-      const zoneAllowed = cargoAllowed(cargo.cargo_type, bin.zone_allowed_cargo_type);
-      const binAllowed = cargoAllowed(cargo.cargo_type, bin.allowed_cargo_type);
+      const stableCargoType = cargoTypeKey(cargo);
+      if (!stableCargoType) {
+        return result(false, "Cargo has no authoritative cargo-type identity.", {
+          reason_code: "CARGO_TYPE_KEY_MISSING"
+        });
+      }
+      const zoneAllowed = cargoAllowed(stableCargoType, bin.zone_allowed_cargo_type_key);
+      const binAllowed = cargoAllowed(stableCargoType, bin.allowed_cargo_type_key);
       return result(zoneAllowed && binAllowed, zoneAllowed
         ? `${cargo.cargo_type} is not permitted in the destination bin.`
-        : `${cargo.cargo_type} is not permitted in the destination zone.`);
+        : `${cargo.cargo_type} is not permitted in the destination zone.`, {
+        reason_code: zoneAllowed ? "BIN_CARGO_TYPE_INCOMPATIBLE" : "ZONE_CARGO_TYPE_INCOMPATIBLE"
+      });
     }
   },
   hazard_zone_compatibility: {
@@ -129,7 +132,7 @@ const evaluatorDefinitions = Object.freeze({
     supported_actions: Object.freeze(["warning", "block"]),
     parameter_schema: { type: "object", properties: { hold_marker: { type: "string", minLength: 1 }, storage_marker: { type: "string", minLength: 1 } }, required: ["hold_marker", "storage_marker"], additionalProperties: false },
     evaluate: ({ cargo, bin }, parameters) => result(
-      !String(cargo.customs_status || "").toLowerCase().includes(parameters.hold_marker.toLowerCase())
+      cargo.customs_status_key !== "on_hold"
         || String(bin.cargo_restrictions || "").toLowerCase().includes(parameters.storage_marker.toLowerCase()),
       "Cargo under customs hold requires explicitly compatible storage."
     )

@@ -64,7 +64,6 @@ function actionFromDestination(notification, role, label) {
 }
 
 function getNotificationAction(notification, role = getStoredAuthRole()) {
-  const type = notification?.notification_type;
   const recordIdentifier = getRecordIdentifier(notification);
   const action = {
     actionLabel: "",
@@ -73,159 +72,17 @@ function getNotificationAction(notification, role = getStoredAuthRole()) {
     actionRequired: false
   };
 
-  if (!notification || notification.status !== "pending") {
+  if (!notification || notification.status !== "pending" || notification.actionable !== true) {
     return action;
   }
 
-  const destinationAction = actionFromDestination(notification, role, "Open Workflow");
-  if (destinationAction) return destinationAction;
-
-  if (role === "warehouse-supervisor") {
-    if (type === "pending_approval") {
-      return {
-        actionLabel: "Review Cargo",
-        targetRoute: appendCargoRef("/supervisor/cargo/pending-approvals", recordIdentifier),
-        recordIdentifier,
-        actionRequired: true
-      };
-    }
-
-    if (type === "placement_override") {
-      return {
-        actionLabel: "Open Placement",
-        targetRoute: appendCargoRef("/supervisor/cargo/exceptions", recordIdentifier),
-        recordIdentifier,
-        actionRequired: true
-      };
-    }
-
-    if (type === "dispatch_request") {
-      return {
-        actionLabel: "Review Dispatch",
-        targetRoute: appendCargoRef("/supervisor/dispatch/requests", recordIdentifier),
-        recordIdentifier,
-        actionRequired: true
-      };
-    }
-
-    if (type === "customs_inspection") {
-      return {
-        actionLabel: "Open Customs Review",
-        targetRoute: appendCargoRef("/supervisor/cargo/pending-approvals", recordIdentifier),
-        recordIdentifier,
-        actionRequired: true
-      };
-    }
-
-    if (type === "invoice_pending") {
-      return {
-        actionLabel: "Confirm Invoice",
-        targetRoute: appendCargoRef("/supervisor/cargo/pending-approvals", recordIdentifier),
-        recordIdentifier,
-        actionRequired: true
-      };
-    }
-  }
-
-  if (role === "warehouse-staff" && type === "correction_request") {
-    return {
-      actionLabel: "Review Corrections",
-      targetRoute: appendCargoRef("/staff/cargo/registration?tab=reviews", recordIdentifier),
-      recordIdentifier,
-      actionRequired: true
-    };
-  }
-
-  if (role === "finance-officer") {
-    if (type === "invoice_pending" || type === "finance_charge_started") {
-      return {
-        actionLabel: "Open Charges",
-        targetRoute: appendCargoRef("/finance/cargo-charges", recordIdentifier),
-        recordIdentifier,
-        actionRequired: true
-      };
-    }
-    if (type === "finance_payment_update") {
-      return {
-        actionLabel: "Open Payments",
-        targetRoute: "/finance/payments",
-        recordIdentifier,
-        actionRequired: true
-      };
-    }
-  }
-
-  if (role === "customs-officer" && (type === "customs_inspection" || type === "warehouse_alert")) {
-    return {
-      actionLabel: "Open Inspection",
-      targetRoute: appendCargoRef("/customs/inspection-queue", recordIdentifier),
-      recordIdentifier,
-      actionRequired: true
-    };
-  }
-
-  if (role === "gate-officer" && type === "gate_release_update") {
-    return {
-      actionLabel: "Open Release Queue",
-      targetRoute: appendCargoRef("/gate/release-queue", recordIdentifier),
-      recordIdentifier,
-      actionRequired: true
-    };
-  }
-
-  return action;
+  return actionFromDestination(notification, role, "Open Workflow") || action;
 }
 
 function getRelatedPath(notification) {
-  const basePath = getPortalBase();
-  if (!basePath) return "";
-  const type = notification?.notification_type;
-  const module = String(notification?.related_module || "").toLowerCase();
-
-  if (basePath === "/staff") {
-    if (type === "correction_request") return "/staff/cargo/registration?tab=reviews";
-    if (type === "dispatch_request" || module.includes("dispatch")) return "/staff/dispatch/queue";
-    if (type === "warehouse_alert" || module.includes("warehouse")) return "/staff/storage/bins";
-
-    if (notification?.related_entity_type === "cargo") {
-      const cargoIdentifier = notification.related_cargo_identifier || "";
-      return cargoIdentifier
-        ? `/staff/cargo/tracking?cargo=${encodeURIComponent(cargoIdentifier)}`
-        : "/staff/cargo/tracking";
-    }
-  }
-
-  if (basePath === "/supervisor") {
-    if (type === "pending_approval") return "/supervisor/cargo/pending-approvals";
-    if (type === "placement_override") return "/supervisor/cargo/exceptions";
-    if (type === "dispatch_request" || module.includes("dispatch")) return "/supervisor/dispatch/requests";
-    if (type === "warehouse_alert" || module.includes("warehouse")) return "/supervisor/warehouse/bins";
-    if (notification?.related_entity_type === "cargo") return "/supervisor/cargo/records";
-  }
-
-  if (basePath === "/admin") {
-    if (type === "dispatch_request" || module.includes("dispatch")) return "/admin/dispatch/queue";
-    if (type === "warehouse_alert" || module.includes("warehouse")) return "/admin/warehouse/bins";
-    if (type === "pending_approval" || type === "placement_override") return "/admin/cargo/approval-overrides";
-    if (notification?.related_entity_type === "cargo") return "/admin/cargo/records";
-  }
-
-  if (basePath === "/finance") {
-    if (type === "invoice_pending" || type === "finance_charge_started") return "/finance/cargo-charges";
-    if (type === "finance_payment_update") return "/finance/payments";
-  }
-
-  if (basePath === "/customs") {
-    if (type === "customs_inspection") return "/customs/inspection-queue";
-    if (module.includes("customs")) return "/customs/records";
-  }
-
-  if (basePath === "/gate") {
-    if (type === "gate_release_update") return "/gate/release-queue";
-    if (module.includes("gate")) return "/gate/gate-out-records";
-  }
-
-  return "";
+  const role=getStoredAuthRole();
+  const destination=notification?.safe_destination||notification?.safeDestination;
+  return isAllowedDestination(destination,role)?destination:"";
 }
 
 function shortDate(value) {

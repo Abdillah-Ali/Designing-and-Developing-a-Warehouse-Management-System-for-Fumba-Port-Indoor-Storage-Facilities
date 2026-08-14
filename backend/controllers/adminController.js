@@ -638,7 +638,7 @@ const getUserPendingTasks = async (req, res, next) => {
     }
 
     const user = result.rows[0];
-    const summary = await getPendingWarehouseTaskSummary(db, id, user.role_name);
+    const summary = await getPendingWarehouseTaskSummary(db, id, user.role_key);
 
     res.json({
       success: true,
@@ -680,13 +680,13 @@ const reassignUserPendingTasks = async (req, res, next) => {
     }
 
     let reassignment;
-    if (isWarehouseStaffRole(source.role_name)) {
-      if (!isWarehouseStaffRole(target.role_name)) {
+    if (isWarehouseStaffRole(source.role_key)) {
+      if (!isWarehouseStaffRole(target.role_key)) {
         throw buildError("Staff pending tasks can only be reassigned to another Warehouse Staff user.", 400);
       }
       reassignment = await reassignStaffPendingTasks(client, sourceUserId, targetUserId);
-    } else if (isWarehouseSupervisorRole(source.role_name)) {
-      if (!isWarehouseSupervisorRole(target.role_name)) {
+    } else if (isWarehouseSupervisorRole(source.role_key)) {
+      if (!isWarehouseSupervisorRole(target.role_key)) {
         throw buildError("Supervisor pending tasks can only be reassigned to another Supervisor.", 400);
       }
       reassignment = await reassignSupervisorPendingTasks(client, sourceUserId, targetUserId);
@@ -695,7 +695,7 @@ const reassignUserPendingTasks = async (req, res, next) => {
     }
 
     const reassignedAt = new Date().toISOString();
-    if (isWarehouseSupervisorRole(source.role_name) && reassignment.approvals?.length) {
+    if (isWarehouseSupervisorRole(source.role_key) && reassignment.approvals?.length) {
       for (const approval of reassignment.approvals) {
         await client.query(
           `INSERT INTO cargo_approval_history
@@ -762,7 +762,7 @@ const reassignUserPendingTasks = async (req, res, next) => {
       });
     }
 
-    const remaining = await getPendingWarehouseTaskSummary(client, sourceUserId, source.role_name);
+    const remaining = await getPendingWarehouseTaskSummary(client, sourceUserId, source.role_key);
     await client.query("COMMIT");
 
     res.json({
@@ -996,10 +996,10 @@ const updateUser = async (req, res, next) => {
     let transferPendingSummary = null;
     if (
       warehouseTransfer
-      && (isWarehouseStaffRole(existing.role_name) || isWarehouseSupervisorRole(existing.role_name))
+      && (isWarehouseStaffRole(existing.role_key) || isWarehouseSupervisorRole(existing.role_key))
     ) {
       await writeWarehouseTransferAttempt(client, req, existing, payload.warehouse_id || null);
-      transferPendingSummary = await getPendingWarehouseTaskSummary(client, existing.id, existing.role_name);
+      transferPendingSummary = await getPendingWarehouseTaskSummary(client, existing.id, existing.role_key);
       if (!transferPendingSummary.can_transfer) {
         await blockWarehouseTransfer(client, req, existing, payload.warehouse_id || null, transferPendingSummary);
       }
@@ -1618,7 +1618,7 @@ const login = async (req, res, next) => {
     }
 
     next(!client || isDatabaseConnectivityError(error)
-      ? buildError(databaseUnavailableMessage, 503)
+      ? buildError(databaseUnavailableMessage, 503, undefined, "DATABASE_UNAVAILABLE")
       : error);
   } finally {
     if (client) {

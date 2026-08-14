@@ -173,7 +173,10 @@ CREATE TABLE IF NOT EXISTS scanner_sessions (
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   completed_at TIMESTAMP,
   cancelled_at TIMESTAMP,
-  CHECK (status IN ('active', 'completed', 'cancelled')),
+  last_activity_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at TIMESTAMP,
+  expired_at TIMESTAMP,
+  CHECK (status IN ('active', 'completed', 'cancelled', 'expired')),
   CHECK (current_step_index >= 0)
 );
 

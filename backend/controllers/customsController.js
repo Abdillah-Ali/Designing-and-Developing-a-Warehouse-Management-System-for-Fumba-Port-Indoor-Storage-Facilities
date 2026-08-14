@@ -5,6 +5,7 @@ const {
   findCargoByPublicReference,
   generatePublicReference
 } = require("../services/financeService");
+const { STATUS_ACTIONS, transitionCustoms, getAllowedCustomsActions } = require("../services/customsWorkflowService");
 
 const CUSTOMS_STATUSES = new Set([
   "Pending Inspection",
@@ -100,6 +101,7 @@ const toCustomsCargo = (row) => ({
   approval_status: row.registration_status,
   placement_status: row.placement_status,
   customs_status: row.customs_status,
+  customs_state_key: row.customs_status_key,
   financial_status: row.financial_status,
   invoice_status: row.latest_invoice_status || "Not Invoiced",
   payment_status: row.latest_payment_status || "Unpaid",
@@ -213,7 +215,10 @@ const getCargo = async (req, res, next) => {
       [req.params.cargoReference]
     );
     if (result.rowCount === 0) throw buildError("Cargo record not found.", 404);
-    res.json({ success: true, data: toCustomsCargo(result.rows[0]) });
+    const data=toCustomsCargo(result.rows[0]);
+    data.customs_state_key=result.rows[0].customs_status_key;
+    data.allowed_actions=await getAllowedCustomsActions({cargo:result.rows[0],actor:req.auth});
+    res.json({ success: true, data });
   } catch (error) {
     next(error);
   }
@@ -354,54 +359,8 @@ const writeCustomsHistory = async (client, { cargo, customsRecord, previousStatu
 
 const startInspection = async (req, res, next) => {
   try {
-    const data = await withTransaction(async (client) => {
-      const cargo = await findCargoByPublicReference(client, req.params.cargoReference, { lock: true });
-      if (!cargo) throw buildError("Cargo record not found.", 404);
-      if (cargo.gate_out_status !== "Not Released") {
-        throw buildError("Released cargo cannot enter customs inspection.", 409);
-      }
-      const previousStatus = cargo.customs_status;
-      const newStatus = "Inspection In Progress";
-      const notes = cleanString(req.body.notes);
-      const customsRecord = await ensureCustomsRecord(client, cargo, newStatus, notes, "", req.auth);
-      const updateCargoSql = `UPDATE cargo
-       SET customs_status = $1::text,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $2::integer
-       RETURNING *`;
-      const updateCargoParams = [newStatus, cargo.id];
-      const updatedCargo = await runCustomsWrite(client, updateCargoSql, updateCargoParams);
-      await writeCustomsHistory(client, {
-        cargo,
-        customsRecord,
-        previousStatus,
-        newStatus,
-        notes,
-        auth: req.auth
-      });
-      await writeAuditLog(
-        {
-          user_id: req.auth?.userId || null,
-          action: "START_CUSTOMS_INSPECTION",
-          module: "Customs Management",
-          description: `Started customs inspection for cargo ${cargo.cargo_id}.`,
-          metadata: {
-            entity_reference: cargo.cargo_id,
-            before: { customs_status: previousStatus },
-            after: { customs_status: newStatus }
-          }
-        },
-        client
-      );
-      return toCustomsCargo({
-        ...updatedCargo.rows[0],
-        cargo_record_id: cargo.id,
-        latest_invoice_status: null,
-        latest_payment_status: null,
-        outstanding_balance: "0.00"
-      });
-    });
-    res.json({ success: true, data });
+    const result=await withTransaction((client)=>transitionCustoms({cargoReference:req.params.cargoReference,transitionKey:'start_inspection',actor:req.auth,input:{notes:req.body.notes,expected_state_key:req.body.expected_state_key},executor:client}));
+    res.json({success:true,data:{...toCustomsCargo({...result.cargo,latest_invoice_status:null,latest_payment_status:null,outstanding_balance:'0.00'}),customs_state_key:result.policy.to_state_key}});
   } catch (error) {
     handleCustomsUpdateError(error, next);
   }
@@ -409,67 +368,10 @@ const startInspection = async (req, res, next) => {
 
 const updateStatus = async (req, res, next) => {
   try {
-    const data = await withTransaction(async (client) => {
-      const status = cleanString(req.body.status);
-      const notes = cleanString(req.body.notes);
-      const documentsRequested = cleanString(req.body.documents_requested);
-      if (!CUSTOMS_STATUSES.has(status)) {
-        throw buildError("Customs status is not valid.", 400);
-      }
-      if (NOTE_REQUIRED_STATUSES.has(status) && !notes) {
-        throw buildError(`Inspection notes are required when setting customs status to ${status}.`, 400);
-      }
-      if (status === "Cleared" && req.body.confirm !== true) {
-        throw buildError("Confirm customs clearance before clearing cargo.", 400);
-      }
-      const cargo = await findCargoByPublicReference(client, req.params.cargoReference, { lock: true });
-      if (!cargo) throw buildError("Cargo record not found.", 404);
-      if (cargo.gate_out_status !== "Not Released") {
-        throw buildError("Released cargo customs status cannot be changed.", 409);
-      }
-
-      const previousStatus = cargo.customs_status;
-      const customsRecord = await ensureCustomsRecord(client, cargo, status, notes, documentsRequested, req.auth);
-      const updateCargoSql = `UPDATE cargo
-       SET customs_status = $1::text,
-           updated_at = CURRENT_TIMESTAMP
-       WHERE id = $2::integer
-       RETURNING *`;
-      const updateCargoParams = [status, cargo.id];
-      const updatedCargo = await runCustomsWrite(client, updateCargoSql, updateCargoParams);
-      await writeCustomsHistory(client, {
-        cargo,
-        customsRecord,
-        previousStatus,
-        newStatus: status,
-        notes,
-        auth: req.auth,
-        metadata: { documents_requested: documentsRequested || null }
-      });
-      await writeAuditLog(
-        {
-          user_id: req.auth?.userId || null,
-          action: "UPDATE_CUSTOMS_STATUS",
-          module: "Customs Management",
-          description: `Updated customs status for cargo ${cargo.cargo_id} to ${status}.`,
-          metadata: {
-            entity_reference: cargo.cargo_id,
-            before: { customs_status: previousStatus },
-            after: { customs_status: status },
-            reason: notes || null
-          }
-        },
-        client
-      );
-      return toCustomsCargo({
-        ...updatedCargo.rows[0],
-        cargo_record_id: cargo.id,
-        latest_invoice_status: null,
-        latest_payment_status: null,
-        outstanding_balance: "0.00"
-      });
-    });
-    res.json({ success: true, data });
+    const transitionKey=cleanString(req.body.transition_key)||STATUS_ACTIONS[cleanString(req.body.status)];
+    if(!transitionKey) throw buildError('Customs transition is not valid.',400,null,'WORKFLOW_TRANSITION_NOT_FOUND');
+    const result=await withTransaction((client)=>transitionCustoms({cargoReference:req.params.cargoReference,transitionKey,actor:req.auth,input:{notes:req.body.notes,documents_requested:req.body.documents_requested,confirmed:req.body.confirmed===true||req.body.confirm===true,expected_state_key:req.body.expected_state_key},executor:client}));
+    res.json({success:true,data:{...toCustomsCargo({...result.cargo,latest_invoice_status:null,latest_payment_status:null,outstanding_balance:'0.00'}),customs_state_key:result.policy.to_state_key}});
   } catch (error) {
     handleCustomsUpdateError(error, next);
   }

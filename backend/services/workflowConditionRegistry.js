@@ -1,9 +1,15 @@
 const definitions = Object.freeze({
   cargo_not_archived: {
     description: "Cargo must remain operational and not archived.",
-    supported_workflows: ["cargo_registration", "cargo_placement"],
+    supported_workflows: ["cargo_registration", "cargo_placement", "customs"],
     parameter_schema: { type: "object", properties: {}, additionalProperties: false },
     evaluate: ({ cargo }) => !cargo.is_deleted
+  },
+  cargo_not_gate_released: {
+    description: "Released cargo cannot be changed by Customs.",
+    supported_workflows: ["customs"],
+    parameter_schema: { type: "object", properties: {}, additionalProperties: false },
+    evaluate: ({ cargo }) => cargo.gate_out_status === "Not Released"
   }
 });
 

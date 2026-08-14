@@ -529,7 +529,8 @@ const decideApproval = async (req, res, next, decision, options = {}) => {
               acted_at: new Date().toISOString()
             }
           },
-          { roleName: roleNames.systemAdmin },
+          // Emergency approval oversight deliberately targets the protected administrator identity.
+          { roleKey: "system_administrator" },
           client,
           { actorId: req.auth?.userId || null, fallbackBroadTarget: true }
         );
@@ -551,21 +552,11 @@ const decideApproval = async (req, res, next, decision, options = {}) => {
     }
 
     // Resolve matching pending notifications
-    const { resolveNotificationsByEntity } = require("../services/notificationService");
+    const { resolveNotificationStrategy } = require("../services/notificationAuthorityService");
     if (isRegistrationApproval) {
-      await resolveNotificationsByEntity({
-        relatedEntityType: "cargo",
-        relatedEntityId: approval.cargo_record_id,
-        notificationTypes: ["pending_approval"],
-        executor: client
-      });
+      await resolveNotificationStrategy("cargo_review_completed", { subjectReference: approval.cargo_id, executor: client });
     } else if (approval.request_type === "PLACEMENT_OVERRIDE") {
-      await resolveNotificationsByEntity({
-        relatedEntityType: "cargo",
-        relatedEntityId: approval.cargo_record_id,
-        notificationTypes: ["placement_override"],
-        executor: client
-      });
+      await resolveNotificationStrategy("placement_override_decided", { subjectReference: approval.cargo_id, executor: client });
     }
 
     const result = await client.query(
@@ -726,13 +717,8 @@ const requestCorrection = async (req, res, next) => {
     );
 
     // Resolve matching pending approval notifications
-    const { resolveNotificationsByEntity } = require("../services/notificationService");
-    await resolveNotificationsByEntity({
-      relatedEntityType: "cargo",
-      relatedEntityId: approval.cargo_record_id,
-      notificationTypes: ["pending_approval"],
-      executor: client
-    });
+    const { resolveNotificationStrategy } = require("../services/notificationAuthorityService");
+    await resolveNotificationStrategy("cargo_review_completed", { subjectReference: approval.cargo_id, executor: client });
 
     const result = await client.query(
       `${approvalSelect} WHERE ar.id = $1`,

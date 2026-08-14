@@ -174,6 +174,10 @@ const applySchema = async () => {
   const binRuleEngineAuthorityMigrationPath = path.join(__dirname, "migrations", "20260812_bin_rule_engine_authority.sql");
   const cargoWorkflowPolicyMigrationPath = path.join(__dirname, "migrations", "20260812_cargo_workflow_policy.sql");
   const financePolicyAuthorityMigrationPath = path.join(__dirname, "migrations", "20260812_finance_policy_authority.sql");
+  const customsWorkflowAuthorityMigrationPath = path.join(__dirname, "migrations", "20260813_customs_workflow_authority.sql");
+  const dispatchGatePolicyAuthorityMigrationPath = path.join(__dirname, "migrations", "20260813_dispatch_gate_policy_authority.sql");
+  const scannerPolicyAuthorityMigrationPath = path.join(__dirname, "migrations", "20260813_scanner_policy_authority.sql");
+  const notificationPolicyAuthorityMigrationPath = path.join(__dirname, "migrations", "20260813_notification_policy_authority.sql");
   const financeCustomsGateMigration = await fs.readFile(financeCustomsGateMigrationPath, "utf8");
   const zoneWarehouseScopeMigration = await fs.readFile(zoneWarehouseScopeMigrationPath, "utf8");
   const warehouseConfigurationMigration = await fs.readFile(warehouseConfigurationMigrationPath, "utf8");
@@ -199,6 +203,10 @@ const applySchema = async () => {
   const binRuleEngineAuthorityMigration = await fs.readFile(binRuleEngineAuthorityMigrationPath, "utf8");
   const cargoWorkflowPolicyMigration = await fs.readFile(cargoWorkflowPolicyMigrationPath, "utf8");
   const financePolicyAuthorityMigration = await fs.readFile(financePolicyAuthorityMigrationPath, "utf8");
+  const customsWorkflowAuthorityMigration = await fs.readFile(customsWorkflowAuthorityMigrationPath, "utf8");
+  const dispatchGatePolicyAuthorityMigration = await fs.readFile(dispatchGatePolicyAuthorityMigrationPath, "utf8");
+  const scannerPolicyAuthorityMigration = await fs.readFile(scannerPolicyAuthorityMigrationPath, "utf8");
+  const notificationPolicyAuthorityMigration = await fs.readFile(notificationPolicyAuthorityMigrationPath, "utf8");
 
   try {
     await moveIncompatibleTables(client);
@@ -230,6 +238,10 @@ const applySchema = async () => {
     await applySqlMigration(client, "023_bin_rule_engine_authority.sql", binRuleEngineAuthorityMigration);
     await applySqlMigration(client, "024_cargo_workflow_policy.sql", cargoWorkflowPolicyMigration);
     await applySqlMigration(client, "025_finance_policy_authority.sql", financePolicyAuthorityMigration);
+    await applySqlMigration(client, "026_customs_workflow_authority.sql", customsWorkflowAuthorityMigration);
+    await applySqlMigration(client, "027_dispatch_gate_policy_authority.sql", dispatchGatePolicyAuthorityMigration);
+    await applySqlMigration(client, "028_scanner_policy_authority.sql", scannerPolicyAuthorityMigration);
+    await applySqlMigration(client, "029_notification_policy_authority.sql", notificationPolicyAuthorityMigration);
     await client.query(
       `INSERT INTO role_permissions (role_id, permission_key)
        SELECT r.id, p.permission_key

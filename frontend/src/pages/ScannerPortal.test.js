@@ -1,23 +1,30 @@
 import { describe, expect, it } from "vitest";
 import {
   getSessionStepKey,
-  readCurrentStepError,
-  shouldSuppressDuplicate
+  isTerminalScannerSession,
+  readCurrentStepError
 } from "@/lib/scanner-workflow";
+import * as scannerWorkflow from "@/lib/scanner-workflow";
 
 describe("scanner input gating", () => {
-  it("suppresses the same submitted barcode only during the cooldown", () => {
-    const lastSubmission = { value: "CARGO-001", at: 1000 };
-
-    expect(shouldSuppressDuplicate("CARGO-001", lastSubmission, 2000)).toBe(true);
-    expect(shouldSuppressDuplicate("CARGO-001", lastSubmission, 3000)).toBe(false);
-    expect(shouldSuppressDuplicate("BIN-001", lastSubmission, 1100)).toBe(false);
+  it("leaves duplicate acceptance exclusively to the server", () => {
+    expect(scannerWorkflow.SCAN_COOLDOWN_MS).toBeUndefined();
+    expect(scannerWorkflow.shouldSuppressDuplicate).toBeUndefined();
   });
 
   it("changes the scan key when the workflow advances", () => {
     expect(getSessionStepKey({ id: 12, status: "active", current_step_index: 0 })).toBe("12:0");
     expect(getSessionStepKey({ id: 12, status: "active", current_step_index: 1 })).toBe("12:1");
     expect(getSessionStepKey({ id: 12, status: "completed", current_step_index: 2 })).toBe("");
+  });
+});
+
+describe("scanner session lifecycle", () => {
+  it("treats completed, cancelled, and expired sessions as terminal", () => {
+    expect(isTerminalScannerSession({ status: "active" })).toBe(false);
+    expect(isTerminalScannerSession({ status: "completed" })).toBe(true);
+    expect(isTerminalScannerSession({ status: "cancelled" })).toBe(true);
+    expect(isTerminalScannerSession({ status: "expired" })).toBe(true);
   });
 });
 

@@ -319,6 +319,7 @@ function DetailItem({ label, value }) {
 }
 
 function CustomsActionDialog({ cargo, onClose, onSaved }) {
+  const stateKeys = { "Pending Inspection": "pending_inspection", "Inspection In Progress": "inspection_in_progress", "Documents Required": "documents_required", "On Hold": "on_hold", Cleared: "cleared", Rejected: "rejected" };
   const [form, setForm] = useState({ status: "Inspection In Progress", notes: "", documents_requested: "" });
   const [error, setError] = useState("");
   useEffect(() => {
@@ -335,10 +336,13 @@ function CustomsActionDialog({ cargo, onClose, onSaved }) {
     setError("");
     try {
       if (cargo.customs_status === "Pending Inspection" && form.status === "Inspection In Progress") {
-        await startCustomsInspection(cargo.cargo_reference, { notes: form.notes });
+        await startCustomsInspection(cargo.cargo_reference, { notes: form.notes, expected_state_key: cargo.customs_state_key || stateKeys[cargo.customs_status] });
       } else {
+        const transitionKeys = { "Inspection In Progress": "start_inspection", "Documents Required": "request_documents", "On Hold": "place_on_hold", Cleared: "clear_customs", Rejected: "reject_customs" };
         await updateCustomsStatus(cargo.cargo_reference, {
           ...form,
+          transition_key: transitionKeys[form.status],
+          expected_state_key: cargo.customs_state_key || stateKeys[cargo.customs_status],
           confirm: form.status === "Cleared"
         });
       }

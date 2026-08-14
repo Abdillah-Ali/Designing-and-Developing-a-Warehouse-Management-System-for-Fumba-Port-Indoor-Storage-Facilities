@@ -3,12 +3,14 @@ const {
   archiveNotificationForUser,
   createSystemAnnouncementNotification,
   getNotifications,
+  getNotificationPolicies,
   getNotificationSummaryForUser,
   getUnreadNotificationCount,
   markAllNotificationsAsRead,
   markNotificationAsRead,
   restoreNotificationForUser,
-  resolveNotificationRoute
+  resolveNotificationRoute,
+  updateNotificationPolicyRoute
 } = require("../controllers/notificationController");
 const { requirePermission } = require("../middleware/authMiddleware");
 
@@ -17,6 +19,8 @@ const router = express.Router();
 router.get("/", getNotifications);
 router.get("/unread-count", getUnreadNotificationCount);
 router.get("/summary", getNotificationSummaryForUser);
+router.get("/policies", requirePermission("system.notifications.configure"), getNotificationPolicies);
+router.put("/policies/:eventKey", requirePermission("system.notifications.configure"), updateNotificationPolicyRoute);
 router.patch("/read-all", markAllNotificationsAsRead);
 router.post("/system-announcement", requirePermission("system.notifications.announce"), createSystemAnnouncementNotification);
 router.patch("/:publicRef/read", markNotificationAsRead);

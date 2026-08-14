@@ -77,6 +77,7 @@ import {
   statusTone
 } from "@/lib/wms-operational";
 import { getDetailViewFields } from "@/lib/warehouse-detail-fields";
+import { getSystemReadinessPresentation } from "@/lib/system-readiness";
 
 import {
   approveSupervisorApproval,
@@ -121,6 +122,7 @@ import {
   getSupervisorApprovals,
   getSupervisorReviewConfiguration,
   getSystemAdministratorCapacity,
+  getSystemReadiness,
   getUserPendingTasks,
   getUserSessions,
   getUsers,
@@ -662,6 +664,10 @@ function DashboardPage() {
   const logs = useApiCollection(() => getPlacementLogs(), "placement-logs");
   const zones = useApiCollection(() => getZones(), "zones");
   const users = useApiCollection(() => getUsers({ status: "active" }), "active-users");
+  const [systemReadiness,setSystemReadiness]=useState(null);
+
+  useEffect(()=>{let active=true;getSystemReadiness().then((response)=>{if(active)setSystemReadiness(response.data||null);}).catch(()=>{});return()=>{active=false;};},[]);
+  const readinessPresentation=getSystemReadinessPresentation(systemReadiness);
 
   const registeredCargo = useMemo(() => cargo.rows.filter((record) => record.placement_status === "Unplaced" && record.registration_status !== "Rejected"), [cargo.rows]);
   const storedCargo = useMemo(() => cargo.rows.filter((record) => ["Placed", "Relocated"].includes(record.placement_status)), [cargo.rows]);
@@ -694,6 +700,12 @@ function DashboardPage() {
         description="Operational overview for warehouse activity, storage readiness, users, and cargo oversight."
       />
       <div className="flex-1 overflow-auto p-4">
+        {readinessPresentation && readinessPresentation.tone !== "success" && (
+          <div className="mb-3 flex items-start gap-3 rounded-md border border-warning/35 bg-warning/10 px-4 py-3 text-warning">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div><div className="text-xs font-semibold">{readinessPresentation.title}</div><p className="mt-1 text-xs leading-5">The backend is available, but one or more business domains require authorized configuration. Review the readiness issue codes and complete the relevant configuration.</p></div>
+          </div>
+        )}
         {activeBootstrapAdmin && (
           <div className="mb-3 flex items-start gap-3 rounded-md border border-warning/35 bg-warning/10 px-4 py-3 text-warning">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />

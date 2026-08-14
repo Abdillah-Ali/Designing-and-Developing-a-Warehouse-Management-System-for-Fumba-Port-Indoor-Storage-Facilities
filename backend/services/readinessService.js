@@ -5,6 +5,9 @@ const { validateRbacConfiguration } = require("./rbacReadinessService");
 const { getWorkflowReadiness } = require("./binRuleEngine");
 const { getWorkflowReadiness: getCargoWorkflowReadiness } = require("./cargoWorkflowEngine");
 const { validateFinanceConfiguration } = require("./financeReadinessService");
+const { validateEligibilityPolicies } = require("./releaseEligibilityService");
+const { validateScannerConfiguration } = require("./scannerPolicyService");
+const { validateNotificationPolicies } = require("./notificationAuthorityService");
 
 const READINESS_DOMAINS = Object.freeze([
   "authentication",
@@ -13,6 +16,7 @@ const READINESS_DOMAINS = Object.freeze([
   "cargo_workflow",
   "placement",
   "finance",
+  "tariff",
   "customs",
   "dispatch",
   "gate",
@@ -31,6 +35,9 @@ const SETTING_DOMAINS = Object.freeze({
   cargo_pending_review_escalation_interval_ms: "notifications",
   cargo_pending_review_escalation_target_role: "notifications",
   cargo_pending_review_escalation_repeat_hours: "notifications"
+  ,scanner_session_timeout_minutes: "scanner"
+  ,scanner_duplicate_scan_window_ms: "scanner"
+  ,scanner_session_cleanup_interval_ms: "scanner"
 });
 
 const safeIssue = (entry, validationIssue) => ({
@@ -42,6 +49,13 @@ const safeIssue = (entry, validationIssue) => ({
   impact: entry.definition.criticality === "critical_policy" ? "blocked" : "degraded",
   criticality: entry.definition.criticality
 });
+
+const summarizeReadiness = (domains) => {
+  const issues = Object.values(domains).flatMap((domain) => domain.issues);
+  const hasBlockedCritical = issues.some((entry) => entry.criticality === "critical_policy" && entry.impact !== "configuration_required");
+  const configurationRequired = issues.some((entry) => entry.impact === "configuration_required");
+  return { issues, overall: hasBlockedCritical ? "blocked" : configurationRequired ? "configuration_required" : issues.length ? "degraded" : "healthy" };
+};
 
 const getSystemReadiness = async (executor = db) => {
   const checkedAt = new Date().toISOString();
@@ -123,18 +137,32 @@ const getSystemReadiness = async (executor = db) => {
       workflow.status = "blocked";
       workflow.issues.push({ code: "CARGO_WORKFLOW_NOT_READY", message: "Cargo workflow policy is incomplete or invalid.", impact: "blocked", criticality: "critical_policy", details: cargoWorkflowConfiguration });
     }
+    if (!cargoWorkflowConfiguration.ready || !cargoWorkflowConfiguration.workflows.includes("customs")) {
+      const customs=domains.customs; customs.ready=false; customs.status='blocked';
+      customs.issues.push({code:'CUSTOMS_WORKFLOW_NOT_READY',message:'Customs workflow policy is incomplete or invalid.',impact:'blocked',criticality:'critical_policy',details:cargoWorkflowConfiguration});
+    }
     const financeConfiguration = await validateFinanceConfiguration(executor);
     if (!financeConfiguration.ready) {
-      domains.finance.ready=false; domains.finance.status='blocked';
-      domains.finance.issues.push(...financeConfiguration.issues.map((issue)=>({...issue,criticality:'critical_policy'})));
+      for (const domainName of ['finance','tariff']) {
+        domains[domainName].ready=false; domains[domainName].status=financeConfiguration.status;
+        domains[domainName].issues.push(...financeConfiguration.issues.map((issue)=>({...issue,criticality:'critical_policy'})));
+      }
     }
+    const releasePolicies=await validateEligibilityPolicies(executor);
+    for(const domainName of ['dispatch','gate']) if(!releasePolicies.ready){domains[domainName].ready=false;domains[domainName].status='blocked';domains[domainName].issues.push(...releasePolicies.issues.map(issue=>({...issue,impact:'blocked',criticality:'critical_policy'})));}
+    const scannerConfiguration = await validateScannerConfiguration(executor);
+    if (!scannerConfiguration.ready) {
+      domains.scanner.ready=false; domains.scanner.status='blocked';
+      domains.scanner.issues.push(...scannerConfiguration.issues.map((issue)=>({...issue,impact:'blocked',criticality:'critical_policy'})));
+    }
+    const notificationConfiguration=await validateNotificationPolicies(executor);
+    if(!notificationConfiguration.ready){domains.notifications.ready=false;domains.notifications.status='blocked';domains.notifications.issues.push(...notificationConfiguration.issues.map(issue=>({...issue,impact:'blocked',criticality:'critical_policy'})));}
   }
 
-  const issues = Object.values(domains).flatMap((domain) => domain.issues);
-  const hasCritical = issues.some((entry) => entry.criticality === "critical_policy");
+  const {issues,overall}=summarizeReadiness(domains);
   return {
     ready: issues.length === 0,
-    overall: hasCritical ? "blocked" : issues.length ? "degraded" : "healthy",
+    overall,
     domains,
     issues,
     checked_at: checkedAt
@@ -148,4 +176,4 @@ const getDomainReadiness = async (domain, executor = db) => {
   return (await getSystemReadiness(executor)).domains[domain];
 };
 
-module.exports = { READINESS_DOMAINS, SETTING_DOMAINS, getDomainReadiness, getSystemReadiness };
+module.exports = { READINESS_DOMAINS, SETTING_DOMAINS, getDomainReadiness, getSystemReadiness, summarizeReadiness };

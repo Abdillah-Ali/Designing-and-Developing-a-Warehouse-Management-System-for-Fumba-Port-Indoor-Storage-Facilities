@@ -266,6 +266,7 @@ const validateCargoRegistrationConfiguration = async (executor = db) => {
 const normalizeCatalogPayload = async (payload = {}, executor = db, { allowInactive = false } = {}) => {
   const result = await listAvailableFields(executor);
   const next = { ...payload };
+  const optionKeys = {};
   const errors = [];
   for (const field of result.rows.filter((entry) => entry.catalog_key && !isBlank(next[entry.field_key]))) {
     const option = await executor.query(
@@ -275,9 +276,12 @@ const normalizeCatalogPayload = async (payload = {}, executor = db, { allowInact
     );
     if (!option.rowCount) errors.push(configurationIssue("CARGO_OPTION_INVALID", `${field.label} contains an unknown option.`, field.field_key));
     else if (!option.rows[0].active && !allowInactive) errors.push(configurationIssue("CARGO_OPTION_INACTIVE", `${field.label} contains an inactive option.`, field.field_key));
-    else next[field.field_key] = option.rows[0].storage_value;
+    else {
+      next[field.field_key] = option.rows[0].storage_value;
+      optionKeys[field.field_key] = option.rows[0].option_key;
+    }
   }
-  return { payload: next, errors };
+  return { payload: next, option_keys: optionKeys, errors };
 };
 
 const validateConfiguredCargoPayload = async (payload = {}, executor = db, options = {}) => {
