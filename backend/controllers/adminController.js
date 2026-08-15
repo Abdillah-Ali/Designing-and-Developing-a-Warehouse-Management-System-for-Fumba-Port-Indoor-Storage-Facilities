@@ -1397,6 +1397,14 @@ const getAuditLogs = async (req, res, next) => {
   }
 };
 
+const exportAuditLogs = async (req, res, next) => {
+  try {
+    const result = await fetchAuditLogs({ action: cleanString(req.query.action), module: cleanString(req.query.module), user: cleanString(req.query.user), role: cleanString(req.query.role), date_from: cleanString(req.query.date_from), date_to: cleanString(req.query.date_to), search: cleanString(req.query.search), limit: 500 });
+    res.setHeader("Content-Disposition", `attachment; filename="wms-audit-export-${new Date().toISOString().slice(0,10)}.json"`);
+    res.json({ success: true, exported_at: new Date().toISOString(), count: result.rowCount, data: result.rows });
+  } catch (error) { next(error); }
+};
+
 const getUserSessions = async (req, res, next) => {
   try {
     sendRows(res, await fetchUserSessions({
@@ -1961,6 +1969,7 @@ const refreshToken = async (req, res, next) => {
 };
 
 module.exports = {
+  exportAuditLogs,
   createScanner,
   createUser,
   deactivateUser,

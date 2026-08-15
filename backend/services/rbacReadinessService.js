@@ -3,7 +3,7 @@ const { referencedPermissions } = require("../config/authorizationRegistry");
 
 const REQUIRED_ROLE_KEYS = Object.freeze([
   "system_administrator", "warehouse_staff", "warehouse_supervisor", "finance_officer",
-  "customs_officer", "gate_officer", "management", "scanner"
+  "customs_officer", "gate_officer", "management", "auditor", "scanner"
 ]);
 
 const issue = (code, message) => ({ code, message, impact: "blocked", criticality: "critical_policy" });

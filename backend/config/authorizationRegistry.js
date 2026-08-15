@@ -47,13 +47,15 @@ const AUTHORIZATION_ROUTES = Object.freeze([
   route(["POST"], /^\/gate\/emergency-requests$/, "gate.emergency_release.request"), route(["POST"], /^\/gate\/emergency-requests\/[^/]+\/(?:approve|reject)$/, "gate.emergency_release.approve"),
   route(["GET"], /^\/management\/dashboard$/, "management.dashboard.view"), route(["GET"], /^\/management\/reports$/, "management.reports.view"),
   route(["GET"], /^\/users(?:\/.*)?$/, "system.users.view"), route(["POST", "PUT", "PATCH", "DELETE"], /^\/users(?:\/.*)?$/, "system.users.manage"),
-  route(["GET"], /^\/roles$/, "system.roles.view"), route(["GET"], /^\/audit-logs$/, "system.audit.view"), route(["GET"], /^\/user-sessions$/, "system.sessions.view"),
+  route(["GET"], /^\/roles$/, "system.roles.view"), route(["GET"], /^\/audit-logs(?:\/export)?$/, "system.audit.view"), route(["POST"], /^\/audit-logs\/archive$/, "system.configuration.manage"), route(["GET"], /^\/user-sessions$/, "system.sessions.view"),
   route(["GET", "PUT"], /^\/notifications\/policies(?:\/.*)?$/, "system.notifications.configure"), route(["GET"], /^\/notifications(?:\/.*)?$/, "notifications.view"), route(["PATCH", "DELETE"], /^\/notifications(?:\/.*)?$/, "notifications.manage"),
   route(["POST"], /^\/notifications\/system-announcement$/, "system.notifications.announce"),
   route(["GET"], /^\/admin\/roles$/, "system.roles.view"), route(["GET"], /^\/admin\/permissions$/, "system.permissions.view"),
   route(["GET"], /^\/admin\/roles\/[^/]+\/permissions$/, "system.permissions.view"), route(["PUT"], /^\/admin\/roles\/[^/]+\/permissions$/, "system.permissions.manage"),
   route(["GET", "PUT"], /^\/admin\/notification-escalation$/, "system.notifications.configure"),
-  route(["GET"], /^\/admin\/readiness$/, "system.configuration.view"), route(["POST"], /^\/admin\/configuration\/validate$/, "system.configuration.manage")
+  route(["GET"], /^\/admin\/readiness$/, "system.configuration.view"), route(["POST"], /^\/admin\/configuration\/validate$/, "system.configuration.manage"),
+  route(["GET"], /^\/admin\/configuration\/backup$/, "system.configuration.view"), route(["POST"], /^\/admin\/configuration\/backup\/validate$/, "system.configuration.manage"),
+  route(["POST"], /^\/admin\/configuration\/restore$/, "system.configuration.manage")
 ]);
 
 const getRoutePermission = (method, path) => AUTHORIZATION_ROUTES.find((entry) => entry.methods.includes(method) && entry.pattern.test(path))?.permission || null;

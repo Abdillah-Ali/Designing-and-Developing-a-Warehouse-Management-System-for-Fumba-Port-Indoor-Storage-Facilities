@@ -178,6 +178,7 @@ const applySchema = async () => {
   const dispatchGatePolicyAuthorityMigrationPath = path.join(__dirname, "migrations", "20260813_dispatch_gate_policy_authority.sql");
   const scannerPolicyAuthorityMigrationPath = path.join(__dirname, "migrations", "20260813_scanner_policy_authority.sql");
   const notificationPolicyAuthorityMigrationPath = path.join(__dirname, "migrations", "20260813_notification_policy_authority.sql");
+  const uatSrsClosureMigrationPath = path.join(__dirname, "migrations", "20260815_uat_srs_closure.sql");
   const financeCustomsGateMigration = await fs.readFile(financeCustomsGateMigrationPath, "utf8");
   const zoneWarehouseScopeMigration = await fs.readFile(zoneWarehouseScopeMigrationPath, "utf8");
   const warehouseConfigurationMigration = await fs.readFile(warehouseConfigurationMigrationPath, "utf8");
@@ -207,6 +208,7 @@ const applySchema = async () => {
   const dispatchGatePolicyAuthorityMigration = await fs.readFile(dispatchGatePolicyAuthorityMigrationPath, "utf8");
   const scannerPolicyAuthorityMigration = await fs.readFile(scannerPolicyAuthorityMigrationPath, "utf8");
   const notificationPolicyAuthorityMigration = await fs.readFile(notificationPolicyAuthorityMigrationPath, "utf8");
+  const uatSrsClosureMigration = await fs.readFile(uatSrsClosureMigrationPath, "utf8");
 
   try {
     await moveIncompatibleTables(client);
@@ -242,6 +244,7 @@ const applySchema = async () => {
     await applySqlMigration(client, "027_dispatch_gate_policy_authority.sql", dispatchGatePolicyAuthorityMigration);
     await applySqlMigration(client, "028_scanner_policy_authority.sql", scannerPolicyAuthorityMigration);
     await applySqlMigration(client, "029_notification_policy_authority.sql", notificationPolicyAuthorityMigration);
+    await applySqlMigration(client, "030_uat_srs_closure.sql", uatSrsClosureMigration);
     await client.query(
       `INSERT INTO role_permissions (role_id, permission_key)
        SELECT r.id, p.permission_key

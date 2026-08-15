@@ -27,6 +27,7 @@ const FinancePortal = lazy(() => import("./pages/FinancePortal.jsx"));
 const CustomsPortal = lazy(() => import("./pages/CustomsPortal.jsx"));
 const GatePortal = lazy(() => import("./pages/GatePortal.jsx"));
 const ManagementPortal = lazy(() => import("./pages/ManagementPortal.jsx"));
+const AuditorPortal = lazy(() => import("./pages/AuditorPortal.jsx"));
 
 function PageFallback() {
   return (
@@ -173,6 +174,7 @@ const App = () => (
                 </PortalAccessGate>
               }
             />
+            <Route path="/auditor/*" element={<PortalAccessGate role={PORTAL_ROLES.AUDITOR}><AuditorPortal /></PortalAccessGate>} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </Suspense>

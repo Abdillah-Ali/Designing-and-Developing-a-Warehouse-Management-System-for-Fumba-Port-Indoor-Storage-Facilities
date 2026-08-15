@@ -351,7 +351,16 @@ const listAuditLogs = async (filters = {}) => {
   const limit = Math.min(Math.max(Number(filters.limit) || 100, 1), 500);
 
   return db.query(
-    `SELECT
+    `WITH combined_audit AS (
+      SELECT al.id,al.user_id,al.target_user_id,al.role_id_at_action,al.warehouse_id_at_action,
+             al.actor_reference,al.action,al.module,al.description,al.metadata,al.created_at,NULL::timestamp AS archived_at
+      FROM audit_logs al WHERE NOT EXISTS (SELECT 1 FROM archived_audit_logs aa WHERE aa.id=al.id)
+      UNION ALL
+      SELECT aa.id,aa.user_id,aa.target_user_id,aa.role_id_at_action,aa.warehouse_id_at_action,
+             aa.actor_reference,aa.action,aa.module,aa.description,aa.metadata,aa.created_at,aa.archived_at
+      FROM archived_audit_logs aa
+    )
+    SELECT
       al.id,
       al.user_id,
       al.target_user_id,
@@ -370,8 +379,10 @@ const listAuditLogs = async (filters = {}) => {
       al.module,
       al.description,
       al.metadata,
-      al.created_at
-    FROM audit_logs al
+      al.created_at,
+      al.archived_at,
+      (al.archived_at IS NOT NULL) AS is_archived
+    FROM combined_audit al
     LEFT JOIN users u ON u.id = al.user_id
     LEFT JOIN roles r ON r.id = u.role_id
     LEFT JOIN warehouses w ON w.id = u.warehouse_id

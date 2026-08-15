@@ -522,6 +522,12 @@ const confirmPlacementOperation = async (payload, auth = {}) => {
       previousLocation,
       newLocation
     });
+    if (cargo.storage_exception_key) {
+      await client.query("UPDATE cargo SET storage_exception_key=NULL,storage_exception_reason=NULL,storage_exception_at=NULL WHERE id=$1", [cargo.id]);
+      await writeAuditLog({ user_id: auth.userId, action: "RESOLVE_CARGO_UNALLOCATED_EXCEPTION", module: "Cargo Placement",
+        description: `Resolved unallocated exception for cargo ${cargo.cargo_id} through a valid placement.`,
+        metadata: { cargo_identifier: cargo.cargo_id, resolved_bin: validation.bin?.barcode || null } }, client);
+    }
     await client.query("COMMIT");
 
     const updatedBin = updatedBinResult.rows[0];

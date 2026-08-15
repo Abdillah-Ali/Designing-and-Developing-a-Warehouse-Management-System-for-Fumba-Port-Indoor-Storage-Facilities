@@ -668,6 +668,11 @@ export const updateBinRule = (reference, payload) => request(`/bin-rules/${encod
 // Finance endpoints
 export const getFinanceDashboard = (params = {}) => request(`/finance/dashboard${buildQuerySuffix(params)}`);
 export const getSystemReadiness = () => request("/admin/readiness");
+export const exportConfigurationBackup = () => request("/admin/configuration/backup");
+export const validateConfigurationBackup = (snapshot) => request("/admin/configuration/backup/validate", { method: "POST", body: { snapshot } });
+export const restoreConfigurationBackup = (snapshot) => request("/admin/configuration/restore", { method: "POST", body: { snapshot } });
+export const archiveEligibleAuditLogs = () => request("/audit-logs/archive", { method: "POST" });
+export const exportAuditLogs = (params = {}) => request(`/audit-logs/export${buildQuerySuffix(params)}`);
 export const getFinanceCargoCharges = (params = {}) => request(`/finance/cargo-charges${buildQuerySuffix(params)}`);
 export const getFinanceInvoices = (params = {}) => request(`/finance/invoices${buildQuerySuffix(params)}`);
 export const getFinanceInvoice = (invoiceNumber) => request(`/finance/invoices/${encodeURIComponent(invoiceNumber)}`);

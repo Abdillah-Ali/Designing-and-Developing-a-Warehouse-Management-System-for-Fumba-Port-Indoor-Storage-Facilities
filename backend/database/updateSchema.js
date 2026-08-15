@@ -828,6 +828,8 @@ const runUpdates = async () => {
     await applySqlMigration(client, "028_scanner_policy_authority.sql", scannerPolicyAuthorityMigration);
     const notificationPolicyAuthorityMigration = fs.readFileSync(path.join(__dirname, "migrations", "20260813_notification_policy_authority.sql"), "utf8");
     await applySqlMigration(client, "029_notification_policy_authority.sql", notificationPolicyAuthorityMigration);
+    const uatSrsClosureMigration = fs.readFileSync(path.join(__dirname, "migrations", "20260815_uat_srs_closure.sql"), "utf8");
+    await applySqlMigration(client, "030_uat_srs_closure.sql", uatSrsClosureMigration);
   } catch (error) {
     if (transactionOpen) await client.query("ROLLBACK").catch(() => {});
     if (legacyStarted) {

@@ -1,6 +1,7 @@
 const { buildError } = require("../utils/apiError");
 const { getSettingDefinition, validateSettingValue } = require("../services/configurationRegistryService");
 const { getSystemReadiness } = require("../services/readinessService");
+const { exportSnapshot, restoreSnapshot, validateSnapshot } = require("../services/configurationSnapshotService");
 
 const getReadiness = async (_req, res, next) => {
   try {
@@ -9,6 +10,10 @@ const getReadiness = async (_req, res, next) => {
     next(error);
   }
 };
+
+const exportConfiguration = async (req, res, next) => { try { res.json({ success: true, data: await exportSnapshot(req.auth?.userId) }); } catch (error) { next(error); } };
+const validateConfigurationBackup = async (req, res, next) => { try { const data = await validateSnapshot(req.body?.snapshot); res.status(data.valid ? 200 : 400).json({ success: data.valid, data, message: data.valid ? "Configuration backup is valid." : "Configuration backup validation failed." }); } catch (error) { next(error); } };
+const restoreConfiguration = async (req, res, next) => { try { res.json({ success: true, data: await restoreSnapshot(req.body?.snapshot, req.auth?.userId), message: "Configuration restored successfully." }); } catch (error) { next(error); } };
 
 const validateConfiguration = async (req, res, next) => {
   try {
@@ -34,4 +39,4 @@ const validateConfiguration = async (req, res, next) => {
   }
 };
 
-module.exports = { getReadiness, validateConfiguration };
+module.exports = { exportConfiguration, getReadiness, restoreConfiguration, validateConfiguration, validateConfigurationBackup };

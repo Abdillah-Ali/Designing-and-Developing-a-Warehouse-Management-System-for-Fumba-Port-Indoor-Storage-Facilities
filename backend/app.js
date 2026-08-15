@@ -35,6 +35,7 @@ const {
 const { requirePortalAccess } = require("./middleware/authMiddleware");
 
 const app = express();
+if (process.env.NODE_ENV === "production") app.set("trust proxy", 1);
 
 const localDevOrigins = [
   "http://localhost:3000",
@@ -56,7 +57,7 @@ const configuredOrigins = (process.env.CORS_ORIGIN || "")
   .map((origin) => origin.trim())
   .filter(Boolean);
 
-const allowedOrigins = Array.from(new Set([...configuredOrigins, ...localDevOrigins]));
+const allowedOrigins = Array.from(new Set(process.env.NODE_ENV === "production" ? configuredOrigins : [...configuredOrigins, ...localDevOrigins]));
 const localFrontendPorts = new Set(["3000", "3001", "4173", "5173", "5174", "5175"]);
 
 const isPrivateNetworkDevOrigin = (origin) => {
@@ -92,6 +93,12 @@ app.use(cors({
   credentials: true
 }));
 app.use(express.json({ limit: "15mb" }));
+app.use((req, res, next) => {
+  if (process.env.NODE_ENV === "production" && !req.secure) {
+    return res.status(400).json({ success: false, code: "HTTPS_REQUIRED", message: "HTTPS is required in production." });
+  }
+  next();
+});
 
 app.get("/api/health", async (req, res, next) => {
   try {

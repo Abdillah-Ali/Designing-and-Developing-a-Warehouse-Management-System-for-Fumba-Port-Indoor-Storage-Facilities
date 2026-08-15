@@ -10,7 +10,10 @@ const {
 const { requirePermission } = require("../middleware/authMiddleware");
 const {
   getReadiness,
-  validateConfiguration
+  validateConfiguration,
+  exportConfiguration,
+  restoreConfiguration,
+  validateConfigurationBackup
 } = require("../controllers/systemConfigurationController");
 
 const router = express.Router();
@@ -23,5 +26,8 @@ router.get("/notification-escalation", requirePermission("system.notifications.c
 router.put("/notification-escalation", requirePermission("system.notifications.configure"), updateNotificationEscalationSettings);
 router.get("/readiness", requirePermission("system.configuration.view"), getReadiness);
 router.post("/configuration/validate", requirePermission("system.configuration.manage"), validateConfiguration);
+router.get("/configuration/backup", requirePermission("system.configuration.view"), exportConfiguration);
+router.post("/configuration/backup/validate", requirePermission("system.configuration.manage"), validateConfigurationBackup);
+router.post("/configuration/restore", requirePermission("system.configuration.manage"), restoreConfiguration);
 
 module.exports = router;

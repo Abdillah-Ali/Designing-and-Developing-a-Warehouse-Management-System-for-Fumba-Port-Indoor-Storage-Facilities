@@ -22,12 +22,14 @@ const READINESS_DOMAINS = Object.freeze([
   "gate",
   "scanner",
   "notifications"
+  ,"audit"
 ]);
 
 const SETTING_DOMAINS = Object.freeze({
   auth_access_token_lifetime_ms: "authentication",
   auth_refresh_token_lifetime_ms: "authentication",
   auth_session_lifetime_ms: "authentication",
+  audit_retention_days: "audit",
   maximum_active_system_administrators: "rbac",
   manual_placement_enabled: "placement",
   cargo_pending_review_escalation_enabled: "notifications",

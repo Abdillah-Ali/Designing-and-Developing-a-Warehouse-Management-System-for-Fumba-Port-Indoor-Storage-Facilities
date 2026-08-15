@@ -592,7 +592,21 @@ const recommendBin = async (req, res, next) => {
       if (!evaluation.readiness.ready) return res.status(409).json({ success: false, message: evaluation.detail, data: evaluation.readiness });
       if (evaluation.approved) eligible.push(bin);
     }
-    if (!eligible.length) throw buildError("No configured-rule-compliant bin is available for this cargo.", 404);
+    if (!eligible.length) {
+      const client = await db.pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(`UPDATE cargo SET storage_exception_key='unallocated_exception',
+          storage_exception_reason='No configured-rule-compliant bin is available.',storage_exception_at=CURRENT_TIMESTAMP
+          WHERE id=$1 AND current_bin_id IS NULL`, [cargo.id]);
+        await writeAuditLog({ user_id: req.auth?.userId, action: "CARGO_UNALLOCATED_EXCEPTION", module: "Cargo Placement",
+          description: `Cargo ${cargo.cargo_id} has no compatible normal bin and remains unallocated.`,
+          metadata: { cargo_identifier: cargo.cargo_id, exception_key: "unallocated_exception", physical_bin_occupied: false } }, client);
+        await client.query("COMMIT");
+      } catch (error) { await client.query("ROLLBACK").catch(() => {}); throw error; }
+      finally { client.release(); }
+      return res.status(409).json({ success: false, code: "NO_COMPATIBLE_BIN", message: "No compatible normal bin is available. Cargo is traceable in the Unallocated Exception queue and no physical bin has been occupied.", data: { exception_key: "unallocated_exception", cargo_reference: cargo.cargo_id } });
+    }
     const orderingRules = rules.filter((rule) => rule.rule_type === "ordering");
     eligible.sort((left, right) => {
       for (const rule of orderingRules) {

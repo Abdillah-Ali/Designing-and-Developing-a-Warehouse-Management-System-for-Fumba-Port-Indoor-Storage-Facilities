@@ -123,6 +123,10 @@ import {
   getSupervisorReviewConfiguration,
   getSystemAdministratorCapacity,
   getSystemReadiness,
+  exportConfigurationBackup,
+  validateConfigurationBackup,
+  restoreConfigurationBackup,
+  archiveEligibleAuditLogs,
   getUserPendingTasks,
   getUserSessions,
   getUsers,
@@ -178,6 +182,15 @@ const emptyAuditFilters = {
   warehouse: ""
 };
 
+function ConfigurationBackupPage() {
+  const [snapshot,setSnapshot]=useState(null); const [validation,setValidation]=useState(null); const [busy,setBusy]=useState(false);
+  const exportBackup=async()=>{setBusy(true);try{const r=await exportConfigurationBackup();const data=r.data;const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const link=document.createElement("a");link.href=url;link.download=`fumba-wms-configuration-${new Date().toISOString().slice(0,10)}.json`;link.click();URL.revokeObjectURL(url);toast.success("Configuration backup exported.");}catch(e){toast.error(getErrorMessage(e));}finally{setBusy(false);}};
+  const selectFile=async(e)=>{setValidation(null);setSnapshot(null);const file=e.target.files?.[0];if(!file)return;try{setSnapshot(JSON.parse(await file.text()));}catch{toast.error("The selected file is not valid JSON.");}};
+  const validate=async()=>{setBusy(true);try{const r=await validateConfigurationBackup(snapshot);setValidation(r.data);toast.success("Backup validated. Review and confirm restore.");}catch(e){setValidation({valid:false,issues:e.details||[getErrorMessage(e)]});}finally{setBusy(false);}};
+  const restore=async()=>{if(!validation?.valid||!window.confirm("Restore this validated configuration backup? The operation is transactional and audited."))return;setBusy(true);try{await restoreConfigurationBackup(snapshot);toast.success("Configuration restored successfully.");setSnapshot(null);setValidation(null);}catch(e){toast.error(getErrorMessage(e));}finally{setBusy(false);}};
+  return <><PageHeader eyebrow="System Configuration" title="Configuration Backup & Restore" description="Export a versioned, secret-free snapshot or validate and explicitly restore one."/><div className="flex-1 overflow-auto p-4 grid gap-4 lg:grid-cols-2"><SectionCard title="Export configuration"><p className="mb-4 text-sm text-muted-foreground">Includes non-secret system settings and trusted Bin Rules. Operational records and credentials are excluded.</p><button className="rounded bg-primary px-4 py-2 text-sm text-primary-foreground disabled:opacity-50" disabled={busy} onClick={exportBackup}>Export JSON backup</button></SectionCard><SectionCard title="Validate and restore"><input type="file" accept="application/json,.json" onChange={selectFile}/>{snapshot&&<div className="mt-3 flex gap-2"><button className="rounded border px-3 py-2 text-sm" disabled={busy} onClick={validate}>Validate backup</button><button className="rounded bg-destructive px-3 py-2 text-sm text-destructive-foreground disabled:opacity-50" disabled={busy||!validation?.valid} onClick={restore}>Confirm restore</button></div>}{validation&&<div className={`mt-3 rounded border p-3 text-sm ${validation.valid?"border-green-500":"border-red-500"}`}>{validation.valid?"Validation passed. Restore is ready for confirmation.":(validation.issues||[]).join(" ")}</div>}</SectionCard></div></>;
+}
+
 const cargoStatuses = [
   "Pending Review",
   "Approved",
@@ -211,6 +224,7 @@ const adminNavigation = [
       { label: "Roles & Permissions", icon: ShieldCheck, to: "/admin/system/roles-permissions" },
       { label: "Shift Assignment", icon: CalendarClock, to: "/admin/system/shift-assignment" },
       { label: "Warehouse Assignment", icon: Warehouse, to: "/admin/system/warehouse-assignment" },
+      { label: "Configuration Backup", icon: Save, to: "/admin/system/configuration" },
       { label: "Cargo Registration Form", icon: ClipboardList, to: "/admin/system/cargo-registration-form" }
     ]
   },
@@ -4642,6 +4656,7 @@ function AdminPortal() {
         <Route path="warehouse/bins" element={<WarehouseConfigPage scope="bins" />} />
         <Route path="warehouse/bin-rules" element={<BinRulesPage />} />
         <Route path="warehouse/capacity-configuration" element={<CapacityConfigurationPage />} />
+        <Route path="system/configuration" element={<ConfigurationBackupPage />} />
         <Route path="cargo/records" element={<CargoRecordsPage mode="records" />} />
         <Route path="cargo/approval-overrides" element={<CargoApprovalOverridesPage />} />
         <Route path="cargo/placement-monitoring" element={<PlacementMonitoringPage />} />

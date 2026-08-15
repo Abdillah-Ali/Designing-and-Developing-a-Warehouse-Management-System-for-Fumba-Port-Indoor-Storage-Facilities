@@ -10,6 +10,7 @@ export const PORTAL_ROLES = Object.freeze({
   CUSTOMS_OFFICER: "customs-officer",
   GATE_OFFICER: "gate-officer",
   MANAGEMENT: "management",
+  AUDITOR: "auditor",
   SCANNER: "scanner"
 });
 
@@ -27,6 +28,7 @@ export const PORTAL_CONFIG = Object.freeze({
       "/admin/system/roles-permissions",
       "/admin/system/shift-assignment",
       "/admin/system/warehouse-assignment",
+      "/admin/system/configuration",
       "/admin/warehouse/warehouses",
       "/admin/warehouse/zones",
       "/admin/warehouse/racks",
@@ -234,6 +236,11 @@ export const PORTAL_CONFIG = Object.freeze({
       "/management/profile"
     ]),
     modules: Object.freeze(["dashboard", "executive-reports", "notifications", "profile"])
+  },
+  [PORTAL_ROLES.AUDITOR]: {
+    label: "Auditor", roleName: "Auditor", displayRoleName: "Auditor", basePath: "/auditor", defaultPath: "/auditor",
+    allowedPaths: Object.freeze(["/auditor", "/auditor/logs", "/auditor/reports", "/auditor/profile"]),
+    modules: Object.freeze(["audit", "executive-reports", "profile"])
   }
 });
 
@@ -261,6 +268,7 @@ const roleAliases = Object.freeze({
   "gate-officer": PORTAL_ROLES.GATE_OFFICER,
   "gate officer": PORTAL_ROLES.GATE_OFFICER,
   "management": PORTAL_ROLES.MANAGEMENT,
+  "auditor": PORTAL_ROLES.AUDITOR,
   "scanner": PORTAL_ROLES.SCANNER
 });
 
@@ -429,6 +437,7 @@ const portalEntryPermissions = Object.freeze({
   [PORTAL_ROLES.CUSTOMS_OFFICER]: "customs.dashboard.view",
   [PORTAL_ROLES.GATE_OFFICER]: "gate.dashboard.view",
   [PORTAL_ROLES.MANAGEMENT]: "management.dashboard.view"
+  ,[PORTAL_ROLES.AUDITOR]: "system.audit.view"
 });
 
 export function hasPortalEntryPermission(role, storage = canUseSessionStorage() ? window.sessionStorage : null) {
