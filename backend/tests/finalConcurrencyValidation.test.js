@@ -77,7 +77,7 @@ const addPlacedFixture = async (suffix, staffId, bin) => {
   const cargo = await createCargo(suffix, staffId, {
     placement_status: "Placed", customs_status: "Cleared", customs_status_key: "cleared",
     financial_status: "Unbilled", dispatch_status: "Approved", current_bin_id: bin.id, location,
-    charge_start_at: new Date(Date.now() - 3600_000)
+    charge_start_at: new Date(Date.now() - 48 * 3600_000)
   });
   await q("UPDATE bins SET current_weight=current_weight+$1,current_volume=current_volume+$2,status='Occupied' WHERE id=$3", [cargo.weight, cargo.volume, bin.id]);
   const dispatch = (await q("INSERT INTO dispatch_requests(cargo_id,requested_by,status,decided_at,decided_by) VALUES($1,$2,'Approved',CURRENT_TIMESTAMP,$2) RETURNING *", [cargo.id, staffId])).rows[0];
@@ -99,7 +99,7 @@ const financiallyClear = async (cargo, suffix, token) => {
 
 test("final validation closure executes real authenticated HTTP races and Gate rollback", { timeout: 120_000 }, async (t) => {
   try {
-    if (process.platform === "win32" || !process.env.DB_HOST) return t.skip("Docker-backed live validation environment is unavailable.");
+    if (!process.env.DB_HOST) return t.skip("Docker-backed live validation environment is unavailable.");
     const health = await request("GET", "/health");
     if (health.status !== 200) return t.skip("Live backend/PostgreSQL validation environment is unavailable.");
 

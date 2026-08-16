@@ -25,6 +25,8 @@ function ReviewActionModal({
   const [rejectionReason, setRejectionReason] = useState("");
   const [correctiveNotes, setCorrectiveNotes] = useState("");
   const [validationError, setValidationError] = useState("");
+  const [releaseType, setReleaseType] = useState("NORMAL");
+  const [managementReason, setManagementReason] = useState("");
 
   useEffect(() => {
     if (!open) return;
@@ -34,6 +36,8 @@ function ReviewActionModal({
     setRejectionReason("");
     setCorrectiveNotes("");
     setValidationError("");
+    setReleaseType("NORMAL");
+    setManagementReason("");
   }, [mode, open]);
 
   const content = useMemo(() => ({
@@ -98,7 +102,10 @@ function ReviewActionModal({
       });
       return;
     }
-    onSubmit?.(comment.trim());
+    if (subjectLabel === "Cargo Registration" && releaseType === "MANAGEMENT" && !managementReason.trim()) {
+      setValidationError("Reason for Management Release is required."); return;
+    }
+    onSubmit?.({decision_notes:comment.trim(),release_type:releaseType,management_release_reason:managementReason.trim()});
   };
 
   const Icon = content.icon || ClipboardCheck;
@@ -204,6 +211,14 @@ function ReviewActionModal({
         )}
 
         {mode === "approve" && (
+          <>
+          {subjectLabel === "Cargo Registration" && <div className="space-y-3 rounded-md border border-info/30 bg-info/5 p-3">
+            <label className="block space-y-1.5"><span className="text-xs font-semibold">Release Type <span className="text-destructive">*</span></span>
+              <select value={releaseType} onChange={(event)=>setReleaseType(event.target.value)} className="h-10 w-full rounded-md border border-input bg-background px-3 text-xs"><option value="NORMAL">Normal Release</option><option value="MANAGEMENT">Management Release Required</option></select>
+            </label>
+            {releaseType === "MANAGEMENT" && <label className="block space-y-1.5"><span className="text-xs font-semibold">Reason for Management Release <span className="text-destructive">*</span></span><textarea maxLength={1000} value={managementReason} onChange={(event)=>setManagementReason(event.target.value)} className="min-h-20 w-full rounded-md border border-input bg-background p-3 text-xs" placeholder="Explain why Management should waive warehouse charges." /></label>}
+            <p className="text-[11px] font-medium text-warning">Cargo may proceed to placement after Supervisor approval, but Gate-Out requires explicit Management approval.</p>
+          </div>}
           <label className="block space-y-1.5">
             <span className="text-xs font-semibold">Approval Notes</span>
             <textarea
@@ -213,6 +228,7 @@ function ReviewActionModal({
               placeholder="Optional review notes."
             />
           </label>
+          </>
         )}
 
         {mode === "reject" && (

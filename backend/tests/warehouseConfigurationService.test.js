@@ -12,6 +12,7 @@ const {
   resolveLifecycleState,
   resolveBinLifecycleState
 } = require("../services/warehouseConfigurationService");
+const { assertRecommendationCargoAccess } = require("../controllers/binController");
 const { PORTAL_ROLES, canAccessRoute } = require("../middleware/authMiddleware");
 
 test("warehouse hierarchy input is normalized to uppercase generated identifiers", () => {
@@ -81,4 +82,12 @@ test("staff and administrators can request automatic bin recommendations", () =>
   assert.equal(canAccessRoute(PORTAL_ROLES.SYSTEM_ADMIN, "GET", "/bins/recommend/CARGO-1"), true);
   assert.equal(canAccessRoute(PORTAL_ROLES.WAREHOUSE_STAFF, "GET", "/bins/recommend/CARGO-1"), true);
   assert.equal(canAccessRoute(PORTAL_ROLES.WAREHOUSE_SUPERVISOR, "GET", "/bins/recommend/CARGO-1"), true);
+});
+
+test("automatic recommendations enforce staff ownership, warehouse scope, and placement eligibility", () => {
+  const cargo = { assigned_staff_id: 10, warehouse_id: 1, registration_status: "Approved", placement_status: "Unplaced", is_deleted: false };
+  assert.doesNotThrow(() => assertRecommendationCargoAccess({ role: "warehouse-staff", userId: 10, warehouseId: 1 }, cargo));
+  assert.throws(() => assertRecommendationCargoAccess({ role: "warehouse-staff", userId: 20, warehouseId: 1 }, cargo), (error) => error.statusCode === 404);
+  assert.throws(() => assertRecommendationCargoAccess({ role: "warehouse-staff", userId: 10, warehouseId: 2 }, cargo), (error) => error.statusCode === 404);
+  assert.throws(() => assertRecommendationCargoAccess({ role: "warehouse-staff", userId: 10, warehouseId: 1 }, { ...cargo, registration_status: "Pending Review" }), (error) => error.statusCode === 409 && error.errorCode === "CARGO_NOT_ELIGIBLE_FOR_PLACEMENT");
 });

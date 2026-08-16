@@ -179,6 +179,8 @@ const applySchema = async () => {
   const scannerPolicyAuthorityMigrationPath = path.join(__dirname, "migrations", "20260813_scanner_policy_authority.sql");
   const notificationPolicyAuthorityMigrationPath = path.join(__dirname, "migrations", "20260813_notification_policy_authority.sql");
   const uatSrsClosureMigrationPath = path.join(__dirname, "migrations", "20260815_uat_srs_closure.sql");
+  const managementReleaseMigrationPath = path.join(__dirname, "migrations", "20260816_management_release_workflow.sql");
+  const managementReleaseGateMigrationPath = path.join(__dirname, "migrations", "20260816_management_release_gate_authority.sql");
   const financeCustomsGateMigration = await fs.readFile(financeCustomsGateMigrationPath, "utf8");
   const zoneWarehouseScopeMigration = await fs.readFile(zoneWarehouseScopeMigrationPath, "utf8");
   const warehouseConfigurationMigration = await fs.readFile(warehouseConfigurationMigrationPath, "utf8");
@@ -245,6 +247,8 @@ const applySchema = async () => {
     await applySqlMigration(client, "028_scanner_policy_authority.sql", scannerPolicyAuthorityMigration);
     await applySqlMigration(client, "029_notification_policy_authority.sql", notificationPolicyAuthorityMigration);
     await applySqlMigration(client, "030_uat_srs_closure.sql", uatSrsClosureMigration);
+    await applySqlMigration(client, "032_management_release_workflow.sql", await fs.readFile(managementReleaseMigrationPath, "utf8"));
+    await applySqlMigration(client, "033_management_release_gate_authority.sql", await fs.readFile(managementReleaseGateMigrationPath, "utf8"));
     await client.query(
       `INSERT INTO role_permissions (role_id, permission_key)
        SELECT r.id, p.permission_key

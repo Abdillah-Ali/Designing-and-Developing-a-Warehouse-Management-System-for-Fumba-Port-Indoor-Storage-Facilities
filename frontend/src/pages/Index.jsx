@@ -21,6 +21,7 @@ import { CargoCorrectionModal } from "@/components/wms/CargoCorrectionModal";
 import { DetailForm } from "@/components/wms/DetailForm";
 import { EnterpriseModal } from "@/components/wms/EnterpriseModal";
 import { PlacementSessionModal } from "@/components/wms/PlacementSessionModal";
+import { PlacementActivityPanel } from "@/components/wms/PlacementActivityTimeline";
 import { NotificationsPage } from "@/components/wms/NotificationsPage";
 import { AccountProfilePage } from "@/components/wms/ProfilePage";
 import {
@@ -51,6 +52,7 @@ import {
   getZones,
   printCargoBarcode,
   createPlacementScanSession,
+  recommendBin,
   requestDispatchAuthorization
 } from "@/services/api";
 import { createScannerSocket } from "@/services/scannerSocket";
@@ -368,6 +370,7 @@ function PlacementQueuePanel() {
     open: false,
     cargo: null,
     session: null,
+    recommendation: null,
     instanceKey: 0
   });
   const [placementStartingId, setPlacementStartingId] = useState("");
@@ -440,6 +443,7 @@ function PlacementQueuePanel() {
       open: false,
       cargo: null,
       session: null,
+      recommendation: null,
       instanceKey: current.instanceKey + 1
     }));
   }, []);
@@ -453,13 +457,25 @@ function PlacementQueuePanel() {
     setPlacementStartingId(startId);
 
     try {
+      let recommendation = null;
+      try {
+        const recommendationResponse = await recommendBin(cargo.cargo_id || cargo.barcode);
+        recommendation = recommendationResponse.data || null;
+      } catch (recommendationError) {
+        if (recommendationError.code === "NO_COMPATIBLE_BIN") {
+          setError("No compatible storage bin is currently available for this cargo. It remains unallocated until storage becomes available.");
+          return;
+        }
+        throw recommendationError;
+      }
       const response = await createPlacementScanSession({
-        cargo_id: cargo.id || cargo.cargo_id
+        cargo_id: cargo.cargo_id || cargo.barcode
       });
       setPlacementScan((current) => ({
         open: true,
         cargo,
         session: response.data || null,
+        recommendation,
         instanceKey: current.instanceKey + 1
       }));
     } catch (startError) {
@@ -663,6 +679,7 @@ function PlacementQueuePanel() {
         open={placementScan.open}
         cargo={placementScan.cargo}
         initialSession={placementScan.session}
+        recommendation={placementScan.recommendation}
         onClose={resetPlacementScan}
         onCompleted={load}
       />
@@ -849,6 +866,21 @@ function PlacementHistoryPanel() {
         </SectionCard>
       </div>
     </div>
+  );
+}
+
+function StaffPlacementActivityPage() {
+  return (
+    <>
+      <PageHeader
+        eyebrow="Placement & Scanning"
+        title="Placement Activity"
+        description="Your authorized placement validations, confirmations, relocations, failures, scanner work, and override activity."
+      />
+      <div className="flex-1 overflow-auto p-3">
+        <PlacementActivityPanel title="My Placement Activity" />
+      </div>
+    </>
   );
 }
 
@@ -1562,7 +1594,7 @@ const Index = () => {
         />
         <Route path="cargo/registration-reviews" element={<Navigate to="/staff/cargo/registration?tab=reviews" replace />} />
         <Route path="cargo/placement-queue" element={<Navigate to="/staff/cargo/registration?tab=placement" replace />} />
-        <Route path="cargo/placement-history" element={<Navigate to="/staff/cargo/registration?tab=placement-history" replace />} />
+        <Route path="cargo/placement-history" element={<StaffPlacementActivityPage />} />
         <Route
           path="cargo/placement-scanning"
           element={

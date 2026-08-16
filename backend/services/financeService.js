@@ -388,6 +388,16 @@ const getCargoFinancialSnapshot = async ({ cargoId, at = null, executor = db }) 
   if (!cargo) throw buildError("Cargo record not found.", 404);
 
   const calculationTime = at || await getServerNow(executor);
+  if (cargo.management_release_status === "APPROVED") {
+    const paidCents = await getConfirmedPaidCentsForCargo(cargo.id, executor);
+    const waived = String(cargo.management_release_waived_amount || "0.00");
+    return {
+      cargo, tariff:null, calculation_time:calculationTime,
+      charge:{charge_start_at:cargo.charge_start_at,charge_end_at:cargo.charge_end_at,billable_days:0,currency:"TZS",base_charge:"0.00",penalties:"0.00",adjustments:"0.00",total_amount:"0.00",total_cents:0n,historical_accrued_amount:waived},
+      paid_cents:paidCents,outstanding_cents:0n,amount_paid:amountFromCents(paidCents),outstanding_balance:"0.00",
+      management_release_status:"APPROVED",charge_treatment:"WAIVED_BY_MANAGEMENT_RELEASE",historical_accrued_amount:waived,waived_amount:waived
+    };
+  }
   const adjustmentsCents = await getApprovedAdjustmentsCents({
     cargoId: cargo.id,
     periodStart: cargo.charge_start_at,
@@ -396,7 +406,8 @@ const getCargoFinancialSnapshot = async ({ cargoId, at = null, executor = db }) 
   });
   const charge = await calculateSegmentedStorageCharge({ cargo, periodStart:cargo.charge_start_at, periodEnd:cargo.charge_end_at || calculationTime, adjustmentsCents, executor });
   const paidCents = await getConfirmedPaidCentsForCargo(cargo.id, executor);
-  const outstandingCents = charge.total_cents > paidCents ? charge.total_cents - paidCents : 0n;
+  const managementReleased = cargo.management_release_status === "APPROVED";
+  const outstandingCents = managementReleased ? 0n : (charge.total_cents > paidCents ? charge.total_cents - paidCents : 0n);
 
   return {
     cargo,
@@ -405,6 +416,10 @@ const getCargoFinancialSnapshot = async ({ cargoId, at = null, executor = db }) 
     charge,
     paid_cents: paidCents,
     outstanding_cents: outstandingCents,
+    management_release_status: cargo.management_release_status || "NOT_REQUIRED",
+    charge_treatment: managementReleased ? "WAIVED_BY_MANAGEMENT_RELEASE" : "PAYABLE",
+    historical_accrued_amount: charge.total_amount,
+    waived_amount: managementReleased ? (cargo.management_release_waived_amount || charge.total_amount) : "0.00",
     amount_paid: amountFromCents(paidCents),
     outstanding_balance: amountFromCents(outstandingCents)
   };
@@ -540,6 +555,9 @@ const listCargoCharges = async ({ filters = {}, executor = db }) => {
        c.placement_status,
        c.customs_status,
        c.financial_status,
+       c.management_release_status,
+       c.management_release_waived_amount,
+       c.management_release_finance_review_required,
        c.dispatch_status,
        c.gate_out_status,
        c.created_at,
@@ -598,7 +616,7 @@ const listCargoCharges = async ({ filters = {}, executor = db }) => {
         adjustmentsCents
       });
       const paidCents = centsFromAmount(row.paid_amount || 0);
-      const outstandingCents = charge.total_cents > paidCents ? charge.total_cents - paidCents : 0n;
+      const outstandingCents = row.management_release_status === "APPROVED" ? 0n : (charge.total_cents > paidCents ? charge.total_cents - paidCents : 0n);
       billingStatus = outstandingCents === 0n ? "Fully Paid" : row.financial_status;
     } catch (error) {
       tariffError = error.message;
@@ -607,8 +625,9 @@ const listCargoCharges = async ({ filters = {}, executor = db }) => {
     const paidCents = centsFromAmount(row.paid_amount || 0);
     const invoicedCents = centsFromAmount(row.invoiced_amount || 0);
     const accruedCents = charge?.total_cents || 0n;
-    const outstandingCents = accruedCents > paidCents ? accruedCents - paidCents : 0n;
-    const uninvoicedCents = accruedCents > invoicedCents ? accruedCents - invoicedCents : 0n;
+    const managementReleased = row.management_release_status === "APPROVED";
+    const outstandingCents = managementReleased ? 0n : (accruedCents > paidCents ? accruedCents - paidCents : 0n);
+    const uninvoicedCents = managementReleased ? 0n : (accruedCents > invoicedCents ? accruedCents - invoicedCents : 0n);
 
     rows.push({
       cargo_reference: row.cargo_id,
@@ -641,6 +660,10 @@ const listCargoCharges = async ({ filters = {}, executor = db }) => {
       paid_amount: amountFromCents(paidCents),
       outstanding_amount: amountFromCents(outstandingCents),
       billing_status: billingStatus,
+      management_release_status: row.management_release_status || "NOT_REQUIRED",
+      charge_treatment: managementReleased ? "Management Release — No Charges" : "Normal warehouse charges",
+      waived_amount: managementReleased ? (row.management_release_waived_amount || charge?.total_amount || "0.00") : "0.00",
+      management_release_finance_review_required: Boolean(row.management_release_finance_review_required),
       invoice_status: row.latest_invoice_status || "Not Invoiced",
       payment_status: row.latest_payment_status || "Unpaid",
       tariff_error: tariffError
@@ -1203,6 +1226,7 @@ const createOrRegenerateDraftInvoice = async ({ payload, auth, executor = db }) 
   if (!cargoReference) throw buildError("Cargo reference is required.", 400);
   const cargo = await findCargoByPublicReference(executor, cargoReference, { lock: true });
   if (!cargo) throw buildError("Cargo record not found.", 404);
+  if (cargo.management_release_status === "APPROVED") throw buildError("A payable invoice cannot be generated for Management Release cargo.",409,null,"MANAGEMENT_RELEASE_NO_CHARGES");
 
   const now = await getServerNow(executor);
   const requestedEnd = normalizeTimestamp(payload.billing_period_end);
@@ -1378,6 +1402,8 @@ const issueInvoice = async ({ invoiceNumber, auth, executor = db }) => {
   if (invoice.status !== "Draft") {
     throw buildError("Only draft invoices can be issued.", 409);
   }
+  const lockedCargo=await executor.query("SELECT management_release_status FROM cargo WHERE id=$1 FOR UPDATE",[invoice.cargo_id]);
+  if(lockedCargo.rows[0]?.management_release_status==="APPROVED") throw buildError("A payable invoice cannot be issued for Management Release cargo.",409,null,"MANAGEMENT_RELEASE_NO_CHARGES");
   const result = await executor.query(
     `UPDATE invoices
      SET status = 'Issued',

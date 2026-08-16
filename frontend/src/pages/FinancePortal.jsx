@@ -285,6 +285,7 @@ function CargoChargesPage() {
                 { key: "approval_status", label: "Approval", render: (row) => <StatusBadge tone={statusTone(row.approval_status)}>{row.approval_status}</StatusBadge> },
                 { key: "placement_status", label: "Placement", render: (row) => <StatusBadge tone={statusTone(row.placement_status)}>{row.placement_status}</StatusBadge> },
                 { key: "customs_status", label: "Customs", render: (row) => <StatusBadge tone={statusTone(row.customs_status)}>{row.customs_status}</StatusBadge> },
+                { key: "management_release_status", label: "Release", render: (row) => <div className="space-y-1"><StatusBadge tone={row.management_release_status === "APPROVED" ? "success" : row.management_release_status === "PENDING" ? "warning" : "info"}>{row.management_release_status === "NOT_REQUIRED" ? "Normal Release" : `Management ${row.management_release_status}`}</StatusBadge>{row.management_release_finance_review_required && <div className="text-[10px] font-semibold text-warning">Payment received — Finance review required</div>}</div> },
                 { key: "billable_days", label: "Days" },
                 { key: "current_accrued_charge", label: "Accrued", render: (row) => formatMoney(row.current_accrued_charge) },
                 { key: "invoiced_amount", label: "Invoiced", render: (row) => formatMoney(row.invoiced_amount) },
@@ -295,7 +296,7 @@ function CargoChargesPage() {
                   key: "actions",
                   label: "Actions",
                   render: (row) => (
-                    <button type="button" onClick={() => draftInvoice(row.cargo_reference)} className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground">
+                    <button type="button" disabled={row.management_release_status === "APPROVED"} title={row.management_release_status === "APPROVED" ? "Management Release Approved — charges waived" : row.management_release_status === "PENDING" ? "Management Release Pending — invoice is provisional and does not authorize Gate-Out" : "Generate draft invoice"} onClick={() => draftInvoice(row.cargo_reference)} className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground disabled:cursor-not-allowed disabled:opacity-40">
                       Draft Invoice
                     </button>
                   )

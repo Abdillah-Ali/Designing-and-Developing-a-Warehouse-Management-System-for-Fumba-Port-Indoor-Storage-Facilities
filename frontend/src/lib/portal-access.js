@@ -276,6 +276,14 @@ function canUseSessionStorage() {
   return typeof window !== "undefined" && Boolean(window.sessionStorage);
 }
 
+let inMemoryAccessToken = null;
+if (canUseSessionStorage()) {
+  try {
+    window.sessionStorage.removeItem(AUTH_TOKEN_KEY);
+  } catch {
+  }
+}
+
 function normalizeRole(role) {
   if (!role) return null;
   return roleAliases[String(role).trim().toLowerCase()] || null;
@@ -364,8 +372,8 @@ export function isPathAllowedForRole(role, pathname) {
 }
 
 // Auth token management
-export function getStoredAuthToken(storage = canUseSessionStorage() ? window.sessionStorage : null) {
-  if (!storage) return null;
+export function getStoredAuthToken(storage) {
+  if (!storage) return inMemoryAccessToken;
 
   try {
     return storage.getItem(AUTH_TOKEN_KEY);
@@ -374,8 +382,15 @@ export function getStoredAuthToken(storage = canUseSessionStorage() ? window.ses
   }
 }
 
-export function setStoredAuthToken(token, storage = canUseSessionStorage() ? window.sessionStorage : null) {
-  if (!storage || !token) return;
+export function setStoredAuthToken(token, storage) {
+  if (!token) return;
+
+  inMemoryAccessToken = token;
+  if (!storage) {
+    const role = extractRoleFromToken(token);
+    if (role && canUseSessionStorage()) setStoredPortalRole(role);
+    return;
+  }
 
   try {
     storage.setItem(AUTH_TOKEN_KEY, token);
@@ -387,8 +402,16 @@ export function setStoredAuthToken(token, storage = canUseSessionStorage() ? win
   }
 }
 
-export function clearStoredAuthToken(storage = canUseSessionStorage() ? window.sessionStorage : null) {
-  if (!storage) return;
+export function clearStoredAuthToken(storage) {
+  inMemoryAccessToken = null;
+  if (!storage) {
+    if (canUseSessionStorage()) {
+      window.sessionStorage.removeItem(AUTH_TOKEN_KEY);
+      window.sessionStorage.removeItem(AUTH_PERMISSIONS_KEY);
+      window.sessionStorage.removeItem(PORTAL_SESSION_KEY);
+    }
+    return;
+  }
 
   try {
     storage.removeItem(AUTH_TOKEN_KEY);
@@ -457,40 +480,40 @@ export function getDisplayRoleName(role) {
   return role ? String(role).trim() : "";
 }
 
-export function getStoredAuthRole(storage = canUseSessionStorage() ? window.sessionStorage : null) {
+export function getStoredAuthRole(storage) {
   return extractRoleFromToken(getStoredAuthToken(storage));
 }
 
-export function getStoredAuthClaims(storage = canUseSessionStorage() ? window.sessionStorage : null) {
+export function getStoredAuthClaims(storage) {
   return decodeTokenPayload(getStoredAuthToken(storage));
 }
 
-export function getStoredAuthUserId(storage = canUseSessionStorage() ? window.sessionStorage : null) {
+export function getStoredAuthUserId(storage) {
   const claims = getStoredAuthClaims(storage);
   const userId = Number(claims?.userId || claims?.user_id || claims?.sub);
   return Number.isInteger(userId) && userId > 0 ? userId : null;
 }
 
-export function mustChangeStoredPassword(storage = canUseSessionStorage() ? window.sessionStorage : null) {
+export function mustChangeStoredPassword(storage) {
   const claims = getStoredAuthClaims(storage);
   return Boolean(claims?.mustChangePassword ?? claims?.must_change_password);
 }
 
-export function isStoredBootstrapAdmin(storage = canUseSessionStorage() ? window.sessionStorage : null) {
+export function isStoredBootstrapAdmin(storage) {
   const claims = getStoredAuthClaims(storage);
   return Boolean(claims?.isBootstrapAdmin ?? claims?.is_bootstrap_admin);
 }
 
-export function isStoredBootstrapCompleted(storage = canUseSessionStorage() ? window.sessionStorage : null) {
+export function isStoredBootstrapCompleted(storage) {
   const claims = getStoredAuthClaims(storage);
   return Boolean(claims?.bootstrapCompleted ?? claims?.bootstrap_completed);
 }
 
-export function isStoredBootstrapSetupPending(storage = canUseSessionStorage() ? window.sessionStorage : null) {
+export function isStoredBootstrapSetupPending(storage) {
   return isStoredBootstrapAdmin(storage) && !isStoredBootstrapCompleted(storage);
 }
 
-export function getStoredAuthWarehouseId(storage = canUseSessionStorage() ? window.sessionStorage : null) {
+export function getStoredAuthWarehouseId(storage) {
   const claims = getStoredAuthClaims(storage);
   return Number(claims?.warehouseId || claims?.warehouse_id) || null;
 }

@@ -33,8 +33,12 @@ const {
   notFoundHandler
 } = require("./middleware/errorMiddleware");
 const { requirePortalAccess } = require("./middleware/authMiddleware");
+const { securityHeaders } = require("./middleware/securityHeaders");
+const { validateRequestShape } = require("./middleware/requestValidation");
+const { minimizeJsonResponses } = require("./middleware/responseMinimization");
 
 const app = express();
+app.disable("x-powered-by");
 if (process.env.NODE_ENV === "production") app.set("trust proxy", 1);
 
 const localDevOrigins = [
@@ -80,6 +84,8 @@ const isPrivateNetworkDevOrigin = (origin) => {
   }
 };
 
+app.use(securityHeaders);
+app.use(minimizeJsonResponses);
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin || allowedOrigins.includes(origin) || isPrivateNetworkDevOrigin(origin)) {
@@ -87,12 +93,13 @@ app.use(cors({
       return;
     }
 
-    callback(new Error("Origin is not allowed by CORS."));
+    callback(Object.assign(new Error("Origin is not allowed by CORS."), { statusCode: 403, errorCode: "CORS_ORIGIN_DENIED" }));
   },
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true
 }));
 app.use(express.json({ limit: "15mb" }));
+app.use(validateRequestShape);
 app.use((req, res, next) => {
   if (process.env.NODE_ENV === "production" && !req.secure) {
     return res.status(400).json({ success: false, code: "HTTPS_REQUIRED", message: "HTTPS is required in production." });

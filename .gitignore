@@ -20,6 +20,7 @@ logs/
 # Runtime uploads and local database backups
 backend/uploads/
 docker_backup*.sql
+secrets/
 
 # Editor and operating system files
 .git-temp/

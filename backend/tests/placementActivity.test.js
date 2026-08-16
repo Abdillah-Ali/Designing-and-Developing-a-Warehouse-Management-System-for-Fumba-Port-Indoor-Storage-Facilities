@@ -197,6 +197,51 @@ test("null cargo_id validation logs do not leak to staff unless actor matches", 
   assert.deepEqual(rows.map((row) => row.id), ["validation:mine-null-cargo"]);
 });
 
+test("staff sees scanner cancellation targeted to their account but not another staff account", async () => {
+  const rows = await listFor(
+    { role: "warehouse-staff", userId: 10, warehouseId: 1 },
+    {
+      audits: [
+        baseRow({
+          activity_id: "audit:scanner-mine",
+          source_table: "audit_logs",
+          activity_type: ACTIVITY_TYPES.SCANNER_SESSION_CANCELLED,
+          performed_by: 90,
+          performed_by_role_name: "Scanner",
+          assigned_staff_id: null,
+          created_by: null,
+          received_by_user_id: null,
+          target_staff_id: 10,
+          result: "failed"
+        }),
+        baseRow({
+          activity_id: "audit:scanner-other",
+          source_table: "audit_logs",
+          activity_type: ACTIVITY_TYPES.SCANNER_SESSION_CANCELLED,
+          performed_by: 91,
+          performed_by_role_name: "Scanner",
+          assigned_staff_id: null,
+          created_by: null,
+          received_by_user_id: null,
+          target_staff_id: 20,
+          result: "failed"
+        })
+      ]
+    }
+  );
+
+  assert.deepEqual(rows.map((row) => row.id), ["audit:scanner-mine"]);
+});
+
+test("placement activity applies backend-style page boundaries after scope filtering", async () => {
+  const result = await getPlacementActivity(
+    { auth: { role: "warehouse-staff", userId: 10, warehouseId: 1 }, filters: { page: 2, limit: 2 } },
+    createExecutor({ movements: [1, 2, 3, 4, 5].map((id) => baseRow({ activity_id: `movement:${id}`, source_id: id, activity_timestamp: `2026-06-23T0${id}:00:00.000Z` })) })
+  );
+  assert.equal(result.total, 5);
+  assert.deepEqual(result.rows.map((row) => row.id), ["movement:3", "movement:2"]);
+});
+
 test("activity summary respects role scope", async () => {
   const summary = await getPlacementActivitySummary(
     {

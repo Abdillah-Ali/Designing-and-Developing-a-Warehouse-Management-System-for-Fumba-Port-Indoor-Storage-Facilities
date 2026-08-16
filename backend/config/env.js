@@ -1,8 +1,19 @@
 const dotenv = require("dotenv");
+const fs = require("node:fs");
 const path = require("path");
 
 dotenv.config({ path: path.join(__dirname, "..", ".env") });
 dotenv.config();
+
+const loadSecretFile = (target, fileVariable) => {
+  if (process.env[target]) return;
+  const file = process.env[fileVariable];
+  if (!file) return;
+  process.env[target] = fs.readFileSync(file, "utf8").trim();
+};
+
+loadSecretFile("DB_PASSWORD", "DB_PASSWORD_FILE");
+loadSecretFile("JWT_SECRET", "JWT_SECRET_FILE");
 
 const isTest = process.env.NODE_ENV === "test";
 
@@ -54,6 +65,9 @@ const validateEnvironment = ({ includeDatabase = true } = {}) => {
   const jwtSecret = String(process.env.JWT_SECRET || "");
   if (jwtSecret.length < 32 || weakSecretValues.has(jwtSecret)) {
     throw new Error("JWT_SECRET must be a strong secret of at least 32 characters.");
+  }
+  if (process.env.NODE_ENV === "production" && String(process.env.DB_PASSWORD || "").length < 16) {
+    throw new Error("DB_PASSWORD must be at least 16 characters in production.");
   }
 
   return true;

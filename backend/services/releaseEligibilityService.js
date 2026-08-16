@@ -7,6 +7,11 @@ const activeDispatch=async(executor,cargoId,lock=false)=>(await executor.query(`
 const evaluateEligibility=async({target,cargo,executor=db,at=null,emergencyReference=null,lock=false})=>{
  const now=at||await getServerNow(executor); const policyResult=await executor.query(`SELECT * FROM eligibility_policies WHERE target=$1 AND active AND configuration_status='ready' AND effective_from<=$2 ORDER BY effective_from DESC,revision DESC LIMIT 2`,[target,now]);
  if(policyResult.rowCount!==1)throw buildError('Eligibility policy is missing or ambiguous.',409,null,target==='dispatch_request'?'DISPATCH_POLICY_NOT_READY':'GATE_POLICY_NOT_READY'); const policy=policyResult.rows[0];
+ const managementRequirement=target.includes('gate_release')?evaluateRequirement(target,'management_release_authorization',{cargo},{}):null;
+ if(managementRequirement&&!managementRequirement.passed){
+  const requirement={evaluator_key:'management_release_authorization',...managementRequirement};
+  return {eligible:false,policy_key:policy.policy_key,revision:policy.revision,calculation_time:now,outstanding_amount:'0.00',requirements:[requirement],blocked_requirements:[requirement],dispatch_request:null,emergency_authorization:null};
+ }
  const finance=target==='normal_gate_release'?await getCargoFinancialSnapshot({cargoId:cargo.id,at:now,executor}):null; const dispatch=target==='normal_gate_release'?await activeDispatch(executor,cargo.id,lock):null;
  let emergency=null;if(target==='emergency_gate_release'&&emergencyReference) emergency=(await executor.query(`SELECT * FROM emergency_release_requests WHERE public_reference=$1 AND cargo_id=$2 AND status='Approved' AND consumed_at IS NULL FOR UPDATE`,[emergencyReference,cargo.id])).rows[0]||null;
  const context={cargo,registration_state_key:await stateKey(executor,'cargo_registration',cargo.registration_status),placement_state_key:await stateKey(executor,'cargo_placement',cargo.placement_status),customs_state_key:cargo.customs_status_key,release_state_key:cargo.gate_out_status==='Not Released'?'not_released':'released',outstanding_cents:finance?.outstanding_cents||0n,outstanding_amount:finance?amountFromCents(finance.outstanding_cents):'0.00',dispatch_request:dispatch,emergency_authorization:emergency};

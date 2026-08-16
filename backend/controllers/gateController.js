@@ -46,6 +46,9 @@ const gateCargoSelect = `
     c.placement_status,
     c.customs_status,
     c.financial_status,
+    c.release_type,
+    c.management_release_status,
+    c.management_release_waived_amount,
     c.dispatch_status,
     c.gate_out_status,
     c.location,
@@ -82,6 +85,10 @@ const toGateCargo = (row, eligibility = null) => ({
   placement_status: row.placement_status,
   customs_status: row.customs_status,
   financial_status: row.financial_status,
+  release_type: row.management_release_status === "APPROVED" ? "MANAGEMENT RELEASE" : "NORMAL RELEASE",
+  management_release_status: row.management_release_status || "NOT_REQUIRED",
+  charge_treatment: row.management_release_status === "APPROVED" ? "No Charges / Waived" : "Normal warehouse charges",
+  waived_amount: row.management_release_waived_amount || "0.00",
   dispatch_status: row.dispatch_status,
   gate_out_status: row.gate_out_status,
   location: row.location,
@@ -173,7 +180,7 @@ const buildEligibilityLegacy = async ({ executor = db, cargo, at = null }) => {
 };
 const buildEligibility=async({executor=db,cargo,at=null})=>{
  const result=await evaluateEligibility({target:'normal_gate_release',cargo,executor,at});
- const aliases={financial_clearance:'payment',customs_clearance:'customs',dispatch_approval:'dispatch',registration_state:'supervisor_approval',release_state:'gate_out'};
+ const aliases={financial_clearance:'payment',customs_clearance:'customs',dispatch_approval:'dispatch',registration_state:'supervisor_approval',management_release_authorization:'management_release',release_state:'gate_out'};
  const blocked=result.blocked_requirements.map(item=>({...item,requirement:aliases[item.evaluator_key]||item.evaluator_key}));
  return {...result,blocked_requirements:blocked,billable_days:0,current_accrued_charge:'0.00',amount_paid:'0.00',dispatch_reference:result.dispatch_request?'Approved Dispatch Request':null};
 };
@@ -184,10 +191,11 @@ const getDashboard = async (req, res, next) => {
       db.query(
         `SELECT
            COUNT(*) FILTER (WHERE dr.status = 'Approved' AND c.gate_out_status = 'Not Released')::int AS awaiting_gate_release,
-           COUNT(*) FILTER (WHERE dr.status = 'Approved' AND c.customs_status = 'Cleared' AND c.financial_status = 'Fully Paid' AND c.registration_status = 'Approved' AND c.gate_out_status = 'Not Released')::int AS ready_for_release,
+           COUNT(*) FILTER (WHERE dr.status = 'Approved' AND c.customs_status = 'Cleared' AND c.financial_status = 'Fully Paid' AND c.registration_status = 'Approved' AND c.gate_out_status = 'Not Released' AND ((c.release_type='NORMAL' AND c.management_release_status='NOT_REQUIRED') OR (c.release_type='MANAGEMENT' AND c.management_release_status='APPROVED')))::int AS ready_for_release,
            COUNT(*) FILTER (WHERE dr.status = 'Approved' AND c.customs_status <> 'Cleared' AND c.gate_out_status = 'Not Released')::int AS blocked_by_customs,
            COUNT(*) FILTER (WHERE dr.status = 'Approved' AND c.financial_status <> 'Fully Paid' AND c.gate_out_status = 'Not Released')::int AS blocked_by_payment,
-           COUNT(*) FILTER (WHERE c.registration_status <> 'Approved' AND c.gate_out_status = 'Not Released')::int AS blocked_by_supervisor
+           COUNT(*) FILTER (WHERE c.registration_status <> 'Approved' AND c.gate_out_status = 'Not Released')::int AS blocked_by_supervisor,
+           COUNT(*) FILTER (WHERE c.release_type='MANAGEMENT' AND c.management_release_status<>'APPROVED' AND c.gate_out_status='Not Released')::int AS blocked_by_management
          FROM cargo c
          LEFT JOIN dispatch_requests dr ON dr.cargo_id = c.id AND dr.status = 'Approved'
          WHERE c.is_deleted = FALSE`
@@ -267,6 +275,9 @@ const getEligibility = async (req, res, next) => {
         barcode: cargo.barcode,
         customs_status: cargo.customs_status,
         financial_status: cargo.financial_status,
+        release_type: cargo.release_type,
+        management_release_status: cargo.management_release_status,
+        charge_treatment: cargo.management_release_status === "APPROVED" ? "No Charges / Waived" : "Normal or provisional warehouse charges",
         supervisor_dispatch_approval: eligibility.dispatch_reference ? "Approved" : "Missing",
         gate_out_status: cargo.gate_out_status,
         location: cargo.location,
@@ -306,6 +317,7 @@ const releaseBinIfNeeded = async (client, cargo) => {
 
 const confirmGateOut = async (req, res, next) => {
   let blockedReleaseNotification = null;
+  let blockedManagementReleaseAttempt = null;
 
   try {
     const data = await withTransaction(async (client) => {
@@ -323,10 +335,11 @@ const confirmGateOut = async (req, res, next) => {
       const releaseAt = await getServerNow(client);
       const dispatchRequest = await activeDispatch(client, cargo.id, true);
       const eligibility = await buildEligibility({ executor: client, cargo, at: releaseAt });
-      let releaseType = "Normal";
+      let releaseType = cargo.management_release_status === "APPROVED" ? "Management" : "Normal";
       let emergencyRequest = null;
 
       if (!eligibility.eligible) {
+        const managementBlock=eligibility.blocked_requirements.find((item)=>item.requirement==="management_release");
         const emergencyReference = cleanString(req.body.emergency_request_reference);
         if (!emergencyReference) {
           if (eligibility.blocked_requirements.some((item) => item.requirement === "payment")) {
@@ -337,17 +350,21 @@ const confirmGateOut = async (req, res, next) => {
               actorId: req.auth?.userId || null
             };
           }
+          if(managementBlock) blockedManagementReleaseAttempt={cargo:{id:cargo.id,cargo_id:cargo.cargo_id},block:managementBlock,actorId:req.auth?.userId||null};
           throw buildError(
-            eligibility.blocked_requirements.find((item) => item.requirement === "payment")?.outstanding_amount
+            managementBlock?.message || (eligibility.blocked_requirements.find((item) => item.requirement === "payment")?.outstanding_amount
               ? `Gate-out blocked. Outstanding amount: ${eligibility.outstanding_amount}. Finance confirmation is required.`
-              : "Gate-out blocked because one or more release requirements are not satisfied.",
+              : "Gate-out blocked because one or more release requirements are not satisfied."),
             409,
-            eligibility.blocked_requirements
+            eligibility.blocked_requirements,
+            managementBlock?.reason_code
           );
         }
         const emergencyEligibility=await evaluateEligibility({target:'emergency_gate_release',cargo,executor:client,at:releaseAt,emergencyReference,lock:true});
         if (!emergencyEligibility.eligible) {
-          throw buildError("Approved emergency release request was not found for this cargo.", 404);
+          const emergencyManagementBlock=emergencyEligibility.blocked_requirements.find((item)=>item.evaluator_key==='management_release_authorization');
+          if(emergencyManagementBlock) blockedManagementReleaseAttempt={cargo:{id:cargo.id,cargo_id:cargo.cargo_id},block:{...emergencyManagementBlock,requirement:'management_release'},actorId:req.auth?.userId||null};
+          throw buildError(emergencyManagementBlock?.message||"Approved emergency release request was not found for this cargo.",emergencyManagementBlock?409:404,emergencyEligibility.blocked_requirements,emergencyManagementBlock?.reason_code);
         }
         emergencyRequest = emergencyEligibility.emergency_authorization;
         releaseType = "Emergency";
@@ -444,7 +461,7 @@ const confirmGateOut = async (req, res, next) => {
       await writeAuditLog(
         {
           user_id: req.auth?.userId || null,
-          action: releaseType === "Emergency" ? "CONFIRM_EMERGENCY_GATE_OUT" : "CONFIRM_GATE_OUT",
+          action: releaseType === "Emergency" ? "CONFIRM_EMERGENCY_GATE_OUT" : releaseType === "Management" ? "CONFIRM_MANAGEMENT_RELEASE_GATE_OUT" : "CONFIRM_GATE_OUT",
           module: "Dispatch and Gate",
           description: `Confirmed ${releaseType.toLowerCase()} gate-out for cargo ${cargo.cargo_id}.`,
           metadata: {
@@ -481,6 +498,9 @@ const confirmGateOut = async (req, res, next) => {
     });
     res.status(201).json({ success: true, data });
   } catch (error) {
+    if(blockedManagementReleaseAttempt){
+      try{await writeAuditLog({user_id:blockedManagementReleaseAttempt.actorId,action:"BLOCK_MANAGEMENT_RELEASE_GATE_OUT",module:"Dispatch and Gate",description:`Blocked Gate-Out for cargo ${blockedManagementReleaseAttempt.cargo.cargo_id}: ${blockedManagementReleaseAttempt.block.message}`,metadata:{cargo_reference:blockedManagementReleaseAttempt.cargo.cargo_id,reason_code:blockedManagementReleaseAttempt.block.reason_code,management_release_requirement:true}},db)}catch(auditError){console.error("Failed to audit blocked Management Release Gate-Out:",auditError.message)}
+    }
     if (blockedReleaseNotification) {
       try {
         await notifyGateReleaseBlocked(blockedReleaseNotification);

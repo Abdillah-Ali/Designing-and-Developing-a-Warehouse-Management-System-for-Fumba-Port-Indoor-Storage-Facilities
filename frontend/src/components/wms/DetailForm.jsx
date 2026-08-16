@@ -31,6 +31,7 @@ import {
   getRacks,
   getZones,
   printCargoBarcode,
+  recommendBin,
   requestPlacementOverride,
   uploadCargoDocument,
   validatePlacement
@@ -75,7 +76,8 @@ const emptyTrackingFilters = {
   barcode: "",
   consignee: "",
   cargoType: "All",
-  status: "All"
+  status: "All",
+  date: ""
 };
 
 function Select({ children, value, onChange, className, ...props }) {
@@ -409,9 +411,20 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
   const [placementError, setPlacementError] = useState("");
   const [placementConfirmed, setPlacementConfirmed] = useState(false);
   const [placementTime, setPlacementTime] = useState("");
+  const [placementActor, setPlacementActor] = useState("");
   const [placementNotice, setPlacementNotice] = useState(false);
+  const [recommendation, setRecommendation] = useState(null);
+  const [recommendationLoading, setRecommendationLoading] = useState(false);
+  const [recommendationError, setRecommendationError] = useState("");
   const [trackingFilters, setTrackingFilters] = useState(emptyTrackingFilters);
+  const [trackingRecords, setTrackingRecords] = useState([]);
+  const [trackingPage, setTrackingPage] = useState(1);
+  const [trackingPageSize, setTrackingPageSize] = useState(25);
+  const [trackingTotal, setTrackingTotal] = useState(0);
+  const [trackingLoading, setTrackingLoading] = useState(false);
+  const [trackingError, setTrackingError] = useState("");
   const [trackingCargoDetail, setTrackingCargoDetail] = useState(null);
+  const [trackingDetailLoading, setTrackingDetailLoading] = useState(false);
   const [trackingDetailError, setTrackingDetailError] = useState("");
   const [selectedTrackingCargoId, setSelectedTrackingCargoId] = useState("");
   const [lastScanTime, setLastScanTime] = useState("");
@@ -497,6 +510,8 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
 
   useEffect(() => {
     const value = cargoBarcode.trim();
+    setRecommendation(null);
+    setRecommendationError("");
     if (!value) return undefined;
     const timer = window.setTimeout(() => {
       const scannedAt = new Date().toISOString();
@@ -835,41 +850,58 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     ? "Placement scan fields active"
     : "No active placement session";
 
-  const filteredCargoRecords = useMemo(() => {
-    return cargoRecords.filter((record) => {
-      const cargoIdMatch = !trackingFilters.cargoId ||
-        record.cargo_id?.toLowerCase().includes(trackingFilters.cargoId.toLowerCase());
-      const barcodeMatch = !trackingFilters.barcode ||
-        record.barcode?.toLowerCase().includes(trackingFilters.barcode.toLowerCase());
-      const consigneeMatch = !trackingFilters.consignee ||
-        record.consignee_name?.toLowerCase().includes(trackingFilters.consignee.toLowerCase());
-      const typeMatch = trackingFilters.cargoType === "All" || record.cargo_type === trackingFilters.cargoType;
-      const operationalStatus = cargoOperationalStatus(record);
-      const statusMatch = trackingFilters.status === "All"
-        || record.placement_status === trackingFilters.status
-        || operationalStatus === trackingFilters.status;
+  useEffect(() => {
+    if (activeTab !== 2) return undefined;
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      setTrackingLoading(true);
+      setTrackingError("");
+      try {
+        const response = await getCargo({
+          ...(trackingFilters.cargoId.trim() ? { search: trackingFilters.cargoId.trim() } : {}),
+          ...(trackingFilters.barcode.trim() ? { barcode: trackingFilters.barcode.trim() } : {}),
+          ...(trackingFilters.consignee.trim() ? { consignee: trackingFilters.consignee.trim() } : {}),
+          ...(trackingFilters.cargoType !== "All" ? { cargo_type: trackingFilters.cargoType } : {}),
+          ...(trackingFilters.status !== "All" ? { status: trackingFilters.status } : {}),
+          ...(trackingFilters.date ? { date: trackingFilters.date } : {}),
+          page: trackingPage,
+          limit: trackingPageSize
+        });
+        if (!active) return;
+        setTrackingRecords(response.data || []);
+        setTrackingTotal(Number(response.total || 0));
+      } catch (error) {
+        if (!active) return;
+        setTrackingRecords([]);
+        setTrackingTotal(0);
+        setTrackingError(getErrorMessage(error));
+      } finally {
+        if (active) setTrackingLoading(false);
+      }
+    }, 250);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [activeTab, trackingFilters, trackingPage, trackingPageSize]);
 
-      return cargoIdMatch && barcodeMatch && consigneeMatch && typeMatch && statusMatch;
-    });
-  }, [cargoRecords, trackingFilters]);
+  const filteredCargoRecords = trackingRecords;
 
   useEffect(() => {
     if (
       selectedTrackingCargoId
-      && !filteredCargoRecords.some((record) => String(record.id) === String(selectedTrackingCargoId))
+      && !filteredCargoRecords.some((record) => record.cargo_id === selectedTrackingCargoId)
     ) {
       setSelectedTrackingCargoId("");
     }
   }, [filteredCargoRecords, selectedTrackingCargoId]);
 
   const selectedTrackingCargo = filteredCargoRecords.find(
-    (record) => String(record.id) === String(selectedTrackingCargoId)
+    (record) => record.cargo_id === selectedTrackingCargoId
   ) || null;
-  const trackingRecordId = selectedTrackingCargo?.id || null;
+  const trackingRecordId = selectedTrackingCargo?.cargo_id || null;
 
   useEffect(() => {
     if (!trackingRecordId) {
       setTrackingCargoDetail(null);
+      setTrackingDetailLoading(false);
       setTrackingDetailError("");
       return undefined;
     }
@@ -877,6 +909,8 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     let active = true;
 
     const loadCargoDetail = async () => {
+      setTrackingDetailLoading(true);
+      setTrackingCargoDetail(null);
       setTrackingDetailError("");
 
       try {
@@ -884,6 +918,8 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
         if (active) setTrackingCargoDetail(response.data);
       } catch (error) {
         if (active) setTrackingDetailError(getErrorMessage(error));
+      } finally {
+        if (active) setTrackingDetailLoading(false);
       }
     };
 
@@ -897,12 +933,32 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
   const trackingCargo = trackingCargoDetail || selectedTrackingCargo;
   const movementRows = trackingCargo?.movement_history || [];
   const statusCounts = useMemo(() => {
-    return cargoRecords.reduce((counts, record) => {
+    return trackingRecords.reduce((counts, record) => {
       const operationalStatus = cargoOperationalStatus(record);
       counts[operationalStatus] = (counts[operationalStatus] || 0) + 1;
       return counts;
     }, {});
-  }, [cargoRecords]);
+  }, [trackingRecords]);
+
+  const requestRecommendation = async () => {
+    const cargoReference = placementValidation?.cargo?.cargo_id || scannedCargo?.cargo_id || cargoBarcode.trim();
+    if (!cargoReference || recommendationLoading) return;
+    setRecommendationLoading(true);
+    setRecommendation(null);
+    setRecommendationError("");
+    try {
+      const response = await recommendBin(cargoReference);
+      const next = response.data || null;
+      setRecommendation(next);
+      if (next?.barcode) setBinBarcode(next.barcode);
+    } catch (error) {
+      setRecommendationError(error.code === "NO_COMPATIBLE_BIN"
+        ? "No compatible storage bin is currently available for this cargo. It remains unallocated until storage becomes available."
+        : getErrorMessage(error));
+    } finally {
+      setRecommendationLoading(false);
+    }
+  };
 
   const validationCards = [
     {
@@ -957,6 +1013,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
   };
 
   const handleTrackingFilterChange = (field, value) => {
+    setTrackingPage(1);
     setTrackingFilters((current) => ({ ...current, [field]: value }));
   };
 
@@ -1158,6 +1215,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
       setPlacementConfirmed(true);
       setPlacementNotice(true);
       setPlacementTime(formatDateTime(result.movement?.created_at || result.cargo?.updated_at));
+      setPlacementActor(result.movement?.moved_by || "Authenticated Warehouse Staff");
       await refreshCargoRecords();
     } catch (error) {
       setPlacementError(getErrorMessage(error));
@@ -1511,6 +1569,26 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
                     <div className="text-xs text-muted-foreground">No cargo barcode entered yet.</div>
                   )}
                 </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={!cargoBarcode.trim() || recommendationLoading}
+                    onClick={requestRecommendation}
+                    className="rounded bg-info px-3 py-2 text-xs font-semibold text-info-foreground disabled:opacity-40"
+                  >
+                    {recommendationLoading ? "Finding compatible bin..." : "Recommend Compatible Bin"}
+                  </button>
+                  {recommendation && (
+                    <span className="rounded border border-success/35 bg-success/10 px-3 py-2 text-xs font-semibold text-success">
+                      Recommended: {recommendation.barcode || recommendation.code}. Physically verify or scan before confirmation.
+                    </span>
+                  )}
+                </div>
+                {recommendationError && (
+                  <div className="mt-2 rounded border border-warning/35 bg-warning/10 px-3 py-2 text-xs font-semibold text-warning">
+                    {recommendationError}
+                  </div>
+                )}
               </ScanInputPanel>
             </CollapsibleCard>
 
@@ -1731,7 +1809,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
                   { label: "Bin Status", value: activeBin ? getBinStatus(activeBin) : "Awaiting selection" },
                   { label: "Remaining Capacity", value: activeBin ? `${formatMeasure(activeBinRemainingWeight, "kg")} / ${formatMeasure(activeBinRemainingVolume, "m³")}` : "Awaiting selection" },
                   { label: "Placement Time", value: placementTime || "Pending confirmation" },
-                  { label: "Assigned By", value: formData.received_by || "Warehouse Staff" }
+                  { label: "Placed / Moved By", value: placementActor || "Pending confirmation" }
                 ]}
               />
             </CollapsibleCard>
@@ -1741,9 +1819,9 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
         {activeTab === 2 && (
           <div className="space-y-3 p-4">
             <CollapsibleCard title={<SectionTitle icon={Search}>Cargo Search</SectionTitle>} defaultOpen>
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
                 <Field label="Cargo Reference">
-                  <Input value={trackingFilters.cargoId} onChange={(event) => handleTrackingFilterChange("cargoId", event.target.value)} placeholder="CARGO-2026-00001" />
+                  <Input value={trackingFilters.cargoId} onChange={(event) => handleTrackingFilterChange("cargoId", event.target.value)} placeholder="Cargo, container, vehicle, or delivery reference" />
                 </Field>
                 <Field label="Barcode">
                   <Input value={trackingFilters.barcode} onChange={(event) => handleTrackingFilterChange("barcode", event.target.value)} placeholder="Scan or enter barcode" />
@@ -1772,6 +1850,9 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
                     <option>Dispatched</option>
                   </Select>
                 </Field>
+                <Field label="Registered Date">
+                  <Input type="date" value={trackingFilters.date} onChange={(event) => handleTrackingFilterChange("date", event.target.value)} />
+                </Field>
               </div>
             </CollapsibleCard>
 
@@ -1792,12 +1873,12 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
                     {filteredCargoRecords.length > 0 ? (
                       filteredCargoRecords.map((record) => (
                         <tr
-                          key={record.id}
+                          key={record.cargo_id}
                           className={cn(
                             "cursor-pointer border-t border-border hover:bg-muted/40",
-                            String(selectedTrackingCargoId) === String(record.id) && "bg-info/10"
+                            selectedTrackingCargoId === record.cargo_id && "bg-info/10"
                           )}
-                          onClick={() => setSelectedTrackingCargoId(String(record.id))}
+                          onClick={() => setSelectedTrackingCargoId(record.cargo_id)}
                         >
                           <td className="px-2 py-2 font-mono font-semibold">{record.cargo_id}</td>
                           <td className="px-2 py-2">{record.consignee_name}</td>
@@ -1810,26 +1891,40 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
                     ) : (
                       <tr className="border-t border-border">
                         <td colSpan={6} className="px-2 py-3 text-muted-foreground">
-                          {cargoLoading ? "Loading cargo records..." : cargoError || "No cargo records found."}
+                          {trackingLoading ? "Searching authorized cargo..." : trackingError || "No cargo found in your authorized scope."}
                         </td>
                       </tr>
                     )}
                   </tbody>
                 </table>
               </div>
+              {!trackingLoading && !trackingError && trackingTotal > 0 && (
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+                  <span className="text-muted-foreground">Showing {(trackingPage - 1) * trackingPageSize + 1}-{Math.min(trackingPage * trackingPageSize, trackingTotal)} of {trackingTotal}</span>
+                  <div className="flex items-center gap-2">
+                    <select className="h-8 rounded border border-input bg-background px-2" value={trackingPageSize} onChange={(event) => { setTrackingPageSize(Number(event.target.value)); setTrackingPage(1); }}>
+                      {[10, 25, 50].map((size) => <option key={size} value={size}>{size} per page</option>)}
+                    </select>
+                    <button type="button" className="h-8 rounded border border-border px-3 disabled:opacity-40" disabled={trackingPage <= 1} onClick={() => setTrackingPage((value) => value - 1)}>Previous</button>
+                    <span>Page {trackingPage} of {Math.max(Math.ceil(trackingTotal / trackingPageSize), 1)}</span>
+                    <button type="button" className="h-8 rounded border border-border px-3 disabled:opacity-40" disabled={trackingPage * trackingPageSize >= trackingTotal} onClick={() => setTrackingPage((value) => value + 1)}>Next</button>
+                  </div>
+                </div>
+              )}
             </CollapsibleCard>
 
             <CollapsibleCard title={<SectionTitle icon={MapPin}>Current Location</SectionTitle>} defaultOpen>
               {!trackingCargo && (
-                <div className="mb-3 text-xs text-muted-foreground">Select a cargo row to load its current location and movement history.</div>
+                <div className="mb-3 text-xs text-muted-foreground">{trackingDetailLoading ? "Loading authoritative cargo location..." : "Select a cargo row to load its current location and movement history."}</div>
               )}
               <ReadonlyGrid
                 columns="md:grid-cols-2 xl:grid-cols-4"
                 items={[
-                  { label: "Zone", value: formatZoneLabel(trackingCargo, "Unassigned") },
+                  { label: "Warehouse", value: trackingCargo?.warehouse_name || trackingCargo?.warehouse_code || "Not assigned" },
+                  { label: "Zone", value: trackingCargo?.placement_status === "Dispatched" ? "Released from storage" : formatZoneLabel(trackingCargo, "Unassigned") },
                   { label: "Rack", value: getRackCode(trackingCargo) || "Not assigned" },
                   { label: "Level", value: getLevelCode(trackingCargo) || "Not assigned" },
-                  { label: "Bin", value: getBinBarcode(trackingCargo) || trackingCargo?.location || "Not assigned" }
+                  { label: "Bin", value: trackingCargo?.placement_status === "Dispatched" ? "No active bin" : getBinBarcode(trackingCargo) || trackingCargo?.location || "Not assigned" }
                 ]}
               />
             </CollapsibleCard>
@@ -1869,7 +1964,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
               </div>
             </CollapsibleCard>
 
-            <CollapsibleCard title={<SectionTitle icon={PackageCheck}>Cargo Status</SectionTitle>} defaultOpen>
+            <CollapsibleCard title={<SectionTitle icon={PackageCheck}>Status Summary — Current Page</SectionTitle>} defaultOpen>
               <div className="flex flex-wrap gap-2">
                 {["Pending Review", "Approved", "Correction Required", "Rejected"].map((status) => (
                   <StatusBadge key={status} tone={statusTone(status)}>

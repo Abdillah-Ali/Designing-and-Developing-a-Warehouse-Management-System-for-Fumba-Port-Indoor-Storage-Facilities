@@ -7,6 +7,7 @@ const {
   submitScan
 } = require("../services/scannerSessionService");
 const { verifyToken } = require("../utils/token");
+const { consumeRateLimit } = require("../services/rateLimitService");
 
 let io = null;
 
@@ -68,6 +69,16 @@ const extractSocketToken = (socket) => {
 
 const authenticateSocket = async (socket, next) => {
   try {
+    const connectionLimit = await consumeRateLimit({
+      scope: "socket.connect",
+      keys: [`ip:${socket.handshake.address || "unknown"}`],
+      limit: Number(process.env.SOCKET_CONNECTION_RATE_LIMIT_MAX || 60),
+      windowMs: 60_000
+    });
+    if (!connectionLimit.allowed) {
+      next(new Error("Too many scanner connection attempts."));
+      return;
+    }
     const token = extractSocketToken(socket);
     const decoded = verifyToken(token);
     const userId = Number(decoded?.userId || decoded?.user_id || decoded?.sub);
@@ -184,6 +195,18 @@ const revalidateSocketAuthority = async (auth) => {
   if (!result.rowCount) throw Object.assign(new Error("Scanner authentication session is no longer active."), { statusCode: 401, errorCode: "AUTH_SESSION_INVALID" });
 };
 
+const enforceSocketEventRate = async (auth, event) => {
+  const result = await consumeRateLimit({
+    scope: `socket.${event}`,
+    keys: [`session:${auth.sessionId}`, `user:${auth.userId}`],
+    limit: Number(process.env.SOCKET_EVENT_RATE_LIMIT_MAX || 120),
+    windowMs: 60_000
+  });
+  if (!result.allowed) {
+    throw Object.assign(new Error("Too many scanner requests. Please retry shortly."), { statusCode: 429, errorCode: "RATE_LIMITED" });
+  }
+};
+
 const emitToSessionParties = (event, session, extra = {}) => {
   if (!io || !session) return;
 
@@ -230,7 +253,7 @@ const initSocketServer = (server) => {
           return;
         }
 
-        callback(new Error("Origin is not allowed by CORS."));
+        callback(Object.assign(new Error("Origin is not allowed by CORS."), { statusCode: 403, errorCode: "CORS_ORIGIN_DENIED" }));
       },
       credentials: true,
       allowedHeaders: ["Content-Type", "Authorization"]
@@ -255,6 +278,7 @@ const initSocketServer = (server) => {
 
     socket.on("scanner:request-active-session", async (_payload, callback) => {
       try {
+        await enforceSocketEventRate(auth, "request-active-session");
         await revalidateSocketAuthority(auth);
         const session = await getActiveSessionForAuth(auth);
         callback?.({ success: true, data: session });
@@ -265,6 +289,7 @@ const initSocketServer = (server) => {
 
     socket.on("scanner:submit-scan", async (payload, callback) => {
       try {
+        await enforceSocketEventRate(auth, "submit-scan");
         await revalidateSocketAuthority(auth);
         const result = await submitScan(payload || {}, auth);
 
@@ -297,6 +322,7 @@ const initSocketServer = (server) => {
 
     socket.on("scanner:cancel-scan", async (payload, callback) => {
       try {
+        await enforceSocketEventRate(auth, "cancel-scan");
         await revalidateSocketAuthority(auth);
         const result = await abandonSessionByScanner(payload?.sessionId || payload?.session_id, auth);
 

@@ -16,7 +16,12 @@ const ACTIVITY_TYPES = Object.freeze({
   PLACEMENT_OVERRIDE_REJECTED: "PLACEMENT_OVERRIDE_REJECTED",
   MANUAL_PLACEMENT_SETTING_CHANGED: "MANUAL_PLACEMENT_SETTING_CHANGED",
   LOCATION_REVALIDATED: "LOCATION_REVALIDATED",
-  LOCATION_REVALIDATION_FAILED: "LOCATION_REVALIDATION_FAILED"
+  LOCATION_REVALIDATION_FAILED: "LOCATION_REVALIDATION_FAILED",
+  CARGO_UNALLOCATED_EXCEPTION: "CARGO_UNALLOCATED_EXCEPTION",
+  CARGO_UNALLOCATED_RESOLVED: "CARGO_UNALLOCATED_RESOLVED",
+  SCANNER_SESSION_STARTED: "SCANNER_SESSION_STARTED",
+  SCANNER_SESSION_COMPLETED: "SCANNER_SESSION_COMPLETED",
+  SCANNER_SESSION_CANCELLED: "SCANNER_SESSION_CANCELLED"
 });
 
 const asPositiveInteger = (value, fallback, max = 500) => {
@@ -31,8 +36,7 @@ const getPaging = (filters = {}) => {
   return {
     limit,
     page,
-    offset: (page - 1) * limit,
-    sourceLimit: Math.max(limit * 3, 500)
+    offset: (page - 1) * limit
   };
 };
 
@@ -142,7 +146,7 @@ const baseSelect = `
   w.warehouse_code
 `;
 
-const movementRows = async ({ auth, filters, cargoIdentifier, sourceLimit, executor }) => {
+const movementRows = async ({ auth, filters, cargoIdentifier, executor }) => {
   const values = [];
   const clauses = ["c.is_deleted = FALSE"];
   addDateFilters(clauses, values, "cm.created_at", filters);
@@ -160,7 +164,6 @@ const movementRows = async ({ auth, filters, cargoIdentifier, sourceLimit, execu
     cargoRequired: true
   });
 
-  const limit = addParam(values, sourceLimit);
   const result = await executor.query(
     `SELECT
        ('movement:' || cm.id) AS activity_id,
@@ -208,14 +211,13 @@ const movementRows = async ({ auth, filters, cargoIdentifier, sourceLimit, execu
        LIMIT 1
      ) release_location ON TRUE
      WHERE ${clauses.join(" AND ")}
-     ORDER BY cm.created_at DESC, cm.id DESC
-     LIMIT ${limit}`,
+     ORDER BY cm.created_at DESC, cm.id DESC`,
     values
   );
   return result.rows;
 };
 
-const validationRows = async ({ auth, filters, cargoIdentifier, sourceLimit, executor }) => {
+const validationRows = async ({ auth, filters, cargoIdentifier, executor }) => {
   const values = [];
   const clauses = [];
   addDateFilters(clauses, values, "pvl.created_at", filters);
@@ -249,7 +251,6 @@ const validationRows = async ({ auth, filters, cargoIdentifier, sourceLimit, exe
     clauses.push("(c.id IS NULL OR c.is_deleted = FALSE)");
   }
 
-  const limit = addParam(values, sourceLimit);
   const result = await executor.query(
     `SELECT
        ('validation:' || pvl.id) AS activity_id,
@@ -290,14 +291,13 @@ const validationRows = async ({ auth, filters, cargoIdentifier, sourceLimit, exe
      LEFT JOIN roles actor_role ON actor_role.id = actor.role_id
      LEFT JOIN warehouses w ON w.id = COALESCE(pvl.warehouse_id_at_action, c.warehouse_id)
      WHERE ${clauses.length ? clauses.join(" AND ") : "TRUE"}
-     ORDER BY pvl.created_at DESC, pvl.id DESC
-     LIMIT ${limit}`,
+     ORDER BY pvl.created_at DESC, pvl.id DESC`,
     values
   );
   return result.rows;
 };
 
-const overrideRequestRows = async ({ auth, filters, cargoIdentifier, sourceLimit, executor }) => {
+const overrideRequestRows = async ({ auth, filters, cargoIdentifier, executor }) => {
   const values = [];
   const clauses = ["ar.request_type = 'PLACEMENT_OVERRIDE'", "c.is_deleted = FALSE"];
   addDateFilters(clauses, values, "ar.created_at", filters);
@@ -316,7 +316,6 @@ const overrideRequestRows = async ({ auth, filters, cargoIdentifier, sourceLimit
     cargoRequired: true
   });
 
-  const limit = addParam(values, sourceLimit);
   const result = await executor.query(
     `SELECT
        ('override-request:' || ar.id) AS activity_id,
@@ -340,6 +339,7 @@ const overrideRequestRows = async ({ auth, filters, cargoIdentifier, sourceLimit
        jsonb_strip_nulls(jsonb_build_object(
          'approval_request_id', ar.id,
          'status', ar.status,
+         'requested_by', ar.requested_by,
          'manual_reason', ar.request_data->>'manual_reason',
          'validation_reason', ar.request_data->>'validation_reason',
          'validation_detail', ar.request_data->>'validation_detail',
@@ -352,14 +352,13 @@ const overrideRequestRows = async ({ auth, filters, cargoIdentifier, sourceLimit
      LEFT JOIN roles requester_role ON requester_role.id = requester.role_id
      LEFT JOIN warehouses w ON w.id = COALESCE(ar.warehouse_id_at_request, c.warehouse_id)
      WHERE ${clauses.join(" AND ")}
-     ORDER BY ar.created_at DESC, ar.id DESC
-     LIMIT ${limit}`,
+     ORDER BY ar.created_at DESC, ar.id DESC`,
     values
   );
   return result.rows;
 };
 
-const overrideDecisionRows = async ({ auth, filters, cargoIdentifier, sourceLimit, executor }) => {
+const overrideDecisionRows = async ({ auth, filters, cargoIdentifier, executor }) => {
   const values = [];
   const clauses = [
     "ar.request_type = 'PLACEMENT_OVERRIDE'",
@@ -383,7 +382,6 @@ const overrideDecisionRows = async ({ auth, filters, cargoIdentifier, sourceLimi
     cargoRequired: true
   });
 
-  const limit = addParam(values, sourceLimit);
   const result = await executor.query(
     `SELECT
        ('override-decision:' || ar.id) AS activity_id,
@@ -425,20 +423,19 @@ const overrideDecisionRows = async ({ auth, filters, cargoIdentifier, sourceLimi
      LEFT JOIN roles requester_role ON requester_role.id = requester.role_id
      LEFT JOIN warehouses w ON w.id = COALESCE(ar.warehouse_id_at_request, c.warehouse_id)
      WHERE ${clauses.join(" AND ")}
-     ORDER BY ar.decided_at DESC, ar.id DESC
-     LIMIT ${limit}`,
+     ORDER BY ar.decided_at DESC, ar.id DESC`,
     values
   );
   return result.rows;
 };
 
-const auditSupportRows = async ({ auth, filters, cargoIdentifier, sourceLimit, executor }) => {
-  if (auth.role === "warehouse-staff") return [];
-
+const auditSupportRows = async ({ auth, filters, cargoIdentifier, executor }) => {
   const values = [];
   const clauses = [
     `(
       al.action = 'UPDATE_MANUAL_PLACEMENT_SETTING'
+      OR al.action IN ('CARGO_UNALLOCATED_EXCEPTION', 'RESOLVE_CARGO_UNALLOCATED_EXCEPTION',
+                       'SCAN_SESSION_STARTED', 'SCAN_SESSION_COMPLETED', 'SCAN_SESSION_CANCELLED')
       OR (
         al.action IN ('STAFF_CORRECT_CARGO_REGISTRATION', 'UPDATE_CARGO')
         AND al.metadata->>'location_revalidated' = 'true'
@@ -459,13 +456,22 @@ const auditSupportRows = async ({ auth, filters, cargoIdentifier, sourceLimit, e
     actorRoleColumn: "actor_role.role_name"
   });
 
-  const limit = addParam(values, sourceLimit);
   const result = await executor.query(
     `SELECT
        ('audit:' || al.id) AS activity_id,
        'audit_logs' AS source_table,
        al.id AS source_id,
        CASE
+         WHEN al.action = 'CARGO_UNALLOCATED_EXCEPTION'
+           THEN '${ACTIVITY_TYPES.CARGO_UNALLOCATED_EXCEPTION}'
+         WHEN al.action = 'RESOLVE_CARGO_UNALLOCATED_EXCEPTION'
+           THEN '${ACTIVITY_TYPES.CARGO_UNALLOCATED_RESOLVED}'
+         WHEN al.action = 'SCAN_SESSION_STARTED'
+           THEN '${ACTIVITY_TYPES.SCANNER_SESSION_STARTED}'
+         WHEN al.action = 'SCAN_SESSION_COMPLETED'
+           THEN '${ACTIVITY_TYPES.SCANNER_SESSION_COMPLETED}'
+         WHEN al.action = 'SCAN_SESSION_CANCELLED'
+           THEN '${ACTIVITY_TYPES.SCANNER_SESSION_CANCELLED}'
          WHEN al.action = 'UPDATE_MANUAL_PLACEMENT_SETTING'
            THEN '${ACTIVITY_TYPES.MANUAL_PLACEMENT_SETTING_CHANGED}'
          WHEN al.metadata->>'relocation_required' = 'true'
@@ -474,6 +480,7 @@ const auditSupportRows = async ({ auth, filters, cargoIdentifier, sourceLimit, e
        END AS activity_type,
        al.created_at AS activity_timestamp,
        al.user_id AS performed_by,
+       al.target_user_id AS target_staff_id,
        actor.full_name AS performed_by_name,
        actor.username AS performed_by_username,
        actor_role.role_name AS performed_by_role_name,
@@ -484,7 +491,8 @@ const auditSupportRows = async ({ auth, filters, cargoIdentifier, sourceLimit, e
        al.metadata->>'new_location' AS to_location,
        al.metadata->>'placement_mode' AS placement_mode,
        CASE
-         WHEN al.metadata->>'relocation_required' = 'true' THEN 'failed'
+         WHEN al.action = 'CARGO_UNALLOCATED_EXCEPTION' OR al.metadata->>'relocation_required' = 'true' THEN 'failed'
+         WHEN al.action = 'SCAN_SESSION_CANCELLED' THEN 'failed'
          ELSE 'success'
        END AS result,
        al.action AS reason,
@@ -492,13 +500,13 @@ const auditSupportRows = async ({ auth, filters, cargoIdentifier, sourceLimit, e
        al.metadata,
        ${baseSelect}
      FROM audit_logs al
-     LEFT JOIN cargo c ON c.id::text = al.metadata->>'cargo_id'
+     LEFT JOIN scanner_sessions ss ON ss.id::text = al.metadata->>'scanner_session_id'
+     LEFT JOIN cargo c ON c.id::text = COALESCE(al.metadata->>'cargo_id', ss.context->>'cargo_id')
      LEFT JOIN users actor ON actor.id = al.user_id
      LEFT JOIN roles actor_role ON actor_role.id = COALESCE(al.role_id_at_action, actor.role_id)
      LEFT JOIN warehouses w ON w.id = COALESCE(al.warehouse_id_at_action, c.warehouse_id)
      WHERE ${clauses.join(" AND ")}
-     ORDER BY al.created_at DESC, al.id DESC
-     LIMIT ${limit}`,
+     ORDER BY al.created_at DESC, al.id DESC`,
     values
   );
   return result.rows;
@@ -519,6 +527,7 @@ const normalizeRow = (row) => ({
   warehouse_name: row.warehouse_name,
   warehouse_code: row.warehouse_code,
   performed_by: row.performed_by,
+  target_staff_id: row.target_staff_id,
   performed_by_name: row.performed_by_name,
   performed_by_username: row.performed_by_username,
   _performed_by_role_name: row.performed_by_role_name,
@@ -568,12 +577,13 @@ const canViewActivity = (auth = {}, row) => {
   const ownerId = Number(staffOwnerId(row) || 0);
   const actorId = Number(row.performed_by || 0);
   const requestedBy = Number(row.metadata?.requested_by || 0);
+  const targetStaffId = Number(row.target_staff_id || 0);
 
   const hasOwnershipGate = ownerId > 0 && ownerId === userId;
   const hasActorGate = actorId > 0 && actorId === userId;
   const hasRequesterGate = requestedBy > 0 && requestedBy === userId;
 
-  if (!(hasOwnershipGate || hasActorGate || hasRequesterGate)) return false;
+  if (!(hasOwnershipGate || hasActorGate || hasRequesterGate || targetStaffId === userId)) return false;
 
   if (
     row._performed_by_role_name === STAFF_ROLE_NAME
@@ -606,7 +616,6 @@ const getPlacementActivity = async ({ auth = {}, filters = {}, cargoIdentifier =
     auth,
     filters,
     cargoIdentifier,
-    sourceLimit: paging.sourceLimit,
     executor
   };
 

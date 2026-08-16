@@ -71,6 +71,10 @@ const getLoginErrorMessage = (response, payload = {}) => {
 };
 
 const request = async (path, options = {}, retried = false) => {
+  const publicPath = path.startsWith("/auth/") || path.startsWith("/bootstrap/");
+  if (!retried && !publicPath && !getStoredAuthToken()) {
+    await refreshAccessToken().catch(() => null);
+  }
   const headers = new Headers(options.headers || {});
   let body = options.body;
 
@@ -732,6 +736,12 @@ export const updateCustomsStatus = (cargoReference, payload) => request(`/custom
 export const getGateDashboard = () => request("/gate/dashboard");
 export const getManagementDashboard = () => request("/management/dashboard");
 export const getManagementReports = () => request("/management/reports");
+export const getManagementReleaseRequests = (params={}) => request(`/management/release-requests${buildQuerySuffix(params)}`);
+export const getManagementReleaseRequest = (reference) => request(`/management/release-requests/${encodeURIComponent(reference)}`);
+export const approveManagementRelease = (reference,remarks="") => request(`/management/release-requests/${encodeURIComponent(reference)}/approve`,{method:"POST",body:{remarks}});
+export const rejectManagementRelease = (reference,remarks="") => request(`/management/release-requests/${encodeURIComponent(reference)}/reject`,{method:"POST",body:{remarks}});
+export const convertManagementReleaseToNormal = (cargoReference,remarks="") => request(`/supervisor/cargo/${encodeURIComponent(cargoReference)}/management-release/normal`,{method:"POST",body:{remarks}});
+export const resubmitManagementRelease = (cargoReference,reason) => request(`/supervisor/cargo/${encodeURIComponent(cargoReference)}/management-release/resubmit`,{method:"POST",body:{reason}});
 export const getGateReleaseQueue = (params = {}) => request(`/gate/release-queue${buildQuerySuffix(params)}`);
 export const getGateRecords = () => request("/gate/records");
 export const getGateEligibility = (cargoReference) => request(`/gate/cargo/${encodeURIComponent(cargoReference)}/eligibility`);

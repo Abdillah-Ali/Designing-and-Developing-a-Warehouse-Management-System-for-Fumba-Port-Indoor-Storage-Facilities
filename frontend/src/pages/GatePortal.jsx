@@ -137,6 +137,7 @@ function DashboardPage() {
           <OperationalStatCard title="Blocked by Customs" icon={AlertTriangle} loading={dashboard.loading} value={metrics.blocked_by_customs} emptyTitle="No customs blocks" tone="destructive" />
           <OperationalStatCard title="Blocked by Payment" icon={AlertTriangle} loading={dashboard.loading} value={metrics.blocked_by_payment} emptyTitle="No payment blocks" tone="warning" />
           <OperationalStatCard title="Blocked by Supervisor" icon={AlertTriangle} loading={dashboard.loading} value={metrics.blocked_by_supervisor} emptyTitle="No supervisor blocks" tone="warning" />
+          <OperationalStatCard title="Blocked by Management" icon={ShieldAlert} loading={dashboard.loading} value={metrics.blocked_by_management} emptyTitle="No Management blocks" tone="warning" />
           <OperationalStatCard title="Released Today" icon={Truck} loading={dashboard.loading} value={metrics.released_today} emptyTitle="No releases today" tone="success" />
           <OperationalStatCard title="Emergency Requests" icon={ShieldAlert} loading={dashboard.loading} value={metrics.emergency_release_requests} emptyTitle="No emergency requests" tone="warning" />
         </div>
@@ -154,7 +155,7 @@ function ReleaseQueuePage() {
 
   return (
     <>
-      <PageHeader eyebrow="Gate" title="Release Queue" description="Validate customs clearance, payment, supervisor dispatch approval, and gate-out state before release." />
+      <PageHeader eyebrow="Gate" title="Release Queue" description="Validate Management authorization where required, Customs, Finance, dispatch, and Gate state before release." />
       <div className="flex-1 overflow-auto p-4">
         <SectionCard title="Search or Scan Cargo" icon={PackageSearch}>
           <div className="flex gap-2">
@@ -177,6 +178,7 @@ function ReleaseQueuePage() {
                 { key: "location", label: "Location", render: (row) => row.location || "Not placed" },
                 { key: "customs_status", label: "Customs", render: (row) => <StatusBadge tone={statusTone(row.customs_status)}>{row.customs_status}</StatusBadge> },
                 { key: "financial_status", label: "Finance", render: (row) => <StatusBadge tone={statusTone(row.financial_status)}>{row.financial_status}</StatusBadge> },
+                { key: "management_release_status", label: "Release Path", render: (row) => row.management_release_status !== "NOT_REQUIRED" ? <StatusBadge tone={row.management_release_status === "APPROVED" ? "success" : "warning"}>Management — {row.management_release_status}</StatusBadge> : <StatusBadge tone="info">Normal Release</StatusBadge> },
                 { key: "dispatch_request_status", label: "Dispatch", render: (row) => <StatusBadge tone={statusTone(row.dispatch_request_status)}>{row.dispatch_request_status}</StatusBadge> },
                 { key: "eligibility", label: "Eligibility", render: (row) => row.release_eligibility?.eligible ? <StatusBadge tone="success">Ready</StatusBadge> : <StatusBadge tone="destructive">Blocked</StatusBadge> },
                 { key: "outstanding", label: "Outstanding", render: (row) => formatMoney(row.release_eligibility?.outstanding_amount) },
@@ -185,10 +187,10 @@ function ReleaseQueuePage() {
                   label: "Actions",
                   render: (row) => (
                     <div className="flex flex-wrap gap-1">
-                      <button type="button" onClick={() => setReleaseCargo(row)} className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground">
+                      <button type="button" disabled={!row.release_eligibility?.eligible} onClick={() => setReleaseCargo(row)} className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground disabled:cursor-not-allowed disabled:opacity-40">
                         Gate Out
                       </button>
-                      {!row.release_eligibility?.eligible && (
+                      {!row.release_eligibility?.eligible && !row.release_eligibility?.blocked_requirements?.some((item) => item.requirement === "management_release") && (
                         <button type="button" onClick={() => setEmergencyCargo(row)} className="rounded border border-warning/40 bg-warning/10 px-2 py-1 text-[11px] font-semibold text-warning">
                           Emergency
                         </button>
@@ -277,6 +279,7 @@ function GateOutDialog({ cargo, onClose, onSaved }) {
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               <div>Customs: <span className="font-semibold">{eligibility.data.customs_status}</span></div>
               <div>Finance: <span className="font-semibold">{eligibility.data.financial_status}</span></div>
+              <div>Release: <span className="font-semibold">{eligibility.data.release_type === "MANAGEMENT" ? `Management — ${eligibility.data.management_release_status}` : "Normal Release"}</span></div>
               <div>Dispatch: <span className="font-semibold">{eligibility.data.supervisor_dispatch_approval}</span></div>
               <div>Outstanding: <span className="font-semibold">{formatMoney(eligibility.data.outstanding_amount)}</span></div>
               <div className="sm:col-span-2">Location: <span className="font-semibold">{eligibility.data.location || "Not placed"}</span></div>
@@ -301,7 +304,7 @@ function GateOutDialog({ cargo, onClose, onSaved }) {
           {error && <ErrorState message={error} />}
           <div className="flex justify-end gap-2">
             <button type="button" onClick={onClose} className="rounded border border-border px-3 py-2 text-xs font-semibold">Cancel</button>
-            <button type="submit" className="inline-flex items-center gap-2 rounded bg-info px-3 py-2 text-xs font-semibold text-info-foreground">
+            <button type="submit" disabled={!eligibility.data?.eligible || eligibility.loading} className="inline-flex items-center gap-2 rounded bg-info px-3 py-2 text-xs font-semibold text-info-foreground disabled:cursor-not-allowed disabled:opacity-40">
               <DoorOpen className="h-4 w-4" />
               Confirm Release
             </button>

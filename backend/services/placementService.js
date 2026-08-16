@@ -526,7 +526,7 @@ const confirmPlacementOperation = async (payload, auth = {}) => {
       await client.query("UPDATE cargo SET storage_exception_key=NULL,storage_exception_reason=NULL,storage_exception_at=NULL WHERE id=$1", [cargo.id]);
       await writeAuditLog({ user_id: auth.userId, action: "RESOLVE_CARGO_UNALLOCATED_EXCEPTION", module: "Cargo Placement",
         description: `Resolved unallocated exception for cargo ${cargo.cargo_id} through a valid placement.`,
-        metadata: { cargo_identifier: cargo.cargo_id, resolved_bin: validation.bin?.barcode || null } }, client);
+        metadata: { cargo_id: cargo.id, cargo_identifier: cargo.cargo_id, resolved_bin: validation.bin?.barcode || null } }, client);
     }
     await client.query("COMMIT");
 

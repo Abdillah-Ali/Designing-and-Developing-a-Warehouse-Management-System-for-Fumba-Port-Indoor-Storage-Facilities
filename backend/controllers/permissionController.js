@@ -120,7 +120,7 @@ const updateAdminRolePermissions = async (req, res, next) => {
     if (role.role_key === "scanner" && finalKeys.length > 0) {
       throw buildError("Scanner identity permissions cannot be changed through portal RBAC.", 409, undefined, "RBAC_SCANNER_BOUNDARY_PROTECTED");
     }
-    if (role.role_key === "management" && finalKeys.some((key) => !key.endsWith(".view") && key !== "notifications.manage")) {
+    if (role.role_key === "management" && finalKeys.some((key) => !key.endsWith(".view") && !["notifications.manage","management_release.decide"].includes(key))) {
       throw buildError("Management must remain read-only.", 409, undefined, "RBAC_MANAGEMENT_READ_ONLY");
     }
     if (role.role_key === "system_administrator" && !finalKeys.includes("system.permissions.manage")) {

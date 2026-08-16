@@ -35,7 +35,7 @@ function Detail({ label, value }) {
   );
 }
 
-function PlacementSessionModal({ cargo, open, initialSession, onClose, onCompleted }) {
+function PlacementSessionModal({ cargo, open, initialSession, recommendation, onClose, onCompleted }) {
   const completionNotifiedRef = useRef(false);
   const cancellationNotifiedRef = useRef(false);
   const [session, setSession] = useState(null);
@@ -200,6 +200,13 @@ function PlacementSessionModal({ cargo, open, initialSession, onClose, onComplet
     >
       <div className="space-y-4">
         {operationError && <ErrorState message={operationError} />}
+
+        {recommendation && !completed && (
+          <div className="rounded border border-info/35 bg-info/10 px-3 py-3 text-xs text-info">
+            <div className="font-semibold">Recommended destination: {recommendation.barcode || recommendation.code}</div>
+            <div className="mt-1 text-[11px]">Scan the physical bin to continue. The backend will revalidate it before placement; another compatible bin may also be scanned.</div>
+          </div>
+        )}
 
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <Detail label="Cargo Reference" value={sessionCargo?.cargo_id} />

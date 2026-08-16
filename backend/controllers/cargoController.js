@@ -1,5 +1,6 @@
 const db = require("../config/db");
 const crypto = require("crypto");
+const { assertFileSignature, decodeStrictBase64, normalizeDisplayFilename } = require("../utils/fileValidation");
 const fs = require("fs/promises");
 const path = require("path");
 const { generateCargoIdentifiers } = require("../utils/barcodeGenerator");
@@ -228,6 +229,7 @@ const getCargo = async (req, res, next) => {
       values.push(`%${req.query.search}%`);
       filters.push(`(
         c.cargo_id ILIKE $${values.length}
+        OR c.reference_number ILIKE $${values.length}
         OR c.barcode ILIKE $${values.length}
         OR c.consignee_name ILIKE $${values.length}
         OR c.company_name ILIKE $${values.length}
@@ -279,6 +281,8 @@ const getCargo = async (req, res, next) => {
       values
     );
 
+    res.setHeader("Cache-Control", "private, no-store");
+    res.setHeader("X-Content-Type-Options", "nosniff");
     res.json({
       success: true,
       count: result.rowCount,
@@ -860,7 +864,7 @@ const uploadCargoDocument = async (req, res, next) => {
   const client = await db.pool.connect();
 
   try {
-    const fileName = String(req.body.file_name || "").trim();
+    const fileName = normalizeDisplayFilename(req.body.file_name);
     const fileType = String(req.body.file_type || "").trim().toLowerCase();
     const encoded = String(req.body.content_base64 || "");
     const extension = allowedDocumentTypes.get(fileType);
@@ -869,13 +873,14 @@ const uploadCargoDocument = async (req, res, next) => {
       throw buildError("PDF, DOCX, JPG, or PNG document data is required.", 400);
     }
 
-    const fileBuffer = Buffer.from(encoded.replace(/^data:[^;]+;base64,/, ""), "base64");
+    const fileBuffer = decodeStrictBase64(encoded);
     if (!fileBuffer.length || fileBuffer.length > documentMaxBytes) {
       throw buildError(
         `Each supporting document must be between 1 byte and ${Math.ceil(documentMaxBytes / (1024 * 1024))}MB.`,
         400
       );
     }
+    assertFileSignature(fileType, fileBuffer);
 
     await client.query("BEGIN");
     const cargoResult = await client.query(
@@ -932,7 +937,15 @@ const uploadCargoDocument = async (req, res, next) => {
     );
 
     await client.query("COMMIT");
-    res.status(201).json({ success: true, data: result.rows[0] });
+    const document = result.rows[0];
+    res.status(201).json({ success: true, data: {
+      id: document.id,
+      file_name: document.file_name,
+      file_type: document.file_type,
+      file_size: document.file_size,
+      uploaded_by: document.uploaded_by,
+      created_at: document.created_at
+    } });
   } catch (error) {
     await client.query("ROLLBACK");
     next(error);

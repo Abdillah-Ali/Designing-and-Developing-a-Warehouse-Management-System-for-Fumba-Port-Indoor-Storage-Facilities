@@ -1,5 +1,6 @@
 const db = require("../config/db");
-const { evaluateRules, loadActiveRules } = require("../services/binRuleEngine");
+const { evaluateRules, getWorkflowReadiness, loadActiveRules } = require("../services/binRuleEngine");
+const { canCargoBePlaced, getCargoPlacementBlock } = require("../services/cargoWorkflowService");
 const { buildError } = require("../utils/apiError");
 const { notifyWarehouseAlert } = require("../services/notificationService");
 const { writeAuditLog } = require("../models/adminModel");
@@ -17,6 +18,22 @@ const {
 const BIN_STATUSES = ["Available", "Occupied", "Full", "Reserved", "Restricted", "Blocked", "Maintenance", "Damaged", "Inactive"];
 
 const isAdmin = (req) => req.auth?.role === "system-admin";
+
+const assertRecommendationCargoAccess = (auth = {}, cargo = {}) => {
+  if (
+    auth.role === "warehouse-staff"
+    && Number(cargo.assigned_staff_id || cargo.created_by || cargo.received_by_user_id || 0) !== Number(auth.userId || 0)
+  ) {
+    throw buildError("Cargo record not found.", 404);
+  }
+  if (auth.warehouseId && Number(cargo.warehouse_id) !== Number(auth.warehouseId)) {
+    throw buildError("Cargo record not found.", 404);
+  }
+  if (!canCargoBePlaced(cargo)) {
+    const block = getCargoPlacementBlock(cargo);
+    throw buildError(block.detail, 409, [block.reason], "CARGO_NOT_ELIGIBLE_FOR_PLACEMENT");
+  }
+};
 
 const binSelect = `
   SELECT
@@ -564,18 +581,34 @@ const recommendBin = async (req, res, next) => {
     );
     if (!cargoResult.rowCount) throw buildError("Cargo record not found.", 404);
     const cargo = cargoResult.rows[0];
+    assertRecommendationCargoAccess(req.auth, cargo);
     const candidates = await db.query(
       `SELECT b.*,l.code AS level_code,l.active AS level_active,r.code AS rack_code,r.active AS rack_active,
               z.code AS zone_code,z.name AS zone_name,z.zone_type,z.allowed_cargo_type AS zone_allowed_cargo_type,
-              z.handling_condition,z.is_hazard_zone,z.active AS zone_active,z.warehouse_id,
+               z.handling_condition,z.is_hazard_zone,z.active AS zone_active,z.warehouse_id,
+               zone_option.option_key AS zone_allowed_cargo_type_key,
+               COALESCE(b.allowed_cargo_type,z.allowed_cargo_type) AS allowed_cargo_type,
+               COALESCE(bin_option.option_key,zone_option.option_key) AS allowed_cargo_type_key,
               w.warehouse_code,w.warehouse_name,w.status AS warehouse_status,
               (b.max_weight-b.current_weight) AS available_weight,
               (b.max_volume-b.current_volume) AS available_volume
        FROM warehouses w JOIN zones z ON z.warehouse_id=w.id JOIN racks r ON r.zone_id=z.id
-       JOIN levels l ON l.rack_id=r.id JOIN bins b ON b.level_id=l.id WHERE w.id=$1`,
-      [cargo.warehouse_id]
+       JOIN levels l ON l.rack_id=r.id JOIN bins b ON b.level_id=l.id
+       LEFT JOIN cargo_option_values zone_option ON zone_option.catalog_key='cargo_type' AND zone_option.storage_value=z.allowed_cargo_type
+       LEFT JOIN cargo_option_values bin_option ON bin_option.catalog_key='cargo_type' AND bin_option.storage_value=b.allowed_cargo_type
+       WHERE w.id=$1 AND ($2::int IS NULL OR b.id <> $2::int)`,
+      [cargo.warehouse_id, cargo.current_bin_id || null]
     );
     const rules = await loadActiveRules("placement_recommendation");
+    const readiness = await getWorkflowReadiness("placement_recommendation", db, rules);
+    if (!readiness.ready) {
+      return res.status(409).json({
+        success: false,
+        code: "PLACEMENT_CONFIGURATION_NOT_READY",
+        message: "Placement configuration is not ready. Contact a warehouse administrator.",
+        data: readiness
+      });
+    }
     const eligible = [];
     for (const bin of candidates.rows) {
       const remainingWeight = Number(bin.max_weight || 0) - Number(bin.current_weight || 0);
@@ -589,7 +622,7 @@ const recommendBin = async (req, res, next) => {
           already_placed_in_bin: Number(cargo.current_bin_id) === Number(bin.id)
         } }
       });
-      if (!evaluation.readiness.ready) return res.status(409).json({ success: false, message: evaluation.detail, data: evaluation.readiness });
+      if (!evaluation.readiness.ready) return res.status(409).json({ success: false, code: "PLACEMENT_CONFIGURATION_NOT_READY", message: "Placement configuration is not ready. Contact a warehouse administrator.", data: evaluation.readiness });
       if (evaluation.approved) eligible.push(bin);
     }
     if (!eligible.length) {
@@ -601,7 +634,7 @@ const recommendBin = async (req, res, next) => {
           WHERE id=$1 AND current_bin_id IS NULL`, [cargo.id]);
         await writeAuditLog({ user_id: req.auth?.userId, action: "CARGO_UNALLOCATED_EXCEPTION", module: "Cargo Placement",
           description: `Cargo ${cargo.cargo_id} has no compatible normal bin and remains unallocated.`,
-          metadata: { cargo_identifier: cargo.cargo_id, exception_key: "unallocated_exception", physical_bin_occupied: false } }, client);
+          metadata: { cargo_id: cargo.id, cargo_identifier: cargo.cargo_id, exception_key: "unallocated_exception", physical_bin_occupied: false } }, client);
         await client.query("COMMIT");
       } catch (error) { await client.query("ROLLBACK").catch(() => {}); throw error; }
       finally { client.release(); }
@@ -670,6 +703,7 @@ const printBinBarcode = async (req, res, next) => {
 };
 
 module.exports = {
+  assertRecommendationCargoAccess,
   getBins,
   getBinById,
   getBinsByLevel,

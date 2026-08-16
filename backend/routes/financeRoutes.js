@@ -18,6 +18,8 @@ const {
   updateTariff
 } = require("../controllers/financeController");
 const { requirePermission } = require("../middleware/authMiddleware");
+const { createRateLimiter } = require("../services/rateLimitService");
+const reportLimit = createRateLimiter({ scope: "finance.reports", limit: 60, windowMs: 60_000 });
 
 const router = express.Router();
 
@@ -40,6 +42,6 @@ router.get("/payments", requirePermission("finance.payments.record"), getPayment
 router.post("/payments", requirePermission("finance.payments.record"), recordInvoicePayment);
 router.post("/payments/:reference/confirm", requirePermission("finance.payments.confirm"), confirmInvoicePayment);
 
-router.get("/reports", requirePermission("finance.reports.view"), getReports);
+router.get("/reports", reportLimit, requirePermission("finance.reports.view"), getReports);
 
 module.exports = router;

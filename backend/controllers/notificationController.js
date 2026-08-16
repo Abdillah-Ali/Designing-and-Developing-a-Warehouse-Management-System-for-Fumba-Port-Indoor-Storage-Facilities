@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const { boundedText } = require("../middleware/requestValidation");
 const { buildError } = require("../utils/apiError");
 const {
   addVisibleNotificationClauses,
@@ -103,8 +104,8 @@ const markAllNotificationsAsRead = async (req, res, next) => {
 const createSystemAnnouncementNotification = async (req, res, next) => {
   const client = await db.pool.connect();
   try {
-    const title = String(req.body?.title || "").trim();
-    const message = String(req.body?.message || "").trim();
+    const title = boundedText(req.body?.title, "Announcement title", 180, { required: true });
+    const message = boundedText(req.body?.message, "Announcement message", 4000, { required: true });
     if (!title || !message) {
       throw buildError("Announcement title and message are required.", 400);
     }

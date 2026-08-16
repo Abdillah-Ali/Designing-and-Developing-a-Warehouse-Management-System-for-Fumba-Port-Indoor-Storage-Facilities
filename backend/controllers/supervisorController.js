@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const { submit: submitManagementRelease, convertToNormal: selectNormalRelease } = require("../services/managementReleaseService");
 const { roleNames } = require("../config/systemConfig");
 const { writeAuditLog } = require("../models/adminModel");
 const { buildError } = require("../utils/apiError");
@@ -373,6 +374,14 @@ const decideApproval = async (req, res, next, decision, options = {}) => {
             correction_original_values: {}
           }
         );
+        const releaseType = String(req.body.release_type || "NORMAL").trim().toUpperCase();
+        if (releaseType === "MANAGEMENT") {
+          await submitManagementRelease({ cargoRef: approval.cargo_id, reason: req.body.management_release_reason, actor: req.auth, executor: client });
+        } else if (releaseType === "NORMAL") {
+          await selectNormalRelease({ cargoRef: approval.cargo_id, remarks: req.body.management_release_reason, actor: req.auth, executor: client });
+        } else {
+          throw buildError("Release type must be NORMAL or MANAGEMENT.", 400);
+        }
       } else {
         const rejectedCargoResult = await client.query(
           "SELECT * FROM cargo WHERE id = $1",
@@ -863,6 +872,18 @@ const getPlacementSummary = async (req, res, next) => {
   }
 };
 
+const changeManagementRelease = (mode) => async (req,res,next) => {
+  const client=await db.pool.connect();
+  try { await client.query("BEGIN");
+    const data=mode==="normal"
+      ? await selectNormalRelease({cargoRef:req.params.cargoReference,remarks:req.body?.remarks,actor:req.auth,executor:client})
+      : await submitManagementRelease({cargoRef:req.params.cargoReference,reason:req.body?.reason,actor:req.auth,executor:client});
+    await client.query("COMMIT"); res.json({success:true,data});
+  } catch(error){await client.query("ROLLBACK");next(error)} finally {client.release()}
+};
+const convertManagementReleaseToNormal=changeManagementRelease("normal");
+const resubmitManagementRelease=changeManagementRelease("resubmit");
+
 module.exports = {
   approveApproval,
   emergencyApproveApproval,
@@ -876,4 +897,6 @@ module.exports = {
   getSupervisorDashboard,
   requestCorrection,
   rejectApproval
+  ,convertManagementReleaseToNormal
+  ,resubmitManagementRelease
 };

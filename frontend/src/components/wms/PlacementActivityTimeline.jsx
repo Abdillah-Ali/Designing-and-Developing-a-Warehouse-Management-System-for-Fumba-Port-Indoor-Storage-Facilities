@@ -36,7 +36,12 @@ const activityTypeLabels = {
   PLACEMENT_OVERRIDE_REJECTED: "Override Rejected",
   MANUAL_PLACEMENT_SETTING_CHANGED: "Manual Setting Changed",
   LOCATION_REVALIDATED: "Location Revalidated",
-  LOCATION_REVALIDATION_FAILED: "Location Revalidation Failed"
+  LOCATION_REVALIDATION_FAILED: "Location Revalidation Failed",
+  CARGO_UNALLOCATED_EXCEPTION: "No Compatible Bin",
+  CARGO_UNALLOCATED_RESOLVED: "Unallocated Exception Resolved",
+  SCANNER_SESSION_STARTED: "Scanner Session Started",
+  SCANNER_SESSION_COMPLETED: "Scanner Placement Completed",
+  SCANNER_SESSION_CANCELLED: "Scanner Session Cancelled"
 };
 
 const activityTypes = Object.entries(activityTypeLabels);
@@ -171,11 +176,14 @@ function PlacementActivityPanel({
 }) {
   const [filters, setFilters] = useState(emptyFilters);
   const [appliedFilters, setAppliedFilters] = useState(emptyFilters);
-  const [state, setState] = useState({ rows: [], summary: {}, loading: true, error: "" });
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [state, setState] = useState({ rows: [], summary: {}, total: 0, loading: true, error: "" });
 
   const query = useMemo(
-    () => buildQuery({ ...appliedFilters, limit: 200 }),
-    [appliedFilters]
+    () => buildQuery({ ...appliedFilters, page, limit: pageSize }),
+    [appliedFilters, page, pageSize]
   );
 
   useEffect(() => {
@@ -195,19 +203,20 @@ function PlacementActivityPanel({
         setState({
           rows: activityResponse.data || [],
           summary: summaryResponse.data || {},
+          total: Number(activityResponse.total || 0),
           loading: false,
           error: ""
         });
       })
       .catch((error) => {
         if (!active) return;
-        setState({ rows: [], summary: {}, loading: false, error: getErrorMessage(error) });
+        setState({ rows: [], summary: {}, total: 0, loading: false, error: getErrorMessage(error) });
       });
 
     return () => {
       active = false;
     };
-  }, [cargoId, query]);
+  }, [cargoId, query, refreshKey]);
 
   const summary = state.summary || {};
 
@@ -225,14 +234,21 @@ function PlacementActivityPanel({
           filters={filters}
           adminFilters={adminFilters}
           onChange={setFilters}
-          onApply={() => setAppliedFilters(filters)}
+          onApply={() => { setPage(1); setAppliedFilters(filters); }}
           onReset={() => {
             setFilters(emptyFilters);
             setAppliedFilters(emptyFilters);
+            setPage(1);
           }}
         />
       )}
 
+      <div className="flex justify-end">
+        <button type="button" disabled={state.loading} onClick={() => setRefreshKey((value) => value + 1)} className="inline-flex h-9 items-center gap-2 rounded border border-border bg-background px-3 text-xs font-semibold disabled:opacity-40">
+          <RefreshCw className={`h-3.5 w-3.5 ${state.loading ? "animate-spin" : ""}`} />
+          Refresh activity
+        </button>
+      </div>
       <SectionCard title={title} icon={ScanLine}>
         <DataTable
           loading={state.loading}
@@ -244,13 +260,26 @@ function PlacementActivityPanel({
             { key: "timestamp", label: "Time", render: (row) => formatDateTime(row.timestamp), className: "font-mono text-muted-foreground" },
             { key: "activity_type", label: "Activity", render: (row) => <StatusBadge tone={activityTone(row.activity_type)}>{activityTypeLabels[row.activity_type] || row.activity_type}</StatusBadge> },
             { key: "result", label: "Result", render: (row) => <StatusBadge tone={resultTone(row.result)}>{row.result || "recorded"}</StatusBadge> },
-            { key: "cargo_identifier", label: "Cargo", render: (row) => row.cargo_identifier || row.metadata?.cargo_barcode || "Not linked", className: "font-mono font-semibold" },
+            { key: "cargo_identifier", label: "Cargo", render: (row) => row.cargo_identifier || row.metadata?.cargo_identifier || row.metadata?.cargo_barcode || "Not linked", className: "font-mono font-semibold" },
             { key: "warehouse", label: "Warehouse", render: (row) => row.warehouse_code || row.warehouse_name || "Not assigned" },
             { key: "performed_by", label: "Actor", render: (row) => row.performed_by_name || row.performed_by_username || (row.performed_by ? `User ${row.performed_by}` : "System") },
             { key: "location", label: "Location", render: compactLocation, className: "max-w-[260px] truncate" },
             { key: "detail", label: "Detail", render: detailText, className: "max-w-[320px] truncate" }
           ]}
         />
+        {!state.loading && !state.error && state.total > 0 && (
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3 text-xs">
+            <span className="text-muted-foreground">Showing {(page - 1) * pageSize + 1}-{Math.min(page * pageSize, state.total)} of {state.total}</span>
+            <div className="flex items-center gap-2">
+              <select className="h-8 rounded border border-input bg-background px-2" value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}>
+                {[10, 25, 50].map((size) => <option key={size} value={size}>{size} per page</option>)}
+              </select>
+              <button type="button" className="h-8 rounded border border-border px-3 disabled:opacity-40" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</button>
+              <span>Page {page} of {Math.max(Math.ceil(state.total / pageSize), 1)}</span>
+              <button type="button" className="h-8 rounded border border-border px-3 disabled:opacity-40" disabled={page * pageSize >= state.total} onClick={() => setPage((value) => value + 1)}>Next</button>
+            </div>
+          </div>
+        )}
         {!state.loading && !state.error && state.rows.length === 0 && (
           <div className="mt-3">
             <EmptyState title="No activity in this view" body="Adjust filters or record placement work to populate this timeline." />

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createCargo } from "./api";
+import { createCargo, getCargo, getCargoById, recommendBin } from "./api";
 import { clearStoredAuthToken, setStoredAuthToken } from "../lib/portal-access";
 
 describe("cargo registration API errors", () => {
@@ -57,5 +57,19 @@ describe("cargo registration API errors", () => {
     await Promise.all([createCargo({}), createCargo({})]);
     expect(refreshAttempts).toBe(1);
     expect(cargoAttempts).toBe(4);
+  });
+
+  it("uses backend search pagination and stable cargo references", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ success: true, total: 0, data: [] }) });
+    vi.stubGlobal("fetch", fetchMock);
+    await getCargo({ search: "CRG-2026-00421", placement_status: "Placed", page: 3, limit: 25 });
+    await getCargoById("CRG-2026-00421");
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/cargo?search=CRG-2026-00421&placement_status=Placed&page=3&limit=25"), expect.any(Object));
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/cargo/CRG-2026-00421"), expect.any(Object));
+  });
+
+  it("preserves the explicit no-compatible-bin recommendation conflict", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 409, json: async () => ({ success: false, code: "NO_COMPATIBLE_BIN", message: "No compatible normal bin is available." }) }));
+    await expect(recommendBin("CRG-2026-00421")).rejects.toMatchObject({ code: "NO_COMPATIBLE_BIN", status: 409 });
   });
 });
