@@ -17,6 +17,7 @@ const {
   confirmInvoicePayment,
   updateTariff
 } = require("../controllers/financeController");
+const tariffApproval=require("../controllers/tariffApprovalController");
 const { requirePermission } = require("../middleware/authMiddleware");
 const { createRateLimiter } = require("../services/rateLimitService");
 const reportLimit = createRateLimiter({ scope: "finance.reports", limit: 60, windowMs: 60_000 });
@@ -29,6 +30,7 @@ router.get("/cargo-charges", requirePermission("finance.charges.view"), getCargo
 router.get("/tariffs", requirePermission("finance.tariffs.view"), getTariffs);
 router.post("/tariffs", requirePermission("finance.tariffs.create"), createTariff);
 router.put("/tariffs/:reference", requirePermission("finance.tariffs.update"), updateTariff);
+router.post("/tariffs/:reference/submit",requirePermission("finance.tariffs.submit"),tariffApproval.submit);
 router.post("/tariffs/:reference/activate", requirePermission("finance.tariffs.activate"), activateTariff);
 router.post("/tariffs/:reference/deactivate", requirePermission("finance.tariffs.activate"), deactivateTariff);
 

@@ -139,6 +139,24 @@ test("final validation closure executes real authenticated HTTP races and Gate r
     [`${PREFIX}-TRV`, tariff.id, users.finance_officer.id])).rows[0];
     ids.tariffVersion = tariffVersion.id;
 
+    const placementRules = [
+      ["capacity_limits", "block", "critical", 10, { enforce_weight: true, enforce_volume: true }],
+      ["cargo_storage_compatibility", "block", "critical", 20, {}],
+      ["hazard_zone_compatibility", "block", "critical", 30, { hazardous_cargo_type_key: "hazardous_cargo" }],
+      ["storage_status", "block", "critical", 40, { allowed_statuses: ["Available", "Occupied"] }],
+      ["reserved_storage", "block", "high", 50, {}],
+      ["restricted_zone_approval", "supervisor_approval", "high", 60, { restricted_zone_type: "Restricted" }],
+      ["customs_hold_storage", "block", "high", 70, { hold_marker: "hold", storage_marker: "customs hold" }],
+      ["fragile_handling", "block", "high", 80, { cargo_type_key: "fragile_goods", handling_marker: "fragile" }]
+    ];
+    for (const [evaluator_type, violation_action, severity, priority, parameters] of placementRules) {
+      await q(`INSERT INTO bin_rules (public_reference, rule_key, rule_name, rule_type, evaluator_type, execution_targets, violation_action, severity, priority, is_active, parameters, created_by)
+        VALUES ($1, $2, $3, 'validation', $4, ARRAY['placement_recommendation','placement_confirmation','relocation']::text[], $5, $6, $7, TRUE, $8::jsonb, $9)
+        ON CONFLICT DO NOTHING`,
+        [`${PREFIX}-BR-${evaluator_type}`, `${PREFIX}_${evaluator_type}`, `${PREFIX} ${evaluator_type}`, evaluator_type, violation_action, severity, priority, JSON.stringify(parameters), users.warehouse_staff.id]);
+    }
+
+
     await t.test("C01 competing capacity", async () => {
       const a = await createCargo("C01-A", users.warehouse_staff.id);
       const b = await createCargo("C01-B", users.warehouse_staff.id);

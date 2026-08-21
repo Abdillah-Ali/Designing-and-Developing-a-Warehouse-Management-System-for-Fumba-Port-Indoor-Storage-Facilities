@@ -12,6 +12,7 @@ const {
   recordMigration
 } = require("./migrationRunner");
 const { ensureRolePublicReferences } = require("./rolePublicReferences");
+const { ensureStandardRolePermissions } = require("./ensureRolePermissions");
 
 dotenv.config({ path: path.join(__dirname, "../.env") });
 
@@ -69,8 +70,8 @@ const runUpdates = async () => {
     console.log("✔ Bootstrap administrator columns checked/added");
 
     await client.query(
-      `INSERT INTO roles (role_name, role_description, public_reference)
-       VALUES ($1, $2, generate_role_public_reference())
+      `INSERT INTO roles (role_name, role_description, public_reference, role_key)
+       VALUES ($1, $2, generate_role_public_reference(), 'scanner')
        ON CONFLICT (role_name) DO UPDATE
        SET role_description = EXCLUDED.role_description`,
       [
@@ -836,6 +837,11 @@ const runUpdates = async () => {
     await applySqlMigration(client, "032_management_release_workflow.sql", managementReleaseMigration);
     const managementReleaseGateMigration = fs.readFileSync(path.join(__dirname, "migrations", "20260816_management_release_gate_authority.sql"), "utf8");
     await applySqlMigration(client, "033_management_release_gate_authority.sql", managementReleaseGateMigration);
+    const auditorPortalCompletionMigration = fs.readFileSync(path.join(__dirname, "migrations", "20260817_auditor_portal_completion.sql"), "utf8");
+    await applySqlMigration(client, "034_auditor_portal_completion.sql", auditorPortalCompletionMigration);
+    const financePaymentReleaseMigration = fs.readFileSync(path.join(__dirname, "migrations", "20260820_finance_payment_release_workflow.sql"), "utf8");
+    await applySqlMigration(client, "035_finance_payment_release_workflow.sql", financePaymentReleaseMigration);
+    await ensureStandardRolePermissions(client);
   } catch (error) {
     if (transactionOpen) await client.query("ROLLBACK").catch(() => {});
     if (legacyStarted) {

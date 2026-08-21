@@ -45,7 +45,8 @@ import {
   issueFinanceInvoice,
   logout,
   recordFinancePayment,
-  updateFinanceTariff
+  updateFinanceTariff,
+  submitFinanceTariff
 } from "@/services/api";
 
 const inputClass = "h-9 w-full rounded border border-input bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring";
@@ -486,9 +487,9 @@ function PaymentsPage() {
 
   return (
     <>
-      <PageHeader eyebrow="Finance" title="Payments" description="Record payments as pending, then explicitly confirm them to affect financial clearance." />
+      <PageHeader eyebrow="Finance" title="Payments" description="Monitor provider-verified payments, failures, exceptions, and reconciliation." />
       <div className="flex-1 overflow-auto p-4">
-        <SectionCard title="Record Payment" icon={CreditCard}>
+        <div className="hidden"><SectionCard title="Legacy manual payment" icon={CreditCard}>
           <form className="grid gap-3 md:grid-cols-3" onSubmit={submit}>
             {["invoice_number", "amount", "bank_name", "bank_reference", "payment_date"].map((field) => (
               <FormField key={field} label={field.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase())}>
@@ -513,7 +514,7 @@ function PaymentsPage() {
               </button>
             </div>
           </form>
-        </SectionCard>
+        </SectionCard></div>
         {message && <div className="mt-3 rounded border border-info/30 bg-info/10 px-3 py-2 text-xs font-semibold text-info">{message}</div>}
         <div className="mt-3">
           <SectionCard title="Recent Payments" icon={CreditCard}>
@@ -531,7 +532,7 @@ function PaymentsPage() {
                 { key: "bank_reference", label: "Bank Ref" },
                 { key: "payment_date", label: "Payment Date", render: (row) => formatDateTime(row.payment_date) }
                 ,{ key: "status", label: "Status", render: (row) => <StatusBadge tone={row.status === "Confirmed" ? "success" : "warning"}>{row.status}</StatusBadge> }
-                ,{ key: "actions", label: "Actions", render: (row) => row.status === "Pending Confirmation" ? <button type="button" onClick={async()=>{ setMessage(""); try { await confirmFinancePayment(row.payment_reference); setMessage(`${row.payment_reference} confirmed.`); await payments.refresh(); } catch(error) { setMessage(getErrorMessage(error)); } }} className="rounded bg-success px-2 py-1 text-[11px] font-semibold text-success-foreground">Confirm Payment</button> : null }
+                ,{ key: "gateway_status", label: "Gateway", render: (row) => <StatusBadge tone={statusTone(row.gateway_status)}>{row.gateway_status || "Legacy"}</StatusBadge> }
               ]}
             />
           </SectionCard>
@@ -651,11 +652,13 @@ function TariffsPage() {
                 { key: "minimum_billable_days", label: "Min Days" },
                 { key: "effective_from", label: "Effective From", render: (row) => formatDateTime(row.effective_from) },
                 { key: "effective_to", label: "Effective To", render: (row) => formatDateTime(row.effective_to) },
+                { key: "approval_status", label: "Approval", render: (row) => <StatusBadge tone={statusTone(row.approval_status)}>{row.approval_status || "Draft"}</StatusBadge> },
                 { key: "is_active", label: "Status", render: (row) => <StatusBadge tone={row.is_active ? "success" : "muted"}>{row.is_active ? "Active" : "Inactive"}</StatusBadge> },
                 { key: "actions", label: "Actions", render: (row) => (
                   <div className="flex flex-wrap gap-1">
-                    <button type="button" onClick={() => setEditing(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">Edit</button>
-                    {!row.is_active && <button type="button" onClick={() => activate(row.tariff_version_reference)} className="rounded bg-success px-2 py-1 text-[11px] font-semibold text-success-foreground">Activate</button>}
+                    {["DRAFT","REJECTED"].includes(row.approval_status) && <button type="button" onClick={() => setEditing(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">Edit</button>}
+                    {["DRAFT","REJECTED"].includes(row.approval_status) && <button type="button" onClick={async()=>{await submitFinanceTariff(row.tariff_version_reference);await tariffs.refresh()}} className="rounded bg-primary px-2 py-1 text-[11px] font-semibold text-primary-foreground">Submit</button>}
+                    {!row.is_active && row.approval_status === "APPROVED" && <button type="button" onClick={() => activate(row.tariff_version_reference)} className="rounded bg-success px-2 py-1 text-[11px] font-semibold text-success-foreground">Activate</button>}
                     {row.is_active && <button type="button" onClick={() => deactivate(row.tariff_version_reference)} className="rounded border border-warning/40 bg-warning/10 px-2 py-1 text-[11px] font-semibold text-warning">Deactivate</button>}
                   </div>
                 ) }

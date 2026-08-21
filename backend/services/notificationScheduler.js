@@ -7,11 +7,9 @@ const {getBooleanSetting,getDecimalSetting,getDurationSetting,requireValidSettin
 let schedulerHandle = null;
 
 const readEscalationSettings = async (executor = db) => {
-  const [enabled,threshold,interval]=await Promise.all([
-    getBooleanSetting("cargo_pending_review_escalation_enabled",{},executor),
-    getDecimalSetting("cargo_pending_review_escalation_hours",{},executor),
-    getDurationSetting("cargo_pending_review_escalation_interval_ms",{},executor)
-  ]);
+  const enabled = await getBooleanSetting("cargo_pending_review_escalation_enabled", {}, executor);
+  const threshold = await getDecimalSetting("cargo_pending_review_escalation_hours", {}, executor);
+  const interval = await getDurationSetting("cargo_pending_review_escalation_interval_ms", {}, executor);
   return {
     enabled: requireValidSetting(enabled),
     thresholdHours: requireValidSetting(threshold),

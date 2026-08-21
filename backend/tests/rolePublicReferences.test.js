@@ -44,7 +44,7 @@ test("operational role seeding creates public references and preserves existing 
   assert.equal(roleInserts.length, defaultRoleDefinitions.length);
 
   for (const entry of roleInserts) {
-    assert.match(entry.sql, /INSERT INTO roles \(role_name, role_description, public_reference, role_key\)/);
+    assert.match(entry.sql, /INSERT INTO roles \(role_name, role_description, public_reference, role_key, system_protected\)/);
     assert.match(entry.sql, /generate_role_public_reference\(\)/);
     assert.match(entry.sql, /ON CONFLICT \(role_name\) DO UPDATE/);
     assert.doesNotMatch(entry.sql, /public_reference\s*=\s*EXCLUDED\.public_reference/);
@@ -56,10 +56,11 @@ test("all role seed migrations include generated public references", () => {
   const financeMigration = readDatabaseFile("migrations", "finance_customs_gate_workflows.sql");
   const permissionMigration = readDatabaseFile("migrations", "20260725_permission_catalog.sql");
 
-  assert.match(updateSchema, /INSERT INTO roles \(role_name, role_description, public_reference\)/);
+  assert.match(updateSchema, /INSERT INTO roles \(role_name, role_description, public_reference, role_key\)/);
   assert.match(updateSchema, /generate_role_public_reference\(\)/);
 
-  assert.match(financeMigration, /INSERT INTO roles \(role_name, role_description, public_reference\)/);
+  assert.match(financeMigration, /INSERT INTO roles \(role_name, role_description, public_reference, role_key\)/);
+  assert.match(financeMigration, /column_name = 'role_key'/);
   assert.match(financeMigration, /generate_role_public_reference\(\)/);
 
   assert.match(permissionMigration, /CREATE OR REPLACE FUNCTION generate_role_public_reference\(\)/);

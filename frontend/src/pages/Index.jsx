@@ -53,7 +53,7 @@ import {
   printCargoBarcode,
   createPlacementScanSession,
   recommendBin,
-  requestDispatchAuthorization
+  getCargoToRelease
 } from "@/services/api";
 import { createScannerSocket } from "@/services/scannerSocket";
 
@@ -199,6 +199,38 @@ function useCargo(status) {
   }, [status, refreshKey]);
 
   return { records, loading, error, refresh: () => setRefreshKey((current) => current + 1) };
+}
+
+function useCargoToRelease() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+
+    const load = async () => {
+      setLoading(true);
+      setError("");
+
+      try {
+        const response = await getCargoToRelease();
+        if (active) setRows(response.data || []);
+      } catch (err) {
+        if (active) setError(getErrorMessage(err));
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+
+    load();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  return { rows, loading, error };
 }
 
 function DashboardPage() {
@@ -1481,11 +1513,11 @@ function WarehouseStoragePage({ scope }) {
 function DispatchOperationPage({ mode }) {
   const config = {
     queue: {
-      title: "Dispatch Queue",
+      title: "Cargo to Release",
       icon: Truck,
       status: undefined,
-      emptyTitle: "No cargo queued for dispatch",
-      description: "Cargo prepared for outbound handling will appear here after dispatch readiness is recorded."
+      emptyTitle: "No cargo is ready for release",
+      description: "Cargo appears automatically after registration, placement, Customs, and financial controls pass. No dispatch request is required."
     },
     gate: {
       title: "Gate Release",
@@ -1503,39 +1535,16 @@ function DispatchOperationPage({ mode }) {
     }
   }[mode];
 
-  const { records, loading, error, refresh } = useCargo(config.status);
-  const [actionError, setActionError] = useState("");
-  const [busyId, setBusyId] = useState("");
-  const visibleRecords = mode === "queue"
-    ? records.filter((record) =>
-      ["Placed", "Relocated"].includes(record.placement_status)
-      && record.registration_status === "Approved"
-    )
-    : mode === "gate"
-      ? records.filter((record) => record.dispatch_authorization_status === "Approved")
-      : records;
-
-  const requestDispatch = async (cargo) => {
-    setBusyId(String(cargo.id));
-    setActionError("");
-    try {
-      await requestDispatchAuthorization({
-        cargo_id: cargo.id,
-        reason: "Cargo prepared by Warehouse Staff for supervisor dispatch authorization."
-      });
-      refresh();
-    } catch (requestError) {
-      setActionError(getErrorMessage(requestError));
-    } finally {
-      setBusyId("");
-    }
-  };
+  const ready = useCargoToRelease();
+  const released = useCargo(config.status);
+  const visibleRecords = mode === "released" ? released.records : ready.rows;
+  const loading = mode === "released" ? released.loading : ready.loading;
+  const error = mode === "released" ? released.error : ready.error;
 
   return (
     <>
       <PageHeader eyebrow="Dispatch Operations" title={config.title} description={config.description} />
       <div className="flex-1 overflow-auto p-4">
-        {actionError && <ErrorState message={actionError} />}
         <SectionCard title={config.title} icon={config.icon}>
           <DataTable
             loading={loading}
@@ -1543,28 +1552,14 @@ function DispatchOperationPage({ mode }) {
             rows={visibleRecords}
             emptyTitle={config.emptyTitle}
             columns={[
-              { key: "cargo_id", label: "Cargo Reference", className: "font-mono font-semibold" },
+              { key: "cargo_reference", label: "Cargo Reference", className: "font-mono font-semibold", render:r=>r.cargo_reference||r.cargo_id },
               { key: "barcode", label: "Barcode", className: "font-mono text-muted-foreground" },
               { key: "consignee_name", label: "Consignee", render: (row) => row.consignee_name || "Not recorded" },
-              { key: "location", label: "Storage Location", render: (row) => row.location || "Not assigned" },
-              { key: "clearance_status", label: "Clearance Status", render: (row) => row.clearance_status || "Not recorded" },
-              { key: "status", label: "Placement", render: (row) => <StatusBadge tone={statusTone(row.placement_status)}>{row.placement_status}</StatusBadge> },
-              ...(mode === "queue" ? [{
-                key: "action",
-                label: "Action",
-                render: (row) => !row.dispatch_authorization_status ? (
-                  <button
-                    type="button"
-                    disabled={busyId === String(row.id)}
-                    onClick={() => requestDispatch(row)}
-                    className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground disabled:opacity-50"
-                  >
-                    {busyId === String(row.id) ? "Requesting..." : "Request Authorization"}
-                  </button>
-                ) : <StatusBadge tone={row.dispatch_authorization_status === "Approved" ? "success" : "pending"}>
-                  {row.dispatch_authorization_status}
-                </StatusBadge>
-              }] : [])
+              { key: "current_bin", label: "Storage Location", render: (row) => row.current_bin || row.location || "Not assigned" },
+              { key: "customs_status", label: "Customs" },
+              { key: "payment_reference", label: "Payment Reference", className:"font-mono" },
+              { key: "financial_status", label: "Finance" },
+              { key: "release_readiness_status", label: "Readiness", render: (row) => <StatusBadge tone="success">{row.release_readiness_status || "Released"}</StatusBadge> }
             ]}
           />
         </SectionCard>

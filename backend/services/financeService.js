@@ -226,6 +226,15 @@ const tariffToPublic = (row) => ({
   effective_from: row.effective_from,
   effective_to: row.effective_to,
   is_active: row.is_active,
+  approval_status: row.approval_status,
+  submitted_by: row.submitted_by,
+  submitted_at: row.submitted_at,
+  approved_by: row.approved_by,
+  approved_at: row.approved_at,
+  rejection_reason: row.rejection_reason,
+  supporting_notes: row.supporting_notes,
+  minimum_charge: row.minimum_charge,
+  operationally_used_at: row.operationally_used_at,
   notes: row.notes,
   created_at: row.created_at,
   updated_at: row.updated_at
@@ -241,7 +250,7 @@ const getApplicableTariff = async (cargo, asOf, executor = db) => {
        tv.*
      FROM tariff_versions tv
      JOIN tariffs t ON t.id = tv.tariff_id
-     WHERE tv.is_active = TRUE AND tv.configuration_status = 'ready'
+     WHERE tv.is_active = TRUE AND tv.configuration_status = 'ready' AND tv.approval_status = 'APPROVED'
        AND (tv.cargo_type_key = $1 OR tv.tariff_scope = 'default')
        AND tv.effective_from <= $2
        AND (tv.effective_to IS NULL OR tv.effective_to > $2)
@@ -267,7 +276,7 @@ const getTariffSegments = async ({ cargo, periodStart, periodEnd, executor = db 
   const result = await executor.query(
     `SELECT t.public_reference AS tariff_reference, t.tariff_name, tv.*
      FROM tariff_versions tv JOIN tariffs t ON t.id=tv.tariff_id
-     WHERE tv.is_active=TRUE AND tv.configuration_status='ready'
+     WHERE tv.is_active=TRUE AND tv.configuration_status='ready' AND tv.approval_status='APPROVED'
        AND (tv.cargo_type_key=$1 OR tv.tariff_scope='default')
        AND tv.effective_from < $3 AND COALESCE(tv.effective_to,'infinity'::timestamp) > $2
      ORDER BY tv.effective_from, CASE WHEN tv.cargo_type_key=$1 THEN 0 ELSE 1 END`,
@@ -940,10 +949,10 @@ const createTariffVersion = async ({ payload, auth, executor = db }) => {
        public_reference, tariff_id, version_number, cargo_type, charging_unit, cargo_type_key, tariff_scope, calculator_key, configuration_status,
        daily_rate, currency, minimum_billable_days, grace_period_days,
        penalty_type, penalty_rate, fixed_penalty, effective_from, effective_to,
-       is_active, notes, created_by, activated_by, activated_at
+       is_active, notes, created_by, activated_by, activated_at, approval_status, supporting_notes, minimum_charge
      )
-     VALUES ($1,$2,$3,$4,$5,$18,$19,'storage_started_day','ready',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::boolean,$16,$17::integer,
-             CASE WHEN $15::boolean THEN $17::integer ELSE NULL END, CASE WHEN $15::boolean THEN CURRENT_TIMESTAMP ELSE NULL END)
+     VALUES ($1,$2,$3,$4,$5,$18,$19,'storage_started_day','ready',$6,$7,$8,$9,$10,$11,$12,$13,$14,FALSE,$16,$17::integer,
+             NULL,NULL,'DRAFT',$20,$21)
      RETURNING *`,
     [
       versionRef,
@@ -963,7 +972,7 @@ const createTariffVersion = async ({ payload, auth, executor = db }) => {
       data.isActive,
       data.notes || null,
       auth?.userId || null
-      ,data.cargoTypeKey,data.tariffScope
+      ,data.cargoTypeKey,data.tariffScope,cleanString(payload.supporting_notes)||null,payload.minimum_charge||0
     ]
   );
 
@@ -1004,6 +1013,9 @@ const updateTariffVersion = async ({ tariffVersionReference, payload, auth, exec
   );
   if (existingResult.rowCount === 0) throw buildError("Tariff version not found.", 404);
   const existing = existingResult.rows[0];
+  if (existing.approval_status !== "DRAFT" && existing.approval_status !== "REJECTED") {
+    throw buildError("Only Draft or Rejected tariff versions can be edited. Create a new version for an approved rate.", 409, null, "APPROVED_TARIFF_IMMUTABLE");
+  }
   const usedResult = await executor.query(
     `SELECT 1 FROM invoices WHERE tariff_version_id = $1 LIMIT 1`,
     [existing.id]
@@ -1131,6 +1143,9 @@ const setTariffVersionActiveState = async ({ tariffVersionReference, active, con
   );
   if (result.rowCount === 0) throw buildError("Tariff version not found.", 404);
   const existing = result.rows[0];
+  if (active && existing.approval_status !== "APPROVED") {
+    throw buildError("Only a Management-approved tariff version can be activated.", 409, null, "TARIFF_APPROVAL_REQUIRED");
+  }
   if (active) {
     await assertTariffDoesNotOverlap({
       cargoType: existing.cargo_type,
@@ -1486,7 +1501,7 @@ const refreshInvoicePaymentStatus = async ({ invoiceId, executor = db }) => {
     `SELECT COALESCE(SUM(amount), 0) AS paid
      FROM payments
      WHERE invoice_id = $1
-       AND status = 'Confirmed'`,
+       AND (status = 'Confirmed' OR gateway_status = 'SUCCESSFUL')`,
     [invoiceId]
   );
   const paidCents = centsFromAmount(paidResult.rows[0]?.paid || 0);
@@ -1703,7 +1718,8 @@ const listPayments = async ({ filters = {}, executor = db }) => {
        p.status,
        p.recorded_by,
        p.confirmed_by,
-       p.confirmed_at
+       p.confirmed_at,
+       p.gateway_status,p.gateway_provider,p.gateway_transaction_id,p.amount_received,p.expected_amount,p.currency,p.reconciliation_status,p.failure_reason,p.verified_at
      FROM payments p
      JOIN invoices i ON i.id = p.invoice_id
      JOIN cargo c ON c.id = i.cargo_id
@@ -1724,7 +1740,16 @@ const listPayments = async ({ filters = {}, executor = db }) => {
     status: row.status,
     recorded_by: row.recorded_by,
     confirmed_by: row.confirmed_by,
-    confirmed_at: row.confirmed_at
+    confirmed_at: row.confirmed_at,
+    gateway_status: row.gateway_status,
+    gateway_provider: row.gateway_provider,
+    gateway_transaction_id: row.gateway_transaction_id,
+    amount_received: row.amount_received,
+    expected_amount: row.expected_amount,
+    currency: row.currency,
+    reconciliation_status: row.reconciliation_status,
+    failure_reason: row.failure_reason,
+    verified_at: row.verified_at
   }));
 };
 
@@ -1757,5 +1782,6 @@ module.exports = {
   listFinanceCalculators,
   setTariffVersionActiveState,
   updateCargoFinancialStatus,
-  updateTariffVersion
+  updateTariffVersion,
+  refreshInvoicePaymentStatus
 };

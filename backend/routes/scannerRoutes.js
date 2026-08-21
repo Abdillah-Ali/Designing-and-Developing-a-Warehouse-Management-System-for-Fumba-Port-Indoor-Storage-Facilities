@@ -6,6 +6,7 @@ const {
   startPlacementScanSession
 } = require("../controllers/scannerController");
 const { requireAuthenticated, requirePermission } = require("../middleware/authMiddleware");
+const { requireOperationalShift } = require("../services/shiftAccessService");
 
 const router = express.Router();
 
@@ -16,6 +17,7 @@ router.post("/sessions/refresh", refreshScanSession);
 router.post(
   "/sessions/placement",
   requirePermission("placement.validate"),
+  requireOperationalShift,
   startPlacementScanSession
 );
 router.post(

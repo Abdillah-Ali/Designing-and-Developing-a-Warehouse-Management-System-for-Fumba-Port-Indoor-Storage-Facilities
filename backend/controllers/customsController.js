@@ -370,7 +370,10 @@ const updateStatus = async (req, res, next) => {
   try {
     const transitionKey=cleanString(req.body.transition_key)||STATUS_ACTIONS[cleanString(req.body.status)];
     if(!transitionKey) throw buildError('Customs transition is not valid.',400,null,'WORKFLOW_TRANSITION_NOT_FOUND');
-    const result=await withTransaction((client)=>transitionCustoms({cargoReference:req.params.cargoReference,transitionKey,actor:req.auth,input:{notes:req.body.notes,documents_requested:req.body.documents_requested,confirmed:req.body.confirmed===true||req.body.confirm===true,expected_state_key:req.body.expected_state_key},executor:client}));
+    const result=await withTransaction(async(client)=>{const changed=await transitionCustoms({cargoReference:req.params.cargoReference,transitionKey,actor:req.auth,input:{notes:req.body.notes,documents_requested:req.body.documents_requested,confirmed:req.body.confirmed===true||req.body.confirm===true,expected_state_key:req.body.expected_state_key},executor:client});
+      const { recalculateReleaseReadiness }=require("../services/releaseReadinessService");
+      if(changed.cargo.customs_status==='Cleared') { const { ensureAutomaticInvoice }=require("../services/paymentService"); await ensureAutomaticInvoice({cargoReference:changed.cargo.cargo_id,executor:client}); }
+      await recalculateReleaseReadiness({cargoId:changed.cargo.id,executor:client,actorId:req.auth?.userId,trigger:"CUSTOMS_STATUS_CHANGED"}); return changed;});
     res.json({success:true,data:{...toCustomsCargo({...result.cargo,latest_invoice_status:null,latest_payment_status:null,outstanding_balance:'0.00'}),customs_state_key:result.policy.to_state_key}});
   } catch (error) {
     handleCustomsUpdateError(error, next);

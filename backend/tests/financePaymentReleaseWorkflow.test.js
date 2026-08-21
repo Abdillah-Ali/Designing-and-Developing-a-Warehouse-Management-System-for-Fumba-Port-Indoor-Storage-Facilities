@@ -1,0 +1,11 @@
+const test=require("node:test");const assert=require("node:assert/strict");
+const { evaluate }=require("../services/releaseReadinessService");const { timingSafe }=require("../services/paymentService");
+const ready={registration_status:"Approved",placement_status:"Placed",current_bin_id:2,customs_status:"Cleared",financial_status:"Fully Paid",release_type:"NORMAL",management_release_status:"NOT_REQUIRED",gate_out_status:"Not Released"};
+test("verified financially cleared cargo is ready without dispatch approval",()=>assert.deepEqual(evaluate(ready),{status:"READY_FOR_RELEASE",blockers:[]}));
+test("customs remains mandatory",()=>assert.equal(evaluate({...ready,customs_status:"On Hold"}).status,"WAITING_CUSTOMS"));
+test("registration remains mandatory",()=>assert.equal(evaluate({...ready,registration_status:"Pending Review"}).status,"WAITING_REGISTRATION"));
+test("placement remains mandatory",()=>assert.equal(evaluate({...ready,current_bin_id:null,location:null,placement_status:"Unplaced"}).status,"WAITING_PLACEMENT"));
+test("pending or failed payment remains blocked",()=>assert.equal(evaluate({...ready,financial_status:"Outstanding"}).status,"WAITING_PAYMENT"));
+test("approved Management Release satisfies finance but not Customs",()=>{assert.equal(evaluate({...ready,financial_status:"Outstanding",release_type:"MANAGEMENT",management_release_status:"APPROVED"}).status,"READY_FOR_RELEASE");assert.equal(evaluate({...ready,financial_status:"Outstanding",release_type:"MANAGEMENT",management_release_status:"APPROVED",customs_status:"Pending Inspection"}).status,"WAITING_CUSTOMS")});
+test("released cargo stays released",()=>assert.equal(evaluate({...ready,gate_out_status:"Released"}).status,"RELEASED"));
+test("webhook secret comparison is exact",()=>{assert.equal(timingSafe("secret","secret"),true);assert.equal(timingSafe("secret","wrong"),false);assert.equal(timingSafe("secret","secret-long"),false)});

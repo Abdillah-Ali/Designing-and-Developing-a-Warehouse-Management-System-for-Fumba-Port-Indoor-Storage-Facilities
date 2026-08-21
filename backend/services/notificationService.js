@@ -292,22 +292,20 @@ const getNotificationSummary = async ({ auth, executor = db }) => {
     return result.rows[0]?.count || 0;
   };
 
-  const [active, unread, archived] = await Promise.all([
-    countNotifications((clauses, values) => {
-      addVisibleNotificationClauses(auth, clauses, values);
-    }),
-    countNotifications((clauses, values) => {
-      clauses.push("n.is_read = FALSE");
-      addVisibleNotificationClauses(auth, clauses, values);
-    }),
-    countNotifications((clauses, values) => {
-      addVisibleNotificationClauses(auth, clauses, values, "n", {
-        includeArchived: true,
-        includeExpired: true
-      });
-      clauses.push("n.archived_at IS NOT NULL");
-    })
-  ]);
+  const active = await countNotifications((clauses, values) => {
+    addVisibleNotificationClauses(auth, clauses, values);
+  });
+  const unread = await countNotifications((clauses, values) => {
+    clauses.push("n.is_read = FALSE");
+    addVisibleNotificationClauses(auth, clauses, values);
+  });
+  const archived = await countNotifications((clauses, values) => {
+    addVisibleNotificationClauses(auth, clauses, values, "n", {
+      includeArchived: true,
+      includeExpired: true
+    });
+    clauses.push("n.archived_at IS NOT NULL");
+  });
 
   return { active, unread, archived };
 };

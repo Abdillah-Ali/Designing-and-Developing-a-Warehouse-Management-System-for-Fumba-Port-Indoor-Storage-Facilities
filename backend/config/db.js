@@ -12,6 +12,16 @@ const pool = new Pool({
   connectionTimeoutMillis: Number(process.env.DB_CONNECTION_TIMEOUT_MS || 5000)
 });
 
+pool.on("error", (err) => {
+  console.error(JSON.stringify({
+    operation: "database_pool_error",
+    result: "idle_client_error",
+    error_category: err.code || err.name || "pool_error",
+    message: err.message,
+    timestamp: new Date().toISOString()
+  }));
+});
+
 const query = (text, params) => pool.query(text, params);
 
 const testConnection = async () => {

@@ -523,6 +523,20 @@ const sendRows = (res, result) => {
   });
 };
 
+const auditSensitiveKey = /password|token|secret|credential|api[_-]?key|private[_-]?key/i;
+const sanitizeAuditValue = (value) => {
+  if (Array.isArray(value)) return value.map(sanitizeAuditValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key,
+    auditSensitiveKey.test(key) ? "[REDACTED]" : sanitizeAuditValue(item)
+  ]));
+};
+const sanitizeAuditRows = (rows) => rows.map((row) => ({
+  ...row,
+  metadata: sanitizeAuditValue(row.metadata || {})
+}));
+
 const getClientIp = (req) => (
   req.ip
   || req.socket?.remoteAddress
@@ -1379,7 +1393,7 @@ const getShifts = async (req, res, next) => {
 
 const getAuditLogs = async (req, res, next) => {
   try {
-    sendRows(res, await fetchAuditLogs({
+    const result = await fetchAuditLogs({
       action: cleanString(req.query.action),
       module: cleanString(req.query.module),
       user: cleanString(req.query.user),
@@ -1391,7 +1405,8 @@ const getAuditLogs = async (req, res, next) => {
       warehouse: cleanString(req.query.warehouse),
       search: cleanString(req.query.search),
       limit: req.query.limit
-    }));
+    });
+    sendRows(res, { ...result, rows: sanitizeAuditRows(result.rows) });
   } catch (error) {
     next(error);
   }
@@ -1401,7 +1416,7 @@ const exportAuditLogs = async (req, res, next) => {
   try {
     const result = await fetchAuditLogs({ action: cleanString(req.query.action), module: cleanString(req.query.module), user: cleanString(req.query.user), role: cleanString(req.query.role), date_from: cleanString(req.query.date_from), date_to: cleanString(req.query.date_to), search: cleanString(req.query.search), limit: 500 });
     res.setHeader("Content-Disposition", `attachment; filename="wms-audit-export-${new Date().toISOString().slice(0,10)}.json"`);
-    res.json({ success: true, exported_at: new Date().toISOString(), count: result.rowCount, data: result.rows });
+    res.json({ success: true, exported_at: new Date().toISOString(), count: result.rowCount, data: sanitizeAuditRows(result.rows) });
   } catch (error) { next(error); }
 };
 
@@ -1489,7 +1504,7 @@ const login = async (req, res, next) => {
       throw buildError("Legacy scanner users cannot sign in. Create scanner credentials for a normal user.", 403);
     }
 
-    if (!isScannerLogin && !["system_administrator","warehouse_staff","warehouse_supervisor","finance_officer","customs_officer","gate_officer","management"].includes(user.role_key)) {
+    if (!isScannerLogin && !["system_administrator","warehouse_staff","warehouse_supervisor","finance_officer","customs_officer","gate_officer","management","auditor"].includes(user.role_key)) {
       throw buildError("No portal is currently available for this role.", 403);
     }
 

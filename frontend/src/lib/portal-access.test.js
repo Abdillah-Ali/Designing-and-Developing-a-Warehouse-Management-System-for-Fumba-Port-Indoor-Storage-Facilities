@@ -81,6 +81,17 @@ describe("portal access", () => {
     expect(isPathAllowedForRole(PORTAL_ROLES.WAREHOUSE_SUPERVISOR, "/supervisor/staff/placement-logs")).toBe(false);
   });
 
+  it("allows every visible Management and Auditor portal route while rejecting cross-portal URLs", () => {
+    ["/management", "/management/dashboard", "/management/cargo", "/management/release-requests", "/management/reports", "/management/notifications", "/management/profile"].forEach((path) => {
+      expect(isPathAllowedForRole(PORTAL_ROLES.MANAGEMENT, path)).toBe(true);
+    });
+    ["/auditor", "/auditor/dashboard", "/auditor/logs", "/auditor/reports", "/auditor/cargo", "/auditor/system-changes", "/auditor/notifications", "/auditor/profile"].forEach((path) => {
+      expect(isPathAllowedForRole(PORTAL_ROLES.AUDITOR, path)).toBe(true);
+    });
+    expect(isPathAllowedForRole(PORTAL_ROLES.AUDITOR, "/management/release-requests")).toBe(false);
+    expect(isPathAllowedForRole(PORTAL_ROLES.MANAGEMENT, "/auditor/logs")).toBe(false);
+  });
+
   it("resolves portal ownership from the URL root", () => {
     expect(getPortalRoleForPath("/admin/audit/logs")).toBe(PORTAL_ROLES.SYSTEM_ADMIN);
     expect(getPortalRoleForPath("/staff/storage/bins")).toBe(PORTAL_ROLES.WAREHOUSE_STAFF);

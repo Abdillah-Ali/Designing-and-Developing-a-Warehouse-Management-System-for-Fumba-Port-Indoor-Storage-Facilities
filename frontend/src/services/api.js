@@ -713,6 +713,12 @@ export const activateFinanceTariff = (reference) => request(`/finance/tariffs/${
 export const deactivateFinanceTariff = (reference) => request(`/finance/tariffs/${encodeURIComponent(reference)}/deactivate`, {
   method: "POST"
 });
+export const submitFinanceTariff = (reference) => request(`/finance/tariffs/${encodeURIComponent(reference)}/submit`, { method: "POST" });
+export const getManagementTariffApprovals = (params={}) => request(`/management/tariff-approvals${buildQuerySuffix(params)}`);
+export const approveManagementTariff = (reference) => request(`/management/tariff-approvals/${encodeURIComponent(reference)}/approve`, { method:"POST", body:{} });
+export const rejectManagementTariff = (reference,reason) => request(`/management/tariff-approvals/${encodeURIComponent(reference)}/reject`, { method:"POST", body:{reason} });
+export const initiateGatewayPayment = (invoiceNumber,payload={}) => request(`/payments/invoices/${encodeURIComponent(invoiceNumber)}/initiate`, { method:"POST", body:payload });
+export const getCargoToRelease = () => request("/release-readiness/cargo-to-release");
 export const getFinanceReports = (params = {}) => request(`/finance/reports${buildQuerySuffix(params)}`);
 
 // Customs endpoints

@@ -96,11 +96,9 @@ const navigation = [
     ]
   },
   {
-    label: "Dispatch Authorization",
+    label: "Release Exceptions",
     icon: Truck,
     children: [
-      { label: "Dispatch Requests", icon: ClipboardCheck, to: "/supervisor/dispatch/requests" },
-      { label: "Approved Dispatch", icon: CheckCircle2, to: "/supervisor/dispatch/approved" },
       { label: "Emergency Releases", icon: AlertTriangle, to: "/supervisor/dispatch/emergency-releases" }
     ]
   },
@@ -1143,8 +1141,6 @@ function SupervisorPortal() {
         <Route path="warehouse/racks" element={<WarehousePage scope="racks" />} />
         <Route path="warehouse/levels" element={<WarehousePage scope="levels" />} />
         <Route path="warehouse/bins" element={<WarehousePage scope="bins" />} />
-        <Route path="dispatch/requests" element={<DispatchPage />} />
-        <Route path="dispatch/approved" element={<DispatchPage approved />} />
         <Route path="dispatch/emergency-releases" element={<EmergencyReleasePage />} />
         <Route path="notifications" element={<NotificationsPage />} />
         <Route path="profile" element={<ProfilePage />} />

@@ -46,13 +46,33 @@ BEGIN
 END;
 $$;
 
-INSERT INTO roles (role_name, role_description, public_reference)
-VALUES
-  ('Finance Officer', 'Finance access for cargo charges, invoices, payments, tariffs, and financial reports.', generate_role_public_reference()),
-  ('Customs Officer', 'Customs access for cargo inspection, hold, document request, rejection, and clearance workflows.', generate_role_public_reference()),
-  ('Gate Officer', 'Gate access for release validation, gate-out records, and emergency release requests.', generate_role_public_reference())
-ON CONFLICT (role_name) DO UPDATE
-SET role_description = EXCLUDED.role_description;
+-- This migration is also replayed by the legacy upgrade path after RBAC
+-- migration 021 has made role_key mandatory. Keep it valid both before and
+-- after that schema change without changing any existing role identities.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'roles' AND column_name = 'role_key'
+  ) THEN
+    INSERT INTO roles (role_name, role_description, public_reference, role_key)
+    VALUES
+      ('Finance Officer', 'Finance access for cargo charges, invoices, payments, tariffs, and financial reports.', generate_role_public_reference(), 'finance_officer'),
+      ('Customs Officer', 'Customs access for cargo inspection, hold, document request, rejection, and clearance workflows.', generate_role_public_reference(), 'customs_officer'),
+      ('Gate Officer', 'Gate access for release validation, gate-out records, and emergency release requests.', generate_role_public_reference(), 'gate_officer')
+    ON CONFLICT (role_name) DO UPDATE
+    SET role_description = EXCLUDED.role_description;
+  ELSE
+    INSERT INTO roles (role_name, role_description, public_reference)
+    VALUES
+      ('Finance Officer', 'Finance access for cargo charges, invoices, payments, tariffs, and financial reports.', generate_role_public_reference()),
+      ('Customs Officer', 'Customs access for cargo inspection, hold, document request, rejection, and clearance workflows.', generate_role_public_reference()),
+      ('Gate Officer', 'Gate access for release validation, gate-out records, and emergency release requests.', generate_role_public_reference())
+    ON CONFLICT (role_name) DO UPDATE
+    SET role_description = EXCLUDED.role_description;
+  END IF;
+END;
+$$;
 
 CREATE TABLE IF NOT EXISTS permissions (
   permission_key VARCHAR(120) PRIMARY KEY,

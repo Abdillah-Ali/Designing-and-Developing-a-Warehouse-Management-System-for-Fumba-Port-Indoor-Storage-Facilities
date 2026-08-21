@@ -190,14 +190,13 @@ const getDashboard = async (req, res, next) => {
     const [counts, releasedToday, emergencies] = await Promise.all([
       db.query(
         `SELECT
-           COUNT(*) FILTER (WHERE dr.status = 'Approved' AND c.gate_out_status = 'Not Released')::int AS awaiting_gate_release,
-           COUNT(*) FILTER (WHERE dr.status = 'Approved' AND c.customs_status = 'Cleared' AND c.financial_status = 'Fully Paid' AND c.registration_status = 'Approved' AND c.gate_out_status = 'Not Released' AND ((c.release_type='NORMAL' AND c.management_release_status='NOT_REQUIRED') OR (c.release_type='MANAGEMENT' AND c.management_release_status='APPROVED')))::int AS ready_for_release,
-           COUNT(*) FILTER (WHERE dr.status = 'Approved' AND c.customs_status <> 'Cleared' AND c.gate_out_status = 'Not Released')::int AS blocked_by_customs,
-           COUNT(*) FILTER (WHERE dr.status = 'Approved' AND c.financial_status <> 'Fully Paid' AND c.gate_out_status = 'Not Released')::int AS blocked_by_payment,
+           COUNT(*) FILTER (WHERE c.release_readiness_status = 'READY_FOR_RELEASE' AND c.gate_out_status = 'Not Released')::int AS awaiting_gate_release,
+           COUNT(*) FILTER (WHERE c.release_readiness_status = 'READY_FOR_RELEASE' AND c.gate_out_status = 'Not Released')::int AS ready_for_release,
+           COUNT(*) FILTER (WHERE c.customs_status <> 'Cleared' AND c.gate_out_status = 'Not Released')::int AS blocked_by_customs,
+           COUNT(*) FILTER (WHERE c.financial_status <> 'Fully Paid' AND c.management_release_status<>'APPROVED' AND c.gate_out_status = 'Not Released')::int AS blocked_by_payment,
            COUNT(*) FILTER (WHERE c.registration_status <> 'Approved' AND c.gate_out_status = 'Not Released')::int AS blocked_by_supervisor,
            COUNT(*) FILTER (WHERE c.release_type='MANAGEMENT' AND c.management_release_status<>'APPROVED' AND c.gate_out_status='Not Released')::int AS blocked_by_management
          FROM cargo c
-         LEFT JOIN dispatch_requests dr ON dr.cargo_id = c.id AND dr.status = 'Approved'
          WHERE c.is_deleted = FALSE`
       ),
       db.query(
@@ -278,7 +277,7 @@ const getEligibility = async (req, res, next) => {
         release_type: cargo.release_type,
         management_release_status: cargo.management_release_status,
         charge_treatment: cargo.management_release_status === "APPROVED" ? "No Charges / Waived" : "Normal or provisional warehouse charges",
-        supervisor_dispatch_approval: eligibility.dispatch_reference ? "Approved" : "Missing",
+        supervisor_dispatch_approval: "Not required (automatic readiness workflow)",
         gate_out_status: cargo.gate_out_status,
         location: cargo.location,
         ...eligibility

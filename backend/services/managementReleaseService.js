@@ -69,6 +69,7 @@ const decide = async ({ requestRef, decision, remarks, actor, executor }) => {
   const updated={...cargo,management_release_status:decision};
   await notify(updated,decision===STATUS.APPROVED?"Management Release approved — other release controls still apply":"Management Release rejected — Gate-Out remains blocked pending Supervisor action",`${cargo.cargo_id}${note?`: ${note}`:""}`,{userIds:[cargo.release_requested_by].filter(Boolean)},actor?.userId,executor);
   if(decision===STATUS.APPROVED) await notify(updated,"Management Release approved — warehouse charges waived",`${cargo.cargo_id}: review existing invoices/payments if applicable. Waived ${amountFromCents(BigInt(Math.round(Number(historical)*100)))}.`,{roleKey:"finance_officer"},actor?.userId,executor);
+  await require("./releaseReadinessService").recalculateReleaseReadiness({cargoId:cargo.cargo_record_id,executor,actorId:actor?.userId,trigger:"MANAGEMENT_RELEASE_DECISION"});
   return {request_reference:requestRef,cargo_reference:cargo.cargo_id,management_release_status:decision,historical_accrued_amount:historical,waived_amount:decision===STATUS.APPROVED?historical:"0.00",finance_review_required:financeReview,decision_remarks:note||null};
 };
 

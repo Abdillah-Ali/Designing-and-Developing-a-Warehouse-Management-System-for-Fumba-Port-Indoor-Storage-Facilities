@@ -27,12 +27,16 @@ const customsRoutes = require("./routes/customsRoutes");
 const gateRoutes = require("./routes/gateRoutes");
 const adminRoutes = require("./routes/adminRoutes");
 const managementRoutes = require("./routes/managementRoutes");
+const paymentRoutes = require("./routes/paymentRoutes");
+const releaseReadinessRoutes = require("./routes/releaseReadinessRoutes");
+const { webhook: paymentWebhook } = require("./controllers/paymentController");
 const cargoRegistrationFormRoutes = require("./routes/cargoRegistrationFormRoutes");
 const {
   errorHandler,
   notFoundHandler
 } = require("./middleware/errorMiddleware");
 const { requirePortalAccess } = require("./middleware/authMiddleware");
+const { requireOperationalShift } = require("./services/shiftAccessService");
 const { securityHeaders } = require("./middleware/securityHeaders");
 const { validateRequestShape } = require("./middleware/requestValidation");
 const { minimizeJsonResponses } = require("./middleware/responseMinimization");
@@ -130,8 +134,11 @@ app.use("/api/auth", authRoutes);
 app.use("/api/bootstrap", bootstrapRoutes);
 app.use("/api/profile", profileRoutes);
 app.use("/api/scanner", scannerRoutes);
+// Provider callbacks authenticate with the configured webhook secret, not a WMS user session.
+app.post("/api/payments/webhook", paymentWebhook);
 
 app.use("/api", requirePortalAccess);
+app.use("/api", requireOperationalShift);
 
 app.use("/api/cargo", cargoRoutes);
 app.use("/api/zones", zoneRoutes);
@@ -155,6 +162,8 @@ app.use("/api/finance", financeRoutes);
 app.use("/api/customs", customsRoutes);
 app.use("/api/gate", gateRoutes);
 app.use("/api/management", managementRoutes);
+app.use("/api/payments", paymentRoutes);
+app.use("/api/release-readiness", releaseReadinessRoutes);
 app.use("/api/cargo-registration-form", cargoRegistrationFormRoutes);
 
 app.use(notFoundHandler);

@@ -12,6 +12,7 @@ const PORTAL_ROLES = Object.freeze({
   CUSTOMS_OFFICER: "customs-officer",
   GATE_OFFICER: "gate-officer",
   MANAGEMENT: "management",
+  AUDITOR: "auditor",
   SCANNER: "scanner"
 });
 
@@ -39,6 +40,7 @@ const roleAliases = Object.freeze({
   "gate-officer": PORTAL_ROLES.GATE_OFFICER,
   "gate officer": PORTAL_ROLES.GATE_OFFICER,
   "management": PORTAL_ROLES.MANAGEMENT,
+  "auditor": PORTAL_ROLES.AUDITOR,
   "scanner": PORTAL_ROLES.SCANNER,
   [roleNames.systemAdmin.toLowerCase()]: PORTAL_ROLES.SYSTEM_ADMIN,
   [roleNames.warehouseStaff.toLowerCase()]: PORTAL_ROLES.WAREHOUSE_STAFF,
@@ -47,6 +49,7 @@ const roleAliases = Object.freeze({
   [roleNames.customsOfficer.toLowerCase()]: PORTAL_ROLES.CUSTOMS_OFFICER,
   [roleNames.gateOfficer.toLowerCase()]: PORTAL_ROLES.GATE_OFFICER,
   [roleNames.management.toLowerCase()]: PORTAL_ROLES.MANAGEMENT,
+  "auditor": PORTAL_ROLES.AUDITOR,
   [roleNames.scanner.toLowerCase()]: PORTAL_ROLES.SCANNER
 });
 
@@ -282,6 +285,19 @@ const portalPermissions = Object.freeze({
   ]),
   [PORTAL_ROLES.MANAGEMENT]: Object.freeze([
     { methods: ["GET"], pattern: /^\/management\/(?:dashboard|reports)$/ },
+    { methods: ["GET"], pattern: /^\/management\/release-requests(?:\/[^/]+)?$/ },
+    { methods: ["POST"], pattern: /^\/management\/release-requests\/[^/]+\/(?:approve|reject)$/ },
+    { methods: ["GET"], pattern: /^\/cargo(?:\/[^/]+)?$/ },
+    { methods: ["GET"], pattern: /^\/cargo\/[^/]+\/placement-activity$/ },
+    { methods: ["GET", "PATCH", "DELETE"], pattern: /^\/notifications(?:\/.*)?$/ },
+    { methods: ["GET"], pattern: /^\/profile$/ },
+    { methods: ["PATCH"], pattern: /^\/profile(?:\/change-password)?$/ }
+  ]),
+  [PORTAL_ROLES.AUDITOR]: Object.freeze([
+    { methods: ["GET"], pattern: /^\/audit-logs(?:\/export)?$/ },
+    { methods: ["GET"], pattern: /^\/management\/(?:dashboard|reports)$/ },
+    { methods: ["GET"], pattern: /^\/cargo(?:\/[^/]+)?$/ },
+    { methods: ["GET"], pattern: /^\/cargo\/[^/]+\/placement-activity$/ },
     { methods: ["GET", "PATCH", "DELETE"], pattern: /^\/notifications(?:\/.*)?$/ },
     { methods: ["GET"], pattern: /^\/profile$/ },
     { methods: ["PATCH"], pattern: /^\/profile(?:\/change-password)?$/ }

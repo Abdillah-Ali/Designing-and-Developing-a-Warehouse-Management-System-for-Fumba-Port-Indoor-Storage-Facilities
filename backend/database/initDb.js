@@ -11,6 +11,7 @@ const {
   ensureSchemaMigrationsTable
 } = require("./migrationRunner");
 const { ensureRolePublicReferences } = require("./rolePublicReferences");
+const { ensureStandardRolePermissions } = require("./ensureRolePermissions");
 
 dotenv.config({ path: path.join(__dirname, "../.env") });
 
@@ -181,6 +182,8 @@ const applySchema = async () => {
   const uatSrsClosureMigrationPath = path.join(__dirname, "migrations", "20260815_uat_srs_closure.sql");
   const managementReleaseMigrationPath = path.join(__dirname, "migrations", "20260816_management_release_workflow.sql");
   const managementReleaseGateMigrationPath = path.join(__dirname, "migrations", "20260816_management_release_gate_authority.sql");
+  const securityHardeningMigrationPath = path.join(__dirname, "migrations", "20260815_security_hardening.sql");
+  const auditorPortalCompletionMigrationPath = path.join(__dirname, "migrations", "20260817_auditor_portal_completion.sql");
   const financeCustomsGateMigration = await fs.readFile(financeCustomsGateMigrationPath, "utf8");
   const zoneWarehouseScopeMigration = await fs.readFile(zoneWarehouseScopeMigrationPath, "utf8");
   const warehouseConfigurationMigration = await fs.readFile(warehouseConfigurationMigrationPath, "utf8");
@@ -216,7 +219,6 @@ const applySchema = async () => {
     await moveIncompatibleTables(client);
     await ensureSchemaMigrationsTable(client);
     await applySqlMigration(client, "000_base_schema.sql", schema);
-    await seedOperationalConfiguration(client);
     await applySqlMigration(client, "001_update_zones_warehouse_scoped.sql", zoneWarehouseScopeMigration);
     await applySqlMigration(client, "002_warehouse_configuration_srs.sql", warehouseConfigurationMigration);
     await applySqlMigration(client, "003_finance_customs_gate_workflows.sql", financeCustomsGateMigration);
@@ -238,6 +240,10 @@ const applySchema = async () => {
     await applySqlMigration(client, "019_auth_refresh_token_sessions.sql", authRefreshTokenSessionsMigration);
     await applySqlMigration(client, "020_cargo_registration_configuration_authority.sql", cargoRegistrationAuthorityMigration);
     await applySqlMigration(client, "021_rbac_authorization_source_of_truth.sql", rbacAuthorizationMigration);
+    // role_key and system_protected are introduced by migration 021. Create
+    // configured roles only after that migration has established the current
+    // role model, while still allowing later migrations to assign permissions.
+    await seedOperationalConfiguration(client);
     await applySqlMigration(client, "022_rbac_administrator_explicit_permissions.sql", rbacAdministratorHardeningMigration);
     await applySqlMigration(client, "023_bin_rule_engine_authority.sql", binRuleEngineAuthorityMigration);
     await applySqlMigration(client, "024_cargo_workflow_policy.sql", cargoWorkflowPolicyMigration);
@@ -247,8 +253,10 @@ const applySchema = async () => {
     await applySqlMigration(client, "028_scanner_policy_authority.sql", scannerPolicyAuthorityMigration);
     await applySqlMigration(client, "029_notification_policy_authority.sql", notificationPolicyAuthorityMigration);
     await applySqlMigration(client, "030_uat_srs_closure.sql", uatSrsClosureMigration);
+    await applySqlMigration(client, "031_security_hardening.sql", await fs.readFile(securityHardeningMigrationPath, "utf8"));
     await applySqlMigration(client, "032_management_release_workflow.sql", await fs.readFile(managementReleaseMigrationPath, "utf8"));
     await applySqlMigration(client, "033_management_release_gate_authority.sql", await fs.readFile(managementReleaseGateMigrationPath, "utf8"));
+    await applySqlMigration(client, "034_auditor_portal_completion.sql", await fs.readFile(auditorPortalCompletionMigrationPath, "utf8"));
     await client.query(
       `INSERT INTO role_permissions (role_id, permission_key)
        SELECT r.id, p.permission_key
@@ -277,16 +285,19 @@ const seedOperationalConfiguration = async (client) => {
   ]);
 
   for (const role of defaultRoleDefinitions) {
-    const roleKey = protectedRoleKeys.get(role.name) || `custom_${String(role.name).toLowerCase().replace(/[^a-z0-9]+/g, "_")}`;
+    const protectedRoleKey = protectedRoleKeys.get(role.name);
+    const roleKey = protectedRoleKey || `custom_${String(role.name).toLowerCase().replace(/[^a-z0-9]+/g, "_")}`;
     await client.query(
-      `INSERT INTO roles (role_name, role_description, public_reference, role_key)
-       VALUES ($1, $2, generate_role_public_reference(), $3)
+      `INSERT INTO roles (role_name, role_description, public_reference, role_key, system_protected)
+       VALUES ($1, $2, generate_role_public_reference(), $3, $4)
        ON CONFLICT (role_name) DO UPDATE
-       SET role_description = EXCLUDED.role_description`,
-      [role.name, role.description || null, roleKey]
+       SET role_description = EXCLUDED.role_description,
+           system_protected = EXCLUDED.system_protected`,
+      [role.name, role.description || null, roleKey, Boolean(protectedRoleKey)]
     );
   }
 
+  await ensureStandardRolePermissions(client);
 };
 
 const getTableColumns = async (client, tableName) => {
