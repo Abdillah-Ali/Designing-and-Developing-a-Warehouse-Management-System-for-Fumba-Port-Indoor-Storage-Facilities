@@ -25,6 +25,10 @@ test("denies a future-effective shift", () => assert.deepEqual(
   evaluateShiftAccess(active({ effective_date: "2026-08-21" }), at(12 * 60)),
   { allowed: false, code: "OPERATIONAL_SHIFT_NOT_EFFECTIVE", message: "The assigned operational shift is not effective yet." }
 ));
+test("accepts a PostgreSQL Date object that is already effective", () => assert.equal(
+  evaluateShiftAccess(active({ effective_date: new Date("2026-08-19T00:00:00.000Z") }), at(12 * 60, "2026-08-21")).allowed,
+  true
+));
 test("honors the configured end-of-shift grace period", () => assert.equal(evaluateShiftAccess(active({ grace_period_minutes: 15 }), at(16 * 60 + 10)).allowed, true));
 test("staff and linked scanner operational writes are controlled", () => {
   assert.equal(isShiftControlledRequest({ method: "POST", originalUrl: "/api/cargo", auth: { role: "warehouse-staff" } }), true);

@@ -22,7 +22,7 @@ const ensureStandardRolePermissions = async (client) => {
         'gate.history.view', 'gate.emergency_release.approve', 'notifications.view',
         'notifications.manage', 'management_release.view', 'management_release.request'
       )) OR
-      (r.role_key = 'finance_officer' AND (p.permission_key LIKE 'finance.%' OR p.permission_key IN ('cargo.registration_metadata.view', 'notifications.view', 'notifications.manage'))) OR
+      (r.role_key = 'finance_officer' AND ((p.permission_key LIKE 'finance.%' AND p.permission_key NOT IN ('finance.invoices.create', 'finance.invoices.issue', 'finance.payments.confirm')) OR p.permission_key IN ('cargo.registration_metadata.view', 'notifications.view', 'notifications.manage'))) OR
       (r.role_key = 'customs_officer' AND (p.permission_key LIKE 'customs.%' OR p.permission_key IN ('cargo.registration_metadata.view', 'notifications.view', 'notifications.manage'))) OR
       (r.role_key = 'gate_officer' AND (p.permission_key LIKE 'gate.%' OR p.permission_key IN ('cargo.registration_metadata.view', 'notifications.view', 'notifications.manage'))) OR
       (r.role_key = 'management' AND p.permission_key IN ('management.dashboard.view', 'management.reports.view', 'cargo.registration_metadata.view', 'notifications.view', 'notifications.manage', 'management_release.view', 'management_release.decide')) OR

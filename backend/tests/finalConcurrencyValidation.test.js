@@ -6,7 +6,7 @@ const db = require("../config/db");
 const API = process.env.FPWMS_VALIDATION_API || "http://127.0.0.1:5000/api";
 const PREFIX = `FPWMS-VAL-CONC-${Date.now()}-${process.pid}`;
 const SHORT_TAG = String(Date.now()).slice(-5);
-const ids = { cargo: [], bins: [], users: [], warehouse: null, tariff: null, tariffVersion: null };
+const ids = { cargo: [], bins: [], users: [], warehouse: null, tariff: null, tariffVersion: null, shift: null };
 const evidence = [];
 
 const request = async (method, path, token, body) => {
@@ -121,7 +121,7 @@ test("final validation closure executes real authenticated HTTP races and Gate r
     const binRelocateTo = await createBin(level.id, "RT", 100);
     const binGateSingle = await createBin(level.id, "GS", 100);
 
-    const roles = (await q("SELECT id,role_key FROM roles WHERE role_key=ANY($1)", [["warehouse_staff","warehouse_supervisor","finance_officer","customs_officer","gate_officer"]])).rows;
+    const roles = (await q("SELECT id,role_key FROM roles WHERE role_key=ANY($1)", [["system_administrator","warehouse_staff","warehouse_supervisor","finance_officer","customs_officer","gate_officer"]])).rows;
     const roleId = Object.fromEntries(roles.map((row) => [row.role_key, row.id]));
     const users = {};
     for (const roleKey of Object.keys(roleId)) {
@@ -131,6 +131,12 @@ test("final validation closure executes real authenticated HTTP races and Gate r
       [`${PREFIX} ${roleKey}`, username, `${username}@validation.invalid`, `+2559${String(Date.now()).slice(-8)}`, passwordHash, roleId[roleKey], warehouse.id])).rows[0];
       ids.users.push(user.id); users[roleKey] = { ...user, token: await login(username) };
     }
+
+    const shift = (await q(`INSERT INTO shifts(shift_name,shift_code,public_reference,start_time,end_time,status)
+      VALUES($1,$2,$3,'00:00','23:59','active') RETURNING *`,
+      [`${PREFIX} Shift`, `S${shortCode}`, `SHIFT-${PREFIX}`])).rows[0];
+    ids.shift = shift.id;
+    await q("UPDATE users SET shift_id=$1 WHERE id=$2", [shift.id, users.warehouse_staff.id]);
 
     const tariff = (await q("INSERT INTO tariffs(public_reference,tariff_name,cargo_type,charging_unit,created_by) VALUES($1,$2,'General Goods','per_cargo_per_day',$3) RETURNING *", [`${PREFIX}-TRF`, `${PREFIX} Tariff`, users.finance_officer.id])).rows[0];
     ids.tariff = tariff.id;
@@ -202,7 +208,7 @@ test("final validation closure executes real authenticated HTTP races and Gate r
     await t.test("C03 duplicate invoice period", async () => {
       const cargo = await createCargo("C03", users.warehouse_staff.id, { charge_start_at:new Date(Date.now()-48*3600_000) });
       const end = new Date().toISOString();
-      const results = await race(() => request("POST","/finance/invoices/draft",users.finance_officer.token,{cargo_reference:cargo.cargo_id,billing_period_end:end}), () => request("POST","/finance/invoices/draft",users.finance_officer.token,{cargo_reference:cargo.cargo_id,billing_period_end:end}));
+      const results = await race(() => request("POST","/finance/invoices/draft",users.system_administrator.token,{cargo_reference:cargo.cargo_id,billing_period_end:end}), () => request("POST","/finance/invoices/draft",users.system_administrator.token,{cargo_reference:cargo.cargo_id,billing_period_end:end}));
       const state = await scalar("SELECT count(*)::int invoice_count,coalesce(sum(total_amount),0)::text obligation FROM invoices WHERE cargo_id=$1 AND status<>'Cancelled'",[cargo.id]);
       const audits = await scalar("SELECT count(*)::int n FROM audit_logs WHERE metadata->>'cargo_reference'=$1 AND action IN ('GENERATE_DRAFT_INVOICE','REGENERATE_DRAFT_INVOICE')",[cargo.cargo_id]);
       invoiceFixture = { cargo, invoiceNumber:results.find((r)=>r.status===201)?.payload?.data?.invoice_number };
@@ -212,12 +218,12 @@ test("final validation closure executes real authenticated HTTP races and Gate r
 
     await t.test("C04 double payment confirmation", async () => {
       assert.ok(invoiceFixture?.invoiceNumber);
-      await request("POST",`/finance/invoices/${invoiceFixture.invoiceNumber}/issue`,users.finance_officer.token,{});
+      await request("POST",`/finance/invoices/${invoiceFixture.invoiceNumber}/issue`,users.system_administrator.token,{});
       const invoice = await scalar("SELECT * FROM invoices WHERE public_invoice_number=$1",[invoiceFixture.invoiceNumber]);
-      const recorded = await request("POST","/finance/payments",users.finance_officer.token,{invoice_number:invoiceFixture.invoiceNumber,amount:invoice.total_amount,bank_name:"Validation Bank",bank_reference:`${PREFIX}-BANK-C04`,payment_date:new Date().toISOString()});
+      const recorded = await request("POST","/finance/payments",users.system_administrator.token,{invoice_number:invoiceFixture.invoiceNumber,amount:invoice.total_amount,bank_name:"Validation Bank",bank_reference:`${PREFIX}-BANK-C04`,payment_date:new Date().toISOString()});
       assert.equal(recorded.status,201,JSON.stringify(recorded));
       const ref=recorded.payload.data.payment_reference;
-      const results=await race(()=>request("POST",`/finance/payments/${ref}/confirm`,users.finance_officer.token,{}),()=>request("POST",`/finance/payments/${ref}/confirm`,users.finance_officer.token,{}));
+      const results=await race(()=>request("POST",`/finance/payments/${ref}/confirm`,users.system_administrator.token,{}),()=>request("POST",`/finance/payments/${ref}/confirm`,users.system_administrator.token,{}));
       const state=await scalar("SELECT p.status,p.confirmed_at,i.amount_paid::text,i.outstanding_balance::text FROM payments p JOIN invoices i ON i.id=p.invoice_id WHERE p.public_reference=$1",[ref]);
       const audits=await scalar("SELECT count(*)::int n FROM audit_logs WHERE action='CONFIRM_PAYMENT' AND metadata->>'entity_reference'=$1",[ref]);
       assert.equal(state.status,"Confirmed"); assert.equal(Number(state.amount_paid),Number(invoice.total_amount)); assert.equal(Number(state.outstanding_balance),0); assert.equal(audits.n,1);
@@ -260,7 +266,7 @@ test("final validation closure executes real authenticated HTTP races and Gate r
 
     await t.test("C07 double Gate release", async () => {
       const fixture=await addPlacedFixture("C07",users.warehouse_staff.id,binGate);
-      await financiallyClear(fixture.cargo,"C07",users.finance_officer.token);
+      await financiallyClear(fixture.cargo,"C07",users.system_administrator.token);
       const body={vehicle_number:"VAL-001",driver_name:"Validation Driver",gate_notes:"concurrency validation"};
       const results=await race(()=>request("POST",`/gate/cargo/${fixture.cargo.cargo_id}/gate-out`,users.gate_officer.token,body),()=>request("POST",`/gate/cargo/${fixture.cargo.cargo_id}/gate-out`,users.gate_officer.token,body));
       const state=await scalar(`SELECT c.gate_out_status,c.released_at,c.charge_end_at,c.current_bin_id,b.current_weight::text,b.current_volume::text,
@@ -274,7 +280,7 @@ test("final validation closure executes real authenticated HTTP races and Gate r
 
     await t.test("single normal Gate release succeeds", async () => {
       const fixture=await addPlacedFixture("GS",users.warehouse_staff.id,binGateSingle);
-      await financiallyClear(fixture.cargo,"GS",users.finance_officer.token);
+      await financiallyClear(fixture.cargo,"GS",users.system_administrator.token);
       const result=await request("POST",`/gate/cargo/${fixture.cargo.cargo_id}/gate-out`,users.gate_officer.token,{vehicle_number:"VAL-SINGLE",driver_name:"Single Gate Driver"});
       assert.equal(result.status,201,JSON.stringify(result));
       const state=await scalar("SELECT gate_out_status,placement_status,released_at,charge_end_at,current_bin_id FROM cargo WHERE id=$1",[fixture.cargo.id]);
@@ -283,7 +289,7 @@ test("final validation closure executes real authenticated HTTP races and Gate r
 
     await t.test("T01 Gate injected rollback", async () => {
       const fixture=await addPlacedFixture("T01",users.warehouse_staff.id,binRollback);
-      await financiallyClear(fixture.cargo,"T01",users.finance_officer.token);
+      await financiallyClear(fixture.cargo,"T01",users.system_administrator.token);
       const fn=`fpwms_val_fail_${Date.now()}_${process.pid}`.replace(/[^a-zA-Z0-9_]/g,"_");
       try {
         await q(`CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.cargo_id=${Number(fixture.cargo.id)} THEN RAISE EXCEPTION 'FPWMS validation injected Gate failure'; END IF; RETURN NEW; END $$`);
@@ -328,6 +334,7 @@ test("final validation closure executes real authenticated HTTP races and Gate r
       await q("DELETE FROM audit_logs WHERE user_id=ANY($1) OR target_user_id=ANY($1)",[ids.users]);
       await q("DELETE FROM users WHERE id=ANY($1)",[ids.users]);
     }
+    if (ids.shift) await q("DELETE FROM shifts WHERE id=$1",[ids.shift]);
     if (ids.warehouse) {
       await q("DELETE FROM bins WHERE level_id IN (SELECT l.id FROM levels l JOIN racks r ON r.id=l.rack_id JOIN zones z ON z.id=r.zone_id WHERE z.warehouse_id=$1)",[ids.warehouse]);
       await q("DELETE FROM levels WHERE rack_id IN (SELECT r.id FROM racks r JOIN zones z ON z.id=r.zone_id WHERE z.warehouse_id=$1)",[ids.warehouse]);

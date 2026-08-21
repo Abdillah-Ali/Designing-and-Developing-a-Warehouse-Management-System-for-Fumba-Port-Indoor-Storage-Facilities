@@ -82,7 +82,7 @@ describe("portal access", () => {
   });
 
   it("allows every visible Management and Auditor portal route while rejecting cross-portal URLs", () => {
-    ["/management", "/management/dashboard", "/management/cargo", "/management/release-requests", "/management/reports", "/management/notifications", "/management/profile"].forEach((path) => {
+    ["/management", "/management/dashboard", "/management/cargo", "/management/release-requests", "/management/tariff-approvals", "/management/reports", "/management/notifications", "/management/profile"].forEach((path) => {
       expect(isPathAllowedForRole(PORTAL_ROLES.MANAGEMENT, path)).toBe(true);
     });
     ["/auditor", "/auditor/dashboard", "/auditor/logs", "/auditor/reports", "/auditor/cargo", "/auditor/system-changes", "/auditor/notifications", "/auditor/profile"].forEach((path) => {

@@ -102,14 +102,16 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true
 }));
-app.use(express.json({ limit: "15mb" }));
-app.use(validateRequestShape);
 app.use((req, res, next) => {
   if (process.env.NODE_ENV === "production" && !req.secure) {
     return res.status(400).json({ success: false, code: "HTTPS_REQUIRED", message: "HTTPS is required in production." });
   }
   next();
 });
+// Flutterwave v4 signs the exact request bytes. Keep this route isolated from global JSON parsing.
+app.post("/api/payments/webhook", express.raw({ type: "application/json", limit: "1mb" }), paymentWebhook);
+app.use(express.json({ limit: "15mb" }));
+app.use(validateRequestShape);
 
 app.get("/api/health", async (req, res, next) => {
   try {
@@ -134,9 +136,6 @@ app.use("/api/auth", authRoutes);
 app.use("/api/bootstrap", bootstrapRoutes);
 app.use("/api/profile", profileRoutes);
 app.use("/api/scanner", scannerRoutes);
-// Provider callbacks authenticate with the configured webhook secret, not a WMS user session.
-app.post("/api/payments/webhook", paymentWebhook);
-
 app.use("/api", requirePortalAccess);
 app.use("/api", requireOperationalShift);
 

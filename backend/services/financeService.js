@@ -951,7 +951,7 @@ const createTariffVersion = async ({ payload, auth, executor = db }) => {
        penalty_type, penalty_rate, fixed_penalty, effective_from, effective_to,
        is_active, notes, created_by, activated_by, activated_at, approval_status, supporting_notes, minimum_charge
      )
-     VALUES ($1,$2,$3,$4,$5,$18,$19,'storage_started_day','ready',$6,$7,$8,$9,$10,$11,$12,$13,$14,FALSE,$16,$17::integer,
+     VALUES ($1,$2,$3,$4,$5,$18,$19,'storage_started_day','ready',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::integer,
              NULL,NULL,'DRAFT',$20,$21)
      RETURNING *`,
     [

@@ -25,6 +25,10 @@ const logEvent = (level, event = {}) => {
     notification_reference: event.notification_reference,
     result: event.result || (level === "error" ? "failure" : "success"),
     error_category: event.error_category,
+    provider_path: event.provider_path,
+    http_status: event.http_status,
+    provider_code: event.provider_code,
+    provider_message: event.provider_message,
     timestamp: new Date().toISOString()
   });
 

@@ -841,6 +841,10 @@ const runUpdates = async () => {
     await applySqlMigration(client, "034_auditor_portal_completion.sql", auditorPortalCompletionMigration);
     const financePaymentReleaseMigration = fs.readFileSync(path.join(__dirname, "migrations", "20260820_finance_payment_release_workflow.sql"), "utf8");
     await applySqlMigration(client, "035_finance_payment_release_workflow.sql", financePaymentReleaseMigration);
+    const revokeFinanceLegacyManualPermissionsMigration = fs.readFileSync(path.join(__dirname, "migrations", "20260821_revoke_finance_legacy_manual_permissions.sql"), "utf8");
+    await applySqlMigration(client, "036_revoke_finance_legacy_manual_permissions.sql", revokeFinanceLegacyManualPermissionsMigration);
+    const alignCargoCustomsDefaultsMigration = fs.readFileSync(path.join(__dirname, "migrations", "20260821_align_cargo_customs_defaults.sql"), "utf8");
+    await applySqlMigration(client, "037_align_cargo_customs_defaults.sql", alignCargoCustomsDefaultsMigration);
     await ensureStandardRolePermissions(client);
   } catch (error) {
     if (transactionOpen) await client.query("ROLLBACK").catch(() => {});

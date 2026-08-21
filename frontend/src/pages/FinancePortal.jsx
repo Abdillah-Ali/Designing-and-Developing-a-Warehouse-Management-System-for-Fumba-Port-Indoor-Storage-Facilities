@@ -43,6 +43,7 @@ import {
   getFinanceReports,
   getFinanceTariffs,
   issueFinanceInvoice,
+  initiateGatewayPayment,
   logout,
   recordFinancePayment,
   updateFinanceTariff,
@@ -336,6 +337,7 @@ function InvoicesPage() {
   const [status, setStatus] = useState("");
   const [message, setMessage] = useState("");
   const [detail, setDetail] = useState({ invoice: null, data: null, loading: false, error: "" });
+  const [gateway, setGateway] = useState({ invoice: null, submitting: false, error: "", result: null });
   const invoices = useLoad(() => getFinanceInvoices({ status, limit: 100 }), status);
 
   const act = async (action, invoiceNumber) => {
@@ -398,6 +400,7 @@ function InvoicesPage() {
                   render: (row) => (
                     <div className="flex gap-1">
                       <button type="button" onClick={() => openDetail(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">Details</button>
+                      {row.status === "Issued" && row.payment_status !== "Paid" && Number(row.outstanding_balance) > 0 && <button type="button" onClick={() => setGateway({ invoice: row, submitting: false, error: "", result: null })} className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground">Pay with Flutterwave</button>}
                       {row.status === "Draft" && <button type="button" onClick={() => act("issue", row.invoice_number)} className="rounded bg-success px-2 py-1 text-[11px] font-semibold text-success-foreground">Issue</button>}
                       {["Draft", "Issued"].includes(row.status) && <button type="button" onClick={() => act("cancel", row.invoice_number)} className="rounded border border-destructive/30 bg-destructive/10 px-2 py-1 text-[11px] font-semibold text-destructive">Cancel</button>}
                     </div>
@@ -409,7 +412,63 @@ function InvoicesPage() {
         </div>
       </div>
       <InvoiceDetailDialog detail={detail} onClose={() => setDetail({ invoice: null, data: null, loading: false, error: "" })} />
+      <GatewayPaymentDialog
+        state={gateway}
+        onClose={() => setGateway({ invoice: null, submitting: false, error: "", result: null })}
+        onSubmit={async (customer) => {
+          setGateway((current) => ({ ...current, submitting: true, error: "" }));
+          try {
+            const response = await initiateGatewayPayment(gateway.invoice.invoice_number, customer);
+            const result = response.data;
+            setGateway((current) => ({ ...current, submitting: false, result }));
+            setMessage(`Flutterwave charge ${result.charge_id} initiated for ${result.payment_reference}.`);
+            await invoices.refresh();
+          } catch (error) {
+            setGateway((current) => ({ ...current, submitting: false, error: getErrorMessage(error) }));
+          }
+        }}
+      />
     </>
+  );
+}
+
+function GatewayPaymentDialog({ state, onClose, onSubmit }) {
+  const [customer, setCustomer] = useState({ name: "", email: "", phone: "", country_code: "255", network: "" });
+  useEffect(() => {
+    if (state.invoice) setCustomer({ name: state.invoice.owner_information || "", email: "", phone: "", country_code: "255", network: "" });
+  }, [state.invoice]);
+  if (!state.invoice) return null;
+  const result = state.result;
+  const redirectUrl = result?.next_action?.redirect_url?.url;
+  const instruction = result?.next_action?.payment_instruction?.note || result?.next_action?.payment_instruction?.instruction || result?.next_action?.payment_instruction?.message;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+      <div className="w-full max-w-lg rounded-md border border-border bg-card p-4 shadow-xl">
+        <div className="flex items-start justify-between gap-3">
+          <div><div className="text-sm font-semibold">Flutterwave Mobile Money</div><div className="mt-1 font-mono text-xs text-muted-foreground">{state.invoice.invoice_number}</div></div>
+          <button type="button" onClick={onClose} className="rounded border border-border px-2 py-1 text-xs font-semibold">Close</button>
+        </div>
+        {!result ? (
+          <form className="mt-4 grid gap-3 sm:grid-cols-2" onSubmit={(event) => { event.preventDefault(); onSubmit(customer); }}>
+            <FormField label="Customer Name"><input className={inputClass} value={customer.name} onChange={(event) => setCustomer((current) => ({ ...current, name: event.target.value }))} required /></FormField>
+            <FormField label="Email"><input className={inputClass} type="email" value={customer.email} onChange={(event) => setCustomer((current) => ({ ...current, email: event.target.value }))} required /></FormField>
+            <FormField label="Country Code"><input className={inputClass} value={customer.country_code} onChange={(event) => setCustomer((current) => ({ ...current, country_code: event.target.value }))} required /></FormField>
+            <FormField label="Mobile Number"><input className={inputClass} inputMode="tel" placeholder="7XXXXXXXX" value={customer.phone} onChange={(event) => setCustomer((current) => ({ ...current, phone: event.target.value }))} required /></FormField>
+            <FormField label="Mobile Money Network"><input className={inputClass} placeholder="Provider network code" value={customer.network} onChange={(event) => setCustomer((current) => ({ ...current, network: event.target.value }))} required /></FormField>
+            <div className="flex items-end"><button type="submit" disabled={state.submitting} className="h-9 rounded bg-info px-3 text-xs font-semibold text-info-foreground disabled:opacity-50">{state.submitting ? "Initiating..." : "Initiate Sandbox Payment"}</button></div>
+            {state.error && <div className="sm:col-span-2"><ErrorState message={state.error} /></div>}
+          </form>
+        ) : (
+          <div className="mt-4 space-y-3 text-xs">
+            <ReadonlyValue label="WMS Payment Reference" value={result.payment_reference} />
+            <ReadonlyValue label="Flutterwave Charge" value={result.charge_id} />
+            <ReadonlyValue label="Provider Status" value={result.status} />
+            {instruction && <div className="rounded border border-info/30 bg-info/10 p-3">{instruction}</div>}
+            {redirectUrl && <a href={redirectUrl} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center rounded bg-info px-3 font-semibold text-info-foreground">Continue Sandbox Authorization</a>}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

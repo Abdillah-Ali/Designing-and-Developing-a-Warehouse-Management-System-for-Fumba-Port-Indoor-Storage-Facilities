@@ -234,10 +234,11 @@ export const PORTAL_CONFIG = Object.freeze({
       "/management/reports",
       "/management/cargo",
       "/management/release-requests",
+      "/management/tariff-approvals",
       "/management/notifications",
       "/management/profile"
     ]),
-    modules: Object.freeze(["dashboard", "cargo-oversight", "management-release", "executive-reports", "notifications", "profile"])
+    modules: Object.freeze(["dashboard", "cargo-oversight", "management-release", "tariff-approval", "executive-reports", "notifications", "profile"])
   },
   [PORTAL_ROLES.AUDITOR]: {
     label: "Auditor", roleName: "Auditor", displayRoleName: "Auditor", basePath: "/auditor", defaultPath: "/auditor",

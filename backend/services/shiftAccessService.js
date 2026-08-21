@@ -11,6 +11,13 @@ const minutesFromTime = (value) => {
   return (Number(match[1]) * 60) + Number(match[2]);
 };
 
+const dateKey = (value) => {
+  if (!value) return null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString().slice(0, 10);
+  const match = String(value).match(/^(\d{4}-\d{2}-\d{2})/);
+  return match?.[1] || null;
+};
+
 const localOperationalTime = (instant = new Date()) => {
   const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
     timeZone: OPERATIONAL_TIME_ZONE,
@@ -35,7 +42,8 @@ const evaluateShiftAccess = (shift, localTime = localOperationalTime()) => {
   if (String(shift.status || "").toLowerCase() !== "active") {
     return { allowed: false, code: "OPERATIONAL_SHIFT_INACTIVE", message: "The assigned operational shift is inactive." };
   }
-  if (shift.effective_date && String(shift.effective_date).slice(0, 10) > localTime.date) {
+  const effectiveDate = dateKey(shift.effective_date);
+  if (effectiveDate && effectiveDate > localTime.date) {
     return { allowed: false, code: "OPERATIONAL_SHIFT_NOT_EFFECTIVE", message: "The assigned operational shift is not effective yet." };
   }
 
@@ -102,6 +110,7 @@ const requireOperationalShift = async (req, res, next) => {
 
 module.exports = {
   OPERATIONAL_TIME_ZONE,
+  dateKey,
   evaluateShiftAccess,
   isShiftControlledRequest,
   localOperationalTime,

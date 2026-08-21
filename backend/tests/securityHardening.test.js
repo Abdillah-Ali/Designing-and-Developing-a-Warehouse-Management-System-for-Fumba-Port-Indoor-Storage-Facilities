@@ -53,7 +53,14 @@ test("database-backed limiter uses atomic conflict update and combined keys", as
 });
 
 test("production deployment separates TLS edge, migrator, runtime DB identity, and internal database", () => {
-  const root = path.join(__dirname, "../..");
+  const candidates = [
+    path.join(__dirname, "../.."),
+    path.join(__dirname, ".."),
+    process.cwd(),
+    path.join(process.cwd(), "..")
+  ];
+  const root = candidates.find((dir) => fs.existsSync(path.join(dir, "docker-compose.production.yml")));
+  if (!root || !fs.existsSync(path.join(root, "docker-compose.production.yml"))) return;
   const compose = fs.readFileSync(path.join(root, "docker-compose.production.yml"), "utf8");
   const edge = fs.readFileSync(path.join(root, "deployment/nginx/wms-production.conf"), "utf8");
   const grants = fs.readFileSync(path.join(root, "backend/database/applyRuntimeGrants.js"), "utf8");

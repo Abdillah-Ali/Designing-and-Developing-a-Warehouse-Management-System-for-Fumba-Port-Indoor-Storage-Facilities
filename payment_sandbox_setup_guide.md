@@ -1,25 +1,28 @@
-# Flutterwave Sandbox Setup Guide
+# Flutterwave v4 Sandbox Setup Guide
 
-## Provider choice
+The WMS uses Flutterwave v4 Sandbox with OAuth 2.0 client credentials, v4 charges, authoritative charge retrieval, and signed webhooks. Customers remain external to the WMS.
 
-Phase 1 uses Flutterwave Sandbox. It provides a test environment, hosted checkout/mobile-money options suitable for Tanzania, TZS transactions, webhooks, and a server-side transaction verification API. The WMS integrates only this provider; customers remain external and do not receive WMS accounts.
+## Before configuration
 
-## Account and configuration
+Regenerate/reset any sandbox Client Secret, Encryption Key, or other credential that was previously displayed in setup logs, screenshots, or shared documentation. Never reuse exposed credentials and never commit credentials to Git.
 
-1. Create a Flutterwave developer/business account and open its dashboard.
-2. Switch the dashboard to Test Mode.
-3. Copy the test public key and test secret key from API settings.
-4. Create a strong webhook secret hash in the dashboard. Do not reuse an API key.
-5. Copy `backend/.env.example` to `backend/.env` and set `PAYMENT_PROVIDER=flutterwave`, `PAYMENT_ENVIRONMENT=sandbox`, `FLUTTERWAVE_PUBLIC_KEY`, `FLUTTERWAVE_SECRET_KEY`, and `FLUTTERWAVE_WEBHOOK_SECRET`.
-6. Set `PAYMENT_CALLBACK_URL` to the Finance return page. Set `PAYMENT_WEBHOOK_URL` to the public HTTPS webhook address ending in `/api/payments/webhook`.
-7. For Docker, pass those backend-only variables into the backend service environment and restart it. Never add secret keys to React/Vite variables.
-8. For localhost, run the backend on port 5000 and use a secure HTTPS development tunnel (for example Cloudflare Tunnel or ngrok) to `http://localhost:5000`. Put the temporary public address only in environment/dashboard configuration, never source code.
-9. Configure the Flutterwave Test Mode webhook URL and secret hash, then initiate checkout from an issued automatic invoice.
+## Dashboard and backend setup
 
-## Test transactions
+1. Sign in at `developersandbox.flutterwave.com` and obtain the sandbox **Client ID** and **Client Secret**.
+2. Configure a strong independent webhook Secret Hash.
+3. Configure the public HTTPS webhook URL as `https://your-test-host/api/payments/webhook`.
+4. Configure these backend-only variables: `PAYMENT_PROVIDER`, `PAYMENT_ENVIRONMENT`, `FLUTTERWAVE_API_BASE_URL`, `FLUTTERWAVE_OAUTH_TOKEN_URL`, `FLUTTERWAVE_CLIENT_ID`, `FLUTTERWAVE_CLIENT_SECRET`, `FLUTTERWAVE_WEBHOOK_SECRET`, `PAYMENT_CALLBACK_URL`, and `PAYMENT_WEBHOOK_URL`.
+5. Use `https://developersandbox-api.flutterwave.com` as the sandbox API base and `https://idp.flutterwave.com/realms/flutterwave/protocol/openid-connect/token` as the OAuth token URL.
+6. Restart the backend/Docker service. No payment credential belongs in React/Vite configuration.
 
-Use Flutterwave's current Test Mode payment credentials/options shown in its dashboard/documentation. Complete a successful test payment for the exact TZS amount. For FAILED and PENDING scenarios use the provider's Test Mode failure/pending simulation; do not edit WMS payment rows or click “Mark Paid.” Flutterwave must deliver the event and the backend must verify the transaction API response.
+For local webhook testing, expose only backend port 5000 through a secure HTTPS development tunnel such as Cloudflare Tunnel or ngrok. Keep the temporary URL in environment/dashboard configuration, not source code.
 
-Verify delivery in the Flutterwave webhook dashboard. In PostgreSQL inspect `invoices`, `payments`, `payment_webhook_events`, `cargo`, `audit_logs`, and `notifications` using the WMS payment reference. A success with exact amount/currency should show invoice `Paid`, outstanding `0`, cargo `Fully Paid`, then `READY_FOR_RELEASE` when registration, placement, and Customs also pass. Failed/pending/wrong amount/wrong currency remain blocked; partial and overpayments are flagged for reconciliation.
+## Initiating and verifying a test
 
-Production later uses live credentials, a stable HTTPS domain, production webhook secret, production callback URL, provider onboarding/KYC, monitoring, and operational reconciliation. Never copy sandbox or live secrets into Git, logs, frontend code, or database records.
+Initiation accepts existing v4 `customer_id` and `payment_method_id`, or explicit external-customer email, Tanzanian phone number, and mobile-money network so the backend can create them. The backend obtains and caches a short-lived OAuth access token, sends an idempotent `POST /charges`, and stores the returned `chg_...` charge ID separately from the WMS `PAY-...` reference.
+
+Complete or simulate the charge in the v4 sandbox. Flutterwave sends `charge.completed` to the WMS. The backend validates the Base64 HMAC-SHA256 `flutterwave-signature` over the exact raw body, retrieves `GET /charges/{charge_id}`, and checks ID, WMS reference, status, amount, and currency before settlement.
+
+Inspect `payments`, `payment_webhook_events`, `invoices`, `cargo`, `audit_logs`, and `notifications`. Exact `succeeded` payment should settle the invoice and make cargo `Fully Paid`; readiness becomes `READY_FOR_RELEASE` only when registration, placement, and Customs also pass. `pending`, `failed`, `voided`, wrong-reference, wrong-amount, and wrong-currency cases must remain blocked or reconciled.
+
+Production later requires live v4 credentials, a stable HTTPS endpoint, provider onboarding/KYC, monitoring, and secure secret delivery. OAuth tokens remain process-memory only and must never be logged or stored in PostgreSQL.

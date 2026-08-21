@@ -58,6 +58,15 @@ services:
       JWT_SECRET_FILE: /run/secrets/jwt_secret
       CORS_ORIGIN: ${WMS_PUBLIC_ORIGIN:?WMS_PUBLIC_ORIGIN is required}
       CARGO_DOCUMENT_UPLOAD_ROOT: /app/uploads/cargo-documents
+      PAYMENT_PROVIDER: flutterwave
+      PAYMENT_ENVIRONMENT: ${PAYMENT_ENVIRONMENT:-sandbox}
+      FLUTTERWAVE_API_BASE_URL: ${FLUTTERWAVE_API_BASE_URL:-https://developersandbox-api.flutterwave.com}
+      FLUTTERWAVE_OAUTH_TOKEN_URL: ${FLUTTERWAVE_OAUTH_TOKEN_URL:-https://idp.flutterwave.com/realms/flutterwave/protocol/openid-connect/token}
+      FLUTTERWAVE_CLIENT_ID: ${FLUTTERWAVE_CLIENT_ID:?FLUTTERWAVE_CLIENT_ID is required}
+      FLUTTERWAVE_CLIENT_SECRET: ${FLUTTERWAVE_CLIENT_SECRET:?FLUTTERWAVE_CLIENT_SECRET is required}
+      FLUTTERWAVE_WEBHOOK_SECRET: ${FLUTTERWAVE_WEBHOOK_SECRET:?FLUTTERWAVE_WEBHOOK_SECRET is required}
+      PAYMENT_CALLBACK_URL: ${PAYMENT_CALLBACK_URL:?PAYMENT_CALLBACK_URL is required}
+      PAYMENT_WEBHOOK_URL: ${PAYMENT_WEBHOOK_URL:?PAYMENT_WEBHOOK_URL is required}
     secrets: [app_db_password, jwt_secret]
     volumes:
       - cargo_documents:/app/uploads

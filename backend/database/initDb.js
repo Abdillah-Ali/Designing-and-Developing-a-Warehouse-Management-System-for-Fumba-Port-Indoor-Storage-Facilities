@@ -184,6 +184,9 @@ const applySchema = async () => {
   const managementReleaseGateMigrationPath = path.join(__dirname, "migrations", "20260816_management_release_gate_authority.sql");
   const securityHardeningMigrationPath = path.join(__dirname, "migrations", "20260815_security_hardening.sql");
   const auditorPortalCompletionMigrationPath = path.join(__dirname, "migrations", "20260817_auditor_portal_completion.sql");
+  const financePaymentReleaseMigrationPath = path.join(__dirname, "migrations", "20260820_finance_payment_release_workflow.sql");
+  const revokeFinanceLegacyManualPermissionsMigrationPath = path.join(__dirname, "migrations", "20260821_revoke_finance_legacy_manual_permissions.sql");
+  const alignCargoCustomsDefaultsMigrationPath = path.join(__dirname, "migrations", "20260821_align_cargo_customs_defaults.sql");
   const financeCustomsGateMigration = await fs.readFile(financeCustomsGateMigrationPath, "utf8");
   const zoneWarehouseScopeMigration = await fs.readFile(zoneWarehouseScopeMigrationPath, "utf8");
   const warehouseConfigurationMigration = await fs.readFile(warehouseConfigurationMigrationPath, "utf8");
@@ -257,6 +260,9 @@ const applySchema = async () => {
     await applySqlMigration(client, "032_management_release_workflow.sql", await fs.readFile(managementReleaseMigrationPath, "utf8"));
     await applySqlMigration(client, "033_management_release_gate_authority.sql", await fs.readFile(managementReleaseGateMigrationPath, "utf8"));
     await applySqlMigration(client, "034_auditor_portal_completion.sql", await fs.readFile(auditorPortalCompletionMigrationPath, "utf8"));
+    await applySqlMigration(client, "035_finance_payment_release_workflow.sql", await fs.readFile(financePaymentReleaseMigrationPath, "utf8"));
+    await applySqlMigration(client, "036_revoke_finance_legacy_manual_permissions.sql", await fs.readFile(revokeFinanceLegacyManualPermissionsMigrationPath, "utf8"));
+    await applySqlMigration(client, "037_align_cargo_customs_defaults.sql", await fs.readFile(alignCargoCustomsDefaultsMigrationPath, "utf8"));
     await client.query(
       `INSERT INTO role_permissions (role_id, permission_key)
        SELECT r.id, p.permission_key

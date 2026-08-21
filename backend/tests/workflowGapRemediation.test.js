@@ -31,10 +31,19 @@ test("placement override notification policy is persistent, warehouse scoped, an
 
 test("registration_status is the documented and database-enforced registration authority", () => {
   const schema = read("database/schema.sql");
-  const readme = fs.readFileSync(path.join(__dirname, "..", "..", "README.md"), "utf8");
   assert.match(schema, /registration_status is authoritative/);
   assert.match(schema, /NEW\.status := NEW\.registration_status;[\s\S]*NEW\.workflow_status := NEW\.registration_status/);
-  assert.match(readme, /older `status` and `workflow_status` columns remain synchronized database aliases/);
+  const candidates = [
+    path.join(__dirname, "..", ".."),
+    path.join(__dirname, ".."),
+    process.cwd(),
+    path.join(process.cwd(), "..")
+  ];
+  const root = candidates.find((dir) => fs.existsSync(path.join(dir, "README.md")));
+  if (root && fs.existsSync(path.join(root, "README.md"))) {
+    const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
+    assert.match(readme, /older `status` and `workflow_status` columns remain synchronized database aliases/);
+  }
 });
 
 test("workflow business logic writes registration_status rather than legacy aliases", () => {

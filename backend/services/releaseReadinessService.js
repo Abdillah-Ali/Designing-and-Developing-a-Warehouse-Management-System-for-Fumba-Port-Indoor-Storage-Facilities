@@ -22,9 +22,9 @@ const recalculateReleaseReadiness = async ({ cargoId, executor = db, actorId = n
   const previous = cargo.release_readiness_status || "BLOCKED";
   const readiness = evaluate(cargo);
   await executor.query(
-    `UPDATE cargo SET release_readiness_status=$1,release_readiness_blockers=$2::jsonb,
-       ready_for_release_at=CASE WHEN $1='READY_FOR_RELEASE' THEN COALESCE(ready_for_release_at,CURRENT_TIMESTAMP) ELSE NULL END,
-       updated_at=CURRENT_TIMESTAMP WHERE id=$3`,
+    `UPDATE cargo SET release_readiness_status=$1::varchar,release_readiness_blockers=$2::jsonb,
+       ready_for_release_at=CASE WHEN $1::varchar='READY_FOR_RELEASE'::varchar THEN COALESCE(ready_for_release_at,CURRENT_TIMESTAMP) ELSE NULL END,
+       updated_at=CURRENT_TIMESTAMP WHERE id=$3::integer`,
     [readiness.status, JSON.stringify(readiness.blockers), cargo.id]
   );
   if (previous !== readiness.status) {
