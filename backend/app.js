@@ -28,6 +28,7 @@ const gateRoutes = require("./routes/gateRoutes");
 const adminRoutes = require("./routes/adminRoutes");
 const managementRoutes = require("./routes/managementRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
+const publicPaymentRoutes = require("./routes/publicPaymentRoutes");
 const releaseReadinessRoutes = require("./routes/releaseReadinessRoutes");
 const { webhook: paymentWebhook } = require("./controllers/paymentController");
 const cargoRegistrationFormRoutes = require("./routes/cargoRegistrationFormRoutes");
@@ -112,6 +113,9 @@ app.use((req, res, next) => {
 app.post("/api/payments/webhook", express.raw({ type: "application/json", limit: "1mb" }), paymentWebhook);
 app.use(express.json({ limit: "15mb" }));
 app.use(validateRequestShape);
+
+// External customers authenticate with the invoice's unguessable payment token.
+app.use("/api/public/payments", publicPaymentRoutes);
 
 app.get("/api/health", async (req, res, next) => {
   try {

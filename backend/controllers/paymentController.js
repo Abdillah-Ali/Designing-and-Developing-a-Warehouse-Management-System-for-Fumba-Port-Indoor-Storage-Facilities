@@ -1,7 +1,13 @@
 const db=require("../config/db");
-const { initiatePayment,processWebhook,ensureAutomaticInvoice,recordWebhookFailure }=require("../services/paymentService");
+const { initiatePayment,processWebhook,ensureAutomaticInvoice,recordWebhookFailure,getPaymentSummary,getPaymentAttemptStatus,getPaymentHistory }=require("../services/paymentService");
+const { sendPaymentLinkEmail }=require("../services/emailService");
 const tx=async(fn)=>{const c=await db.pool.connect();try{await c.query("BEGIN");const v=await fn(c);await c.query("COMMIT");return v}catch(e){await c.query("ROLLBACK");throw e}finally{c.release()}};
-const initiate=async(req,res,next)=>{try{const data=await tx(c=>initiatePayment({invoiceNumber:req.params.invoiceNumber,customer:req.body||{},auth:req.auth,executor:c}));res.status(201).json({success:true,data})}catch(e){next(e)}};
+const initiate=async(req,res,next)=>{try{const data=await tx(c=>initiatePayment({invoiceNumber:req.params.invoiceNumber,amount:req.body?.amount,customer:req.body||{},auth:req.auth,executor:c}));res.status(201).json({success:true,data})}catch(e){next(e)}};
+const publicSummary=async(req,res,next)=>{try{res.json({success:true,data:await getPaymentSummary({token:req.params.token})})}catch(e){next(e)}};
+const publicInitiate=async(req,res,next)=>{try{const summary=await getPaymentSummary({token:req.params.token});const data=await tx(c=>initiatePayment({invoiceNumber:summary.invoice_reference,token:req.params.token,amount:req.body?.amount,customer:req.body||{},executor:c}));res.status(201).json({success:true,data})}catch(e){next(e)}};
+const publicAttemptStatus=async(req,res,next)=>{try{res.json({success:true,data:await getPaymentAttemptStatus({attemptReference:req.params.attemptReference,token:req.params.token})})}catch(e){next(e)}};
+const history=async(req,res,next)=>{try{res.json({success:true,data:await getPaymentHistory({paymentReference:req.params.paymentReference})})}catch(e){next(e)}};
+const resendEmail=async(req,res,next)=>{try{const data=await tx(async c=>{const invoice=(await c.query("SELECT id FROM invoices WHERE public_invoice_number=$1 AND status<>'Cancelled' FOR UPDATE",[req.params.invoiceNumber])).rows[0];if(!invoice){const e=new Error("Invoice not found.");e.statusCode=404;throw e}return sendPaymentLinkEmail({invoiceId:invoice.id,executor:c,resent:true})});res.json({success:true,data})}catch(e){next(e)}};
 const webhook=async(req,res,next)=>{try{const data=await tx(c=>processWebhook({headers:req.headers,rawBody:req.body,executor:c}));res.json({success:true,data})}catch(e){try{await recordWebhookFailure({headers:req.headers,rawBody:req.body,executor:db})}catch{}next(e)}};
 const autoBill=async(req,res,next)=>{try{const data=await tx(c=>ensureAutomaticInvoice({cargoReference:req.params.cargoReference,executor:c}));res.status(201).json({success:true,data})}catch(e){next(e)}};
-module.exports={initiate,webhook,autoBill};
+module.exports={initiate,webhook,autoBill,publicSummary,publicInitiate,publicAttemptStatus,history,resendEmail};

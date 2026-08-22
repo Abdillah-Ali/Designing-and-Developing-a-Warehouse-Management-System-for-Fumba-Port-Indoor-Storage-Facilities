@@ -6,7 +6,7 @@ const db = require("../config/db");
 const API = process.env.FPWMS_VALIDATION_API || "http://127.0.0.1:5000/api";
 const PREFIX = `FPWMS-VAL-CONC-${Date.now()}-${process.pid}`;
 const SHORT_TAG = String(Date.now()).slice(-5);
-const ids = { cargo: [], bins: [], users: [], warehouse: null, tariff: null, tariffVersion: null, shift: null };
+const ids = { cargo: [], bins: [], users: [], warehouse: null, tariff: null, tariffVersion: null, cargoOption:null, shift: null };
 const evidence = [];
 
 const request = async (method, path, token, body) => {
@@ -45,7 +45,7 @@ const createCargo = async (suffix, userId, overrides = {}) => {
     (cargo_id,barcode,reference_number,consignee_name,cargo_type,cargo_type_key,weight,volume,status,workflow_status,
      registration_status,placement_status,customs_status,customs_status_key,financial_status,dispatch_status,gate_out_status,
      warehouse_id,warehouse_id_at_registration,created_by,assigned_staff_id,received_by_user_id,current_bin_id,location,charge_start_at)
-    VALUES ($1,$1,$1,$2,'General Goods','general_goods',$3,$4,'Approved','Approved',$5,$6,$7,$8,$9,$10,$11,$12,$12,$13,$13,$13,$14,$15,$16)
+    VALUES ($1,$1,$1,$2,'Validation Goods','validation_goods',$3,$4,'Approved','Approved',$5,$6,$7,$8,$9,$10,$11,$12,$12,$13,$13,$13,$14,$15,$16)
     RETURNING *`, [ref, `${PREFIX} Consignee`, values.weight, values.volume, values.registration_status,
       values.placement_status, values.customs_status, values.customs_status_key, values.financial_status,
       values.dispatch_status, values.gate_out_status, ids.warehouse, userId, values.current_bin_id,
@@ -104,12 +104,13 @@ test("final validation closure executes real authenticated HTTP races and Gate r
     if (health.status !== 200) return t.skip("Live backend/PostgreSQL validation environment is unavailable.");
 
     const passwordHash = await bcrypt.hash("Validation-Only-2026!", 10);
+    const warehouseLetter=(await scalar(`SELECT chr(code) AS letter FROM generate_series(65,90) code WHERE NOT EXISTS (SELECT 1 FROM warehouses WHERE warehouse_letter=chr(code)) ORDER BY code LIMIT 1`)).letter;
     const warehouse = (await q(`INSERT INTO warehouses(warehouse_name,warehouse_code,status,warehouse_letter,total_capacity,max_volume)
-      VALUES($1,$2,'active',$3,1000,100) RETURNING *`, [`${PREFIX} Warehouse`, `VC${String(Date.now()).slice(-6)}`, "V"])).rows[0];
+      VALUES($1,$2,'active',$3,1000,100) RETURNING *`, [`${PREFIX} Warehouse`, `VC${String(Date.now()).slice(-6)}`, warehouseLetter])).rows[0];
     ids.warehouse = warehouse.id;
     const shortCode = String(Date.now()).slice(-6);
     const zone = (await q(`INSERT INTO zones(code,name,zone_type,allowed_cargo_type,max_weight,max_volume,warehouse_id,zone_letter)
-      VALUES($1,$2,'Standard','General Goods',1000,100,$3,'V') RETURNING *`, [`ZV${shortCode}`, `${PREFIX} Zone`, warehouse.id])).rows[0];
+      VALUES($1,$2,'Standard','Validation Goods',1000,100,$3,'V') RETURNING *`, [`ZV${shortCode}`, `${PREFIX} Zone`, warehouse.id])).rows[0];
     const rack = (await q("INSERT INTO racks(zone_id,code,name,max_weight,max_volume,rack_letter) VALUES($1,$2,$3,1000,100,'V') RETURNING *", [zone.id, `RV${shortCode}`, `${PREFIX} Rack`])).rows[0];
     const level = (await q("INSERT INTO levels(rack_id,code,level_number,max_weight,max_volume,name) VALUES($1,$2,1,1000,100,$3) RETURNING *", [rack.id, `LV${shortCode}`, `${PREFIX} Level`])).rows[0];
     const binCapacity = await createBin(level.id, "CAP", 15);
@@ -131,6 +132,9 @@ test("final validation closure executes real authenticated HTTP races and Gate r
       [`${PREFIX} ${roleKey}`, username, `${username}@validation.invalid`, `+2559${String(Date.now()).slice(-8)}`, passwordHash, roleId[roleKey], warehouse.id])).rows[0];
       ids.users.push(user.id); users[roleKey] = { ...user, token: await login(username) };
     }
+    const cargoOption=(await q(`INSERT INTO cargo_option_values(catalog_key,option_key,storage_value,display_label,sort_order,is_active,is_system_protected,updated_by)
+      VALUES('cargo_type','validation_goods','Validation Goods','Validation Goods',999,TRUE,FALSE,$1) RETURNING id`,[users.system_administrator.id])).rows[0];
+    ids.cargoOption=cargoOption.id;
 
     const shift = (await q(`INSERT INTO shifts(shift_name,shift_code,public_reference,start_time,end_time,status)
       VALUES($1,$2,$3,'00:00','23:59','active') RETURNING *`,
@@ -138,10 +142,10 @@ test("final validation closure executes real authenticated HTTP races and Gate r
     ids.shift = shift.id;
     await q("UPDATE users SET shift_id=$1 WHERE id=$2", [shift.id, users.warehouse_staff.id]);
 
-    const tariff = (await q("INSERT INTO tariffs(public_reference,tariff_name,cargo_type,charging_unit,created_by) VALUES($1,$2,'General Goods','per_cargo_per_day',$3) RETURNING *", [`${PREFIX}-TRF`, `${PREFIX} Tariff`, users.finance_officer.id])).rows[0];
+    const tariff = (await q("INSERT INTO tariffs(public_reference,tariff_name,cargo_type,charging_unit,created_by) VALUES($1,$2,'Validation Goods','per_cargo_per_day',$3) RETURNING *", [`${PREFIX}-TRF`, `${PREFIX} Tariff`, users.finance_officer.id])).rows[0];
     ids.tariff = tariff.id;
-    const tariffVersion = (await q(`INSERT INTO tariff_versions(public_reference,tariff_id,version_number,cargo_type,charging_unit,daily_rate,currency,minimum_billable_days,effective_from,is_active,created_by,activated_by,activated_at,cargo_type_key,tariff_scope,configuration_status)
-      VALUES($1,$2,1,'General Goods','per_cargo_per_day',100,'TZS',1,CURRENT_TIMESTAMP-INTERVAL '30 days',TRUE,$3,$3,CURRENT_TIMESTAMP,'general_goods','cargo_type','ready') RETURNING *`,
+    const tariffVersion = (await q(`INSERT INTO tariff_versions(public_reference,tariff_id,version_number,cargo_type,charging_unit,daily_rate,currency,minimum_billable_days,effective_from,is_active,created_by,activated_by,activated_at,cargo_type_key,tariff_scope,configuration_status,approval_status,approved_by,approved_at)
+      VALUES($1,$2,1,'Validation Goods','per_cargo_per_day',100,'TZS',1,CURRENT_TIMESTAMP-INTERVAL '30 days',TRUE,$3,$3,CURRENT_TIMESTAMP,'validation_goods','cargo_type','ready','APPROVED',$3,CURRENT_TIMESTAMP) RETURNING *`,
     [`${PREFIX}-TRV`, tariff.id, users.finance_officer.id])).rows[0];
     ids.tariffVersion = tariffVersion.id;
 
@@ -321,6 +325,7 @@ test("final validation closure executes real authenticated HTTP races and Gate r
       await q("DELETE FROM cargo_movements WHERE cargo_id=ANY($1)",[ids.cargo]);
       await q("DELETE FROM cargo_locations WHERE cargo_id=ANY($1)",[ids.cargo]);
       await q("DELETE FROM payments WHERE invoice_id IN (SELECT id FROM invoices WHERE cargo_id=ANY($1))",[ids.cargo]);
+      await q("DELETE FROM payment_email_deliveries WHERE invoice_id IN (SELECT id FROM invoices WHERE cargo_id=ANY($1))",[ids.cargo]);
       await q("DELETE FROM invoice_line_items WHERE invoice_id IN (SELECT id FROM invoices WHERE cargo_id=ANY($1))",[ids.cargo]);
       await q("DELETE FROM invoices WHERE cargo_id=ANY($1)",[ids.cargo]);
       await q("DELETE FROM dispatch_requests WHERE cargo_id=ANY($1)",[ids.cargo]);
@@ -328,6 +333,7 @@ test("final validation closure executes real authenticated HTTP races and Gate r
     }
     if (ids.tariffVersion) await q("DELETE FROM tariff_versions WHERE id=$1",[ids.tariffVersion]);
     if (ids.tariff) await q("DELETE FROM tariffs WHERE id=$1",[ids.tariff]);
+    if (ids.cargoOption) await q("DELETE FROM cargo_option_values WHERE id=$1",[ids.cargoOption]);
     if (ids.users.length) {
       await q("DELETE FROM session_refresh_tokens WHERE session_id IN (SELECT id FROM user_sessions WHERE user_id=ANY($1))",[ids.users]);
       await q("DELETE FROM user_sessions WHERE user_id=ANY($1)",[ids.users]);

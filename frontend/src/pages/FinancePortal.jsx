@@ -47,7 +47,8 @@ import {
   logout,
   recordFinancePayment,
   updateFinanceTariff,
-  submitFinanceTariff
+  submitFinanceTariff,
+  resendPaymentEmail
 } from "@/services/api";
 
 const inputClass = "h-9 w-full rounded border border-input bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring";
@@ -365,6 +366,8 @@ function InvoicesPage() {
       setDetail({ invoice: row, data: null, loading: false, error: getErrorMessage(error) });
     }
   };
+  const copyLink=async(row)=>{try{await navigator.clipboard.writeText(row.payment_url);setMessage("Secure payment link copied.");}catch{setMessage("Copy failed. Select the link from invoice details instead.");}};
+  const resend=async(row)=>{setMessage("");try{const response=await resendPaymentEmail(row.invoice_number);setMessage(response.data?.delivery_status==="SENT"?"Payment email sent.":`Email status: ${response.data?.delivery_status||"unknown"}.`);await invoices.refresh();}catch(error){setMessage(getErrorMessage(error));}};
 
   return (
     <>
@@ -393,6 +396,11 @@ function InvoicesPage() {
                 { key: "total_amount", label: "Total", render: (row) => formatMoney(row.total_amount, row.currency) },
                 { key: "amount_paid", label: "Paid", render: (row) => formatMoney(row.amount_paid, row.currency) },
                 { key: "outstanding_balance", label: "Outstanding", render: (row) => formatMoney(row.outstanding_balance, row.currency) },
+                { key: "master_payment_reference", label: "Master PAY", className:"font-mono" },
+                { key: "installment_count", label: "Installments" },
+                { key: "customer_email", label: "Customer Email" },
+                { key: "email_delivery_status", label: "Email", render:(row)=><StatusBadge tone={statusTone(row.email_delivery_status)}>{row.email_delivery_status}</StatusBadge> },
+                { key: "email_last_sent_at", label: "Last Sent", render:(row)=>formatDateTime(row.email_last_sent_at) },
                 { key: "created_at", label: "Created", render: (row) => formatDateTime(row.created_at) },
                 {
                   key: "actions",
@@ -400,6 +408,8 @@ function InvoicesPage() {
                   render: (row) => (
                     <div className="flex gap-1">
                       <button type="button" onClick={() => openDetail(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">Details</button>
+                      {row.payment_url&&<button type="button" onClick={()=>copyLink(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">Copy Link</button>}
+                      {row.customer_email&&row.payment_url&&<button type="button" onClick={()=>resend(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">Resend Email</button>}
                       {row.status === "Issued" && row.payment_status !== "Paid" && Number(row.outstanding_balance) > 0 && <button type="button" onClick={() => setGateway({ invoice: row, submitting: false, error: "", result: null })} className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground">Pay with Flutterwave</button>}
                       {row.status === "Draft" && <button type="button" onClick={() => act("issue", row.invoice_number)} className="rounded bg-success px-2 py-1 text-[11px] font-semibold text-success-foreground">Issue</button>}
                       {["Draft", "Issued"].includes(row.status) && <button type="button" onClick={() => act("cancel", row.invoice_number)} className="rounded border border-destructive/30 bg-destructive/10 px-2 py-1 text-[11px] font-semibold text-destructive">Cancel</button>}
@@ -433,9 +443,9 @@ function InvoicesPage() {
 }
 
 function GatewayPaymentDialog({ state, onClose, onSubmit }) {
-  const [customer, setCustomer] = useState({ name: "", email: "", phone: "", country_code: "255", network: "" });
+  const [customer, setCustomer] = useState({ name: "", email: "", phone: "", country_code: "255", network: "", amount: "" });
   useEffect(() => {
-    if (state.invoice) setCustomer({ name: state.invoice.owner_information || "", email: "", phone: "", country_code: "255", network: "" });
+    if (state.invoice) setCustomer({ name: state.invoice.owner_information || "", email: "", phone: "", country_code: "255", network: "", amount: state.invoice.outstanding_balance || "" });
   }, [state.invoice]);
   if (!state.invoice) return null;
   const result = state.result;
@@ -455,12 +465,15 @@ function GatewayPaymentDialog({ state, onClose, onSubmit }) {
             <FormField label="Country Code"><input className={inputClass} value={customer.country_code} onChange={(event) => setCustomer((current) => ({ ...current, country_code: event.target.value }))} required /></FormField>
             <FormField label="Mobile Number"><input className={inputClass} inputMode="tel" placeholder="7XXXXXXXX" value={customer.phone} onChange={(event) => setCustomer((current) => ({ ...current, phone: event.target.value }))} required /></FormField>
             <FormField label="Mobile Money Network"><input className={inputClass} placeholder="Provider network code" value={customer.network} onChange={(event) => setCustomer((current) => ({ ...current, network: event.target.value }))} required /></FormField>
+            <FormField label={`Amount to Pay Now (max ${formatMoney(state.invoice.outstanding_balance, state.invoice.currency)})`}><input className={inputClass} type="number" min="0.01" step="0.01" max={state.invoice.outstanding_balance} value={customer.amount} onChange={(event) => setCustomer((current) => ({ ...current, amount: event.target.value }))} required /></FormField>
             <div className="flex items-end"><button type="submit" disabled={state.submitting} className="h-9 rounded bg-info px-3 text-xs font-semibold text-info-foreground disabled:opacity-50">{state.submitting ? "Initiating..." : "Initiate Sandbox Payment"}</button></div>
             {state.error && <div className="sm:col-span-2"><ErrorState message={state.error} /></div>}
           </form>
         ) : (
           <div className="mt-4 space-y-3 text-xs">
             <ReadonlyValue label="WMS Payment Reference" value={result.payment_reference} />
+            <ReadonlyValue label="Payment Attempt" value={result.attempt_reference} />
+            <ReadonlyValue label="Installment Amount" value={formatMoney(result.amount, state.invoice.currency)} />
             <ReadonlyValue label="Flutterwave Charge" value={result.charge_id} />
             <ReadonlyValue label="Provider Status" value={result.status} />
             {instruction && <div className="rounded border border-info/30 bg-info/10 p-3">{instruction}</div>}
@@ -583,13 +596,14 @@ function PaymentsPage() {
               rows={payments.rows || []}
               emptyTitle="No payments recorded"
               columns={[
-                { key: "payment_reference", label: "Payment Ref", className: "font-mono font-semibold" },
+                { key: "master_payment_reference", label: "Master Ref", className: "font-mono font-semibold" },
+                { key: "attempt_reference", label: "Attempt", className: "font-mono" },
                 { key: "invoice_number", label: "Invoice", className: "font-mono" },
                 { key: "cargo_reference", label: "Cargo", className: "font-mono" },
                 { key: "amount", label: "Amount", render: (row) => formatMoney(row.amount) },
-                { key: "bank_name", label: "Bank" },
-                { key: "bank_reference", label: "Bank Ref" },
-                { key: "payment_date", label: "Payment Date", render: (row) => formatDateTime(row.payment_date) }
+                { key: "gateway_transaction_id", label: "Provider Charge", className: "font-mono" },
+                { key: "verified_at", label: "Verified", render: (row) => formatDateTime(row.verified_at) },
+                { key: "reconciliation_status", label: "Reconciliation" }
                 ,{ key: "status", label: "Status", render: (row) => <StatusBadge tone={row.status === "Confirmed" ? "success" : "warning"}>{row.status}</StatusBadge> }
                 ,{ key: "gateway_status", label: "Gateway", render: (row) => <StatusBadge tone={statusTone(row.gateway_status)}>{row.gateway_status || "Legacy"}</StatusBadge> }
               ]}

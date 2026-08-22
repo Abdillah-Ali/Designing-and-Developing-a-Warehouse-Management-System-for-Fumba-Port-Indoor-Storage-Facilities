@@ -28,6 +28,7 @@ const CustomsPortal = lazy(() => import("./pages/CustomsPortal.jsx"));
 const GatePortal = lazy(() => import("./pages/GatePortal.jsx"));
 const ManagementPortal = lazy(() => import("./pages/ManagementPortal.jsx"));
 const AuditorPortal = lazy(() => import("./pages/AuditorPortal.jsx"));
+const PublicPayment = lazy(() => import("./pages/PublicPayment.jsx"));
 
 function PageFallback() {
   return (
@@ -113,6 +114,7 @@ const App = () => (
         <Suspense fallback={<PageFallback />}>
           <Routes>
             <Route path="/" element={<Landing />} />
+            <Route path="/pay/:token" element={<PublicPayment />} />
             <Route path="/scanner/login" element={<Navigate to="/" replace />} />
             <Route path="/scanner" element={<ScannerAccessGate />} />
             <Route path="/initial-setup" element={<BootstrapAdminSetup />} />

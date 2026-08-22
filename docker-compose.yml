@@ -67,9 +67,17 @@ services:
       FLUTTERWAVE_WEBHOOK_SECRET: ${FLUTTERWAVE_WEBHOOK_SECRET:-}
       PAYMENT_CALLBACK_URL: ${PAYMENT_CALLBACK_URL:-http://localhost:3000/finance/payments/return}
       PAYMENT_WEBHOOK_URL: ${PAYMENT_WEBHOOK_URL:-}
+      EMAIL_PROVIDER: ${EMAIL_PROVIDER:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      PUBLIC_PAYMENT_BASE_URL: ${PUBLIC_PAYMENT_BASE_URL:-http://localhost:3000}
 
     ports:
-      - "127.0.0.1:5000:5000"
+      - "${WMS_DEMO_BIND_ADDRESS:-127.0.0.1}:5000:5000"
 
     volumes:
       - ./backend:/app
@@ -88,7 +96,7 @@ services:
       - backend
 
     ports:
-      - "127.0.0.1:3000:3000"
+      - "${WMS_DEMO_BIND_ADDRESS:-127.0.0.1}:3000:3000"
 
     volumes:
       - ./frontend:/app

@@ -89,10 +89,10 @@ test("charge retrieval uses GET /charges/{charge_id}", async () => {
 
 test("payment initiation maps WMS invoice data and stores the returned charge ID", async () => {
   const queries=[];
-  const executor={query:async(sql,params=[])=>{queries.push({sql,params});if(sql.includes("SELECT i.*,c.cargo_id"))return{rows:[{id:4,public_invoice_number:"INV-2026-A",cargo_reference:"CRG-2026-A",cargo_record_id:7,payment_reference:"PAY-2026-ABCDEF",outstanding_balance:"100000.00",currency:"TZS",status:"Issued",payment_status:"Unpaid"}],rowCount:1};if(sql.startsWith("SELECT * FROM payments"))return{rows:[],rowCount:0};if(sql.includes("INSERT INTO payments"))return{rows:[{id:9}],rowCount:1};return{rows:[{}],rowCount:1}}};
-  const calls=[];const fetchImpl=async(url,options)=>{calls.push({url,options});if(calls.length===1)return response({access_token:"oauth",expires_in:600});return response({status:"success",data:{id:"chg_WMS",status:"pending",reference:"PAY-2026-ABCDEF",next_action:{type:"payment_instruction"}}})};
+  const executor={query:async(sql,params=[])=>{queries.push({sql,params});if(sql.includes("SELECT i.*,c.cargo_id"))return{rows:[{id:4,public_invoice_number:"INV-2026-A",cargo_reference:"CRG-2026-A",cargo_record_id:7,payment_reference:"PAY-2026-ABCDEF",outstanding_balance:"100000.00",currency:"TZS",status:"Issued",payment_status:"Unpaid"}],rowCount:1};if(sql.includes("SELECT 1 FROM payments WHERE public_reference"))return{rows:[],rowCount:0};if(sql.includes("INSERT INTO payments"))return{rows:[{id:9}],rowCount:1};return{rows:[{}],rowCount:1}}};
+  const calls=[];const fetchImpl=async(url,options)=>{calls.push({url,options});if(calls.length===1)return response({access_token:"oauth",expires_in:600});const body=JSON.parse(options.body);return response({status:"success",data:{id:"chg_WMS",status:"pending",reference:body.reference,next_action:{type:"payment_instruction"}}})};
   const result=await payment.initiatePayment({invoiceNumber:"INV-2026-A",customer:{customer_id:"cus_1",payment_method_id:"pmd_1"},auth:{userId:3},executor,fetchImpl});
-  assert.equal(result.charge_id,"chg_WMS");const chargeBody=JSON.parse(calls[1].options.body);assert.equal(chargeBody.amount,100000);assert.equal(chargeBody.currency,"TZS");assert.equal(chargeBody.reference,"PAY-2026-ABCDEF");assert.equal(chargeBody.meta.cargo_reference,"CRG-2026-A");
+  assert.equal(result.charge_id,"chg_WMS");const chargeBody=JSON.parse(calls[1].options.body);assert.equal(chargeBody.amount,100000);assert.equal(chargeBody.currency,"TZS");assert.match(chargeBody.reference,/^PMT-/);assert.equal(chargeBody.meta.wms_payment_reference,"PAY-2026-ABCDEF");assert.equal(chargeBody.meta.cargo_reference,"CRG-2026-A");assert.notEqual(calls[1].options.headers["X-Idempotency-Key"],"PAY-2026-ABCDEF");
   const update=queries.find(item=>item.sql.includes("gateway_transaction_id=$2"));assert.equal(update.params[1],"chg_WMS");
 });
 
@@ -122,7 +122,7 @@ test("v4 status, amount, and currency mapping preserves financial integrity", ()
   const classify=(providerStatus,received=100n,currency="TZS")=>payment.classifyVerifiedCharge({providerStatus,received,expected:100n,currency,expectedCurrency:"TZS"});
   assert.deepEqual(classify("succeeded"),{status:"SUCCESSFUL",reconciliation:"MATCHED",failure:null});
   assert.equal(classify("pending").status,"PENDING"); assert.equal(classify("failed").status,"FAILED"); assert.equal(classify("voided").status,"FAILED");
-  assert.equal(classify("succeeded",80n).reconciliation,"PARTIAL"); assert.equal(classify("succeeded",110n).reconciliation,"OVERPAYMENT"); assert.equal(classify("succeeded",100n,"USD").reconciliation,"EXCEPTION");
+  assert.equal(classify("succeeded",80n).reconciliation,"EXCEPTION"); assert.equal(classify("succeeded",110n).reconciliation,"EXCEPTION"); assert.equal(classify("succeeded",100n,"USD").reconciliation,"EXCEPTION");
 });
 
 test("webhook route captures raw JSON before global parser and v3 paths are absent", () => {

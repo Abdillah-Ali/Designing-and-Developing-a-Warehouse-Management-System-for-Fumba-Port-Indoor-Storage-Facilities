@@ -51,7 +51,7 @@ test("live valid default tariff restores readiness without leaving fixture data"
   catch (error) { if(client) client.release(); t.skip(`Live database unavailable: ${error.code||error.message}`); return; }
   try {
     const actor=(await client.query("SELECT id FROM users WHERE status='active' ORDER BY id LIMIT 1")).rows[0];
-    await client.query("DELETE FROM tariff_versions");
+    await client.query("UPDATE tariff_versions SET is_active=FALSE WHERE is_active=TRUE");
     await createTariffVersion({payload:{tariff_name:"Phase 11B transactional readiness fixture",cargo_type_key:"default",charging_unit:"per_cargo_per_day",daily_rate:"1.00",currency:"TZS",minimum_billable_days:1,effective_from:"2026-01-01T00:00:00Z",is_active:true},auth:{userId:actor?.id},executor:client});
     const result=await validateFinanceConfiguration(client);
     assert.equal(result.ready,true);

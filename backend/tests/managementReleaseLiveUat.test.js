@@ -51,7 +51,8 @@ test("Docker UAT: reject, convert, resubmit, approve, waive, and preserve placem
     liveCargo=(await client.query("SELECT * FROM cargo WHERE id=$1",[cargo.id])).rows[0];
     eligibility=await evaluateEligibility({target:"normal_gate_release",cargo:liveCargo,executor:client});
     assert.equal(eligibility.blocked_requirements.some(item=>item.evaluator_key==="management_release_authorization"),false);
-    assert.equal(eligibility.blocked_requirements.some(item=>item.evaluator_key==="customs_clearance"||item.evaluator_key==="dispatch_approval"),true);
+    assert.equal(eligibility.blocked_requirements.some(item=>item.evaluator_key==="dispatch_approval"),false);
+    if(liveCargo.customs_status!=="Cleared") assert.equal(eligibility.blocked_requirements.some(item=>item.evaluator_key==="customs_clearance"),true);
     await assert.rejects(()=>createOrRegenerateDraftInvoice({payload:{cargo_reference:cargo.cargo_id},auth:{userId:management.id},executor:client}),error=>error.errorCode==="MANAGEMENT_RELEASE_NO_CHARGES");
     const histories=await client.query("SELECT status FROM management_release_requests WHERE cargo_id=$1 ORDER BY submission_number",[cargo.id]);
     assert.deepEqual(histories.rows.map(row=>row.status),["REJECTED","APPROVED"]);

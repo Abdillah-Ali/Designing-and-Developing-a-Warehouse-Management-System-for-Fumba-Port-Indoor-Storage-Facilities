@@ -71,7 +71,7 @@ const getLoginErrorMessage = (response, payload = {}) => {
 };
 
 const request = async (path, options = {}, retried = false) => {
-  const publicPath = path.startsWith("/auth/") || path.startsWith("/bootstrap/");
+  const publicPath = path.startsWith("/auth/") || path.startsWith("/bootstrap/") || path.startsWith("/public/");
   if (!retried && !publicPath && !getStoredAuthToken()) {
     await refreshAccessToken().catch(() => null);
   }
@@ -718,6 +718,10 @@ export const getManagementTariffApprovals = (params={}) => request(`/management/
 export const approveManagementTariff = (reference) => request(`/management/tariff-approvals/${encodeURIComponent(reference)}/approve`, { method:"POST", body:{} });
 export const rejectManagementTariff = (reference,reason) => request(`/management/tariff-approvals/${encodeURIComponent(reference)}/reject`, { method:"POST", body:{reason} });
 export const initiateGatewayPayment = (invoiceNumber,payload={}) => request(`/payments/invoices/${encodeURIComponent(invoiceNumber)}/initiate`, { method:"POST", body:payload });
+export const getPublicPaymentSummary = (token) => request(`/public/payments/${encodeURIComponent(token)}`);
+export const createPublicPaymentAttempt = (token,payload) => request(`/public/payments/${encodeURIComponent(token)}/attempts`,{method:"POST",body:payload});
+export const getPublicPaymentAttempt = (token,attemptReference) => request(`/public/payments/${encodeURIComponent(token)}/attempts/${encodeURIComponent(attemptReference)}`);
+export const resendPaymentEmail = (invoiceNumber) => request(`/payments/invoices/${encodeURIComponent(invoiceNumber)}/payment-email/resend`,{method:"POST",body:{}});
 export const getCargoToRelease = () => request("/release-readiness/cargo-to-release");
 export const getFinanceReports = (params = {}) => request(`/finance/reports${buildQuerySuffix(params)}`);
 

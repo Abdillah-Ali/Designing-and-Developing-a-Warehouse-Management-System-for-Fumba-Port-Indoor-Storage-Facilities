@@ -187,6 +187,9 @@ const applySchema = async () => {
   const financePaymentReleaseMigrationPath = path.join(__dirname, "migrations", "20260820_finance_payment_release_workflow.sql");
   const revokeFinanceLegacyManualPermissionsMigrationPath = path.join(__dirname, "migrations", "20260821_revoke_finance_legacy_manual_permissions.sql");
   const alignCargoCustomsDefaultsMigrationPath = path.join(__dirname, "migrations", "20260821_align_cargo_customs_defaults.sql");
+  const installmentPaymentWorkflowMigrationPath = path.join(__dirname, "migrations", "20260822_installment_payment_workflow.sql");
+  const paymentEmailDeliveryMigrationPath = path.join(__dirname, "migrations", "20260822_payment_email_delivery.sql");
+  const publicPaymentTokenInvariantsMigrationPath = path.join(__dirname, "migrations", "20260822_public_payment_token_invariants.sql");
   const financeCustomsGateMigration = await fs.readFile(financeCustomsGateMigrationPath, "utf8");
   const zoneWarehouseScopeMigration = await fs.readFile(zoneWarehouseScopeMigrationPath, "utf8");
   const warehouseConfigurationMigration = await fs.readFile(warehouseConfigurationMigrationPath, "utf8");
@@ -263,6 +266,9 @@ const applySchema = async () => {
     await applySqlMigration(client, "035_finance_payment_release_workflow.sql", await fs.readFile(financePaymentReleaseMigrationPath, "utf8"));
     await applySqlMigration(client, "036_revoke_finance_legacy_manual_permissions.sql", await fs.readFile(revokeFinanceLegacyManualPermissionsMigrationPath, "utf8"));
     await applySqlMigration(client, "037_align_cargo_customs_defaults.sql", await fs.readFile(alignCargoCustomsDefaultsMigrationPath, "utf8"));
+    await applySqlMigration(client, "038_installment_payment_workflow.sql", await fs.readFile(installmentPaymentWorkflowMigrationPath, "utf8"));
+    await applySqlMigration(client, "039_payment_email_delivery.sql", await fs.readFile(paymentEmailDeliveryMigrationPath, "utf8"));
+    await applySqlMigration(client, "040_public_payment_token_invariants.sql", await fs.readFile(publicPaymentTokenInvariantsMigrationPath, "utf8"));
     await client.query(
       `INSERT INTO role_permissions (role_id, permission_key)
        SELECT r.id, p.permission_key

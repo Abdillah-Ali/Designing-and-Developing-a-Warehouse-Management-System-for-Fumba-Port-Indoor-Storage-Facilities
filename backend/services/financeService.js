@@ -3,6 +3,7 @@ const db = require("../config/db");
 const { writeAuditLog } = require("../models/adminModel");
 const { buildError } = require("../utils/apiError");
 const { getFinanceCalculator, listFinanceCalculators } = require("./financeCalculatorRegistry");
+const { buildPaymentUrl } = require("./emailService");
 
 const DECIMAL_SCALE = 10000n;
 const MONEY_SCALE = 100n;
@@ -385,7 +386,10 @@ const getConfirmedPaidCentsForCargo = async (cargoId, executor = db) => {
      JOIN invoices i ON i.id = p.invoice_id
      WHERE i.cargo_id = $1
        AND i.status <> 'Cancelled'
-       AND p.status = 'Confirmed'`,
+       AND (
+         (p.gateway_provider = 'flutterwave' AND p.gateway_status = 'SUCCESSFUL' AND p.reconciliation_status = 'MATCHED')
+         OR (p.gateway_provider IS NULL AND p.status = 'Confirmed')
+       )`,
     [cargoId]
   );
   return centsFromAmount(result.rows[0]?.paid || 0);
@@ -1501,7 +1505,10 @@ const refreshInvoicePaymentStatus = async ({ invoiceId, executor = db }) => {
     `SELECT COALESCE(SUM(amount), 0) AS paid
      FROM payments
      WHERE invoice_id = $1
-       AND (status = 'Confirmed' OR gateway_status = 'SUCCESSFUL')`,
+       AND (
+         (gateway_provider = 'flutterwave' AND gateway_status = 'SUCCESSFUL' AND reconciliation_status = 'MATCHED')
+         OR (gateway_provider IS NULL AND status = 'Confirmed')
+       )`,
     [invoiceId]
   );
   const paidCents = centsFromAmount(paidResult.rows[0]?.paid || 0);
@@ -1653,9 +1660,12 @@ const listInvoices = async ({ filters = {}, executor = db }) => {
     values
   );
   const result = await executor.query(
-    `SELECT i.*, c.cargo_id AS cargo_reference, c.cargo_type, c.consignee_name, c.company_name
+    `SELECT i.*, c.cargo_id AS cargo_reference, c.cargo_type, c.consignee_name, c.company_name,c.email AS customer_email,
+       COALESCE((SELECT COUNT(*) FROM payments p WHERE p.invoice_id=i.id),0)::int AS installment_count,
+       ped.delivery_status AS email_delivery_status,ped.sent_at AS email_last_sent_at,ped.last_error AS email_last_error
      FROM invoices i
      JOIN cargo c ON c.id = i.cargo_id
+     LEFT JOIN payment_email_deliveries ped ON ped.invoice_id=i.id AND ped.email_type='INITIAL_PAYMENT_LINK'
      ${whereClause}
      ORDER BY i.created_at DESC, i.id DESC
      LIMIT ${limit} OFFSET ${offset}`,
@@ -1668,6 +1678,14 @@ const listInvoices = async ({ filters = {}, executor = db }) => {
       cargo_type: row.cargo_type,
       consignee_name: row.consignee_name,
       owner_information: row.company_name || row.consignee_name,
+      customer_email:row.customer_email,
+      master_payment_reference:row.payment_reference,
+      payment_url:buildPaymentUrl(row.payment_public_token),
+      payment_link_status:row.payment_public_token?"Available":"Unavailable",
+      email_delivery_status:row.email_delivery_status||"NOT_QUEUED",
+      email_last_sent_at:row.email_last_sent_at,
+      email_last_error:row.email_last_error,
+      installment_count:row.installment_count,
       status: row.status,
       payment_status: row.payment_status,
       billing_period_start: row.billing_period_start,
@@ -1708,6 +1726,8 @@ const listPayments = async ({ filters = {}, executor = db }) => {
   const result = await executor.query(
     `SELECT
        p.public_reference,
+       p.payment_reference AS master_payment_reference,
+       p.attempt_reference,
        i.public_invoice_number,
        c.cargo_id AS cargo_reference,
        p.amount,
@@ -1730,6 +1750,8 @@ const listPayments = async ({ filters = {}, executor = db }) => {
   );
   return result.rows.map((row) => ({
     payment_reference: row.public_reference,
+    master_payment_reference: row.master_payment_reference,
+    attempt_reference: row.attempt_reference || row.public_reference,
     invoice_number: row.public_invoice_number,
     cargo_reference: row.cargo_reference,
     amount: amountFromCents(centsFromAmount(row.amount)),
