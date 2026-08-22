@@ -28,6 +28,7 @@ export const PORTAL_CONFIG = Object.freeze({
       "/admin/system/roles-permissions",
       "/admin/system/shift-assignment",
       "/admin/system/warehouse-assignment",
+      "/admin/system/cargo-registration-form",
       "/admin/system/configuration",
       "/admin/warehouse/warehouses",
       "/admin/warehouse/zones",

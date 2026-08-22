@@ -156,7 +156,8 @@ const findCargoByPublicReference = async (executor, reference, { lock = false } 
 const findInvoiceByNumber = async (executor, invoiceNumber, { lock = false } = {}) => {
   const result = await executor.query(
     `SELECT i.*, c.cargo_id AS cargo_reference, c.barcode AS cargo_barcode, c.consignee_name,
-            c.company_name, c.cargo_type, c.cargo_description
+            c.company_name, c.cargo_type, c.cargo_description, c.registration_status, c.customs_status,
+            c.financial_status
      FROM invoices i
      JOIN cargo c ON c.id = i.cargo_id
      WHERE i.public_invoice_number = $1
@@ -1202,10 +1203,31 @@ const buildInvoicePublicPayload = async (invoice, executor = db) => {
      ORDER BY id`,
     [invoice.id]
   );
+  const payments = await executor.query(
+    `SELECT public_reference, attempt_reference, amount, amount_received, status, gateway_status,
+            payment_date, confirmed_at, bank_name, bank_reference
+     FROM payments WHERE invoice_id=$1 ORDER BY created_at ASC,id ASC`,
+    [invoice.id]
+  );
+  const workflowState = invoice.status === "Cancelled"
+    ? "Cancelled because cargo was rejected"
+    : invoice.registration_status !== "Approved"
+      ? "Pending Supervisor Approval"
+      : invoice.payment_status === "Paid"
+        ? "Fully Paid"
+        : invoice.payment_status === "Partially Paid"
+          ? "Partially Paid"
+          : "Approved / Awaiting Payment";
   return {
     invoice_number: invoice.public_invoice_number,
     status: invoice.status,
     payment_status: invoice.payment_status,
+    payment_reference: invoice.payment_reference || null,
+    cargo_approval_status: invoice.registration_status,
+    customs_status: invoice.customs_status,
+    financial_status: invoice.financial_status,
+    workflow_state: workflowState,
+    cancellation_reason: invoice.cancellation_reason || null,
     cargo_reference: invoice.cargo_reference,
     cargo_barcode: invoice.cargo_barcode,
     cargo_description: invoice.cargo_description,
@@ -1228,6 +1250,7 @@ const buildInvoicePublicPayload = async (invoice, executor = db) => {
     currency: invoice.currency,
     issue_date: invoice.issued_at,
     generated_by_name: invoice.calculation_snapshot?.generated_by_name || null,
+    payment_history: payments.rows,
     created_at: invoice.created_at,
     line_items: lineItems.rows.map((line) => ({
       line_type: line.line_type,
@@ -1252,6 +1275,25 @@ const createOrRegenerateDraftInvoice = async ({ payload, auth, executor = db }) 
   const releaseEnd = cargo.charge_end_at || cargo.released_at;
   const billingEnd = requestedEnd || releaseEnd || now;
   const chargeStart = normalizeTimestamp(cargo.charge_start_at || cargo.created_at);
+  const sameDayInvoice = await executor.query(
+    `SELECT public_invoice_number
+     FROM invoices
+     WHERE cargo_id = $1
+       AND status NOT IN ('Cancelled', 'Draft')
+       AND billing_period_end >= date_trunc('day', $2::timestamptz)
+       AND billing_period_end < date_trunc('day', $2::timestamptz) + INTERVAL '1 day'
+     ORDER BY created_at DESC, id DESC
+     LIMIT 1`,
+    [cargo.id, billingEnd]
+  );
+  if (sameDayInvoice.rowCount > 0) {
+    throw buildError(
+      `Invoice ${sameDayInvoice.rows[0].public_invoice_number} already covers this cargo for the selected billing day.`,
+      409,
+      null,
+      'INVOICE_PERIOD_ALREADY_EXISTS'
+    );
+  }
   const previousResult = await executor.query(
     `SELECT MAX(billing_period_end) AS last_billed_at
      FROM invoices
@@ -1263,7 +1305,7 @@ const createOrRegenerateDraftInvoice = async ({ payload, auth, executor = db }) 
   const previousEnd = normalizeTimestamp(previousResult.rows[0]?.last_billed_at);
   const billingStart = maxDate(chargeStart, previousEnd) || chargeStart;
 
-  if (billingEnd <= billingStart) {
+  if (billingEnd < billingStart) {
     throw buildError("There are no unbilled storage days for this cargo and period.", 409);
   }
 

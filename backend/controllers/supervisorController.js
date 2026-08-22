@@ -382,6 +382,8 @@ const decideApproval = async (req, res, next, decision, options = {}) => {
         } else {
           throw buildError("Release type must be NORMAL or MANAGEMENT.", 400);
         }
+        const { activateRegistrationInvoice } = require("../services/paymentService");
+        await activateRegistrationInvoice({ cargoReference: approval.cargo_id, executor: client });
       } else {
         const rejectedCargoResult = await client.query(
           "SELECT * FROM cargo WHERE id = $1",
@@ -414,6 +416,8 @@ const decideApproval = async (req, res, next, decision, options = {}) => {
            WHERE id = $2`,
           [JSON.stringify(rejectionOriginalValues), approval.id]
         );
+        const { cancelRegistrationInvoice } = require("../services/paymentService");
+        await cancelRegistrationInvoice({ cargoReference: approval.cargo_id, reason: "Cargo registration rejected by Warehouse Supervisor.", executor: client });
       }
 
       await client.query(

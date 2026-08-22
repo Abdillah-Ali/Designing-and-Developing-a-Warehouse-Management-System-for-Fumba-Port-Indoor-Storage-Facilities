@@ -2846,9 +2846,12 @@ function WarehouseConfigDrawer({ action, scope, hierarchy, onClose, onSaved }) {
               </>
             )}
 
-            {scope !== "zones" && (
-              <FormField label="Maximum Weight (kg)">
-                <input className={inputClass} type="number" min="0.01" step="0.01" value={form.max_weight ?? ""} onChange={(event) => setField("max_weight", event.target.value)} required />
+            <FormField label="Maximum Weight (kg)">
+              <input className={inputClass} type="number" min="0.01" step="0.01" value={form.max_weight ?? ""} onChange={(event) => setField("max_weight", event.target.value)} required={scope !== "zones"} />
+            </FormField>
+            {scope !== "bins" && (
+              <FormField label="Maximum Volume (m3)">
+                <input className={inputClass} type="number" min="0.001" step="0.001" value={form.max_volume ?? ""} onChange={(event) => setField("max_volume", event.target.value)} placeholder="Defaults to parent capacity" />
               </FormField>
             )}
             {scope === "bins" && (
@@ -2884,6 +2887,7 @@ function WarehouseFormDrawer({ mode, warehouse, onClose, onSave }) {
   const [form, setForm] = useState({
     warehouse_letter: "",
     total_capacity: "",
+    max_volume: "",
     description: "",
     status: "Active"
   });
@@ -2895,6 +2899,7 @@ function WarehouseFormDrawer({ mode, warehouse, onClose, onSave }) {
       setForm({
         warehouse_letter: warehouse.warehouse_letter || String(warehouse.warehouse_code || "").replace(/^WH-/i, ""),
         total_capacity: warehouse.total_capacity || "",
+        max_volume: warehouse.max_volume || "",
         description: warehouse.description || "",
         status: warehouse.status || "Active"
       });
@@ -2952,6 +2957,19 @@ function WarehouseFormDrawer({ mode, warehouse, onClose, onSave }) {
             step="0.01"
             value={form.total_capacity}
             onChange={(e) => setField("total_capacity", e.target.value)}
+            required
+          />
+        </FormField>
+
+        <FormField label="Total Volume Capacity (m3)">
+          <input
+            className={inputClass}
+            type="number"
+            min="0.001"
+            max="999999999999999"
+            step="0.001"
+            value={form.max_volume}
+            onChange={(e) => setField("max_volume", e.target.value)}
             required
           />
         </FormField>

@@ -223,7 +223,6 @@ function CargoChargesPage() {
     billing_status: "",
     page: 1
   });
-  const [message, setMessage] = useState("");
   const key = JSON.stringify(filters);
   const charges = useLoad(() => getFinanceCargoCharges({ ...filters, limit: 25 }), key);
 
@@ -240,17 +239,6 @@ function CargoChargesPage() {
       const next = new URLSearchParams(searchParams);
       value ? next.set("search", value) : next.delete("search");
       setSearchParams(next, { replace: true });
-    }
-  };
-
-  const draftInvoice = async (cargoReference) => {
-    setMessage("");
-    try {
-      const response = await generateFinanceDraftInvoice({ cargo_reference: cargoReference });
-      setMessage(`Draft invoice ${response.data.invoice_number} generated for ${cargoReference}.`);
-      await charges.refresh();
-    } catch (error) {
-      setMessage(getErrorMessage(error));
     }
   };
 
@@ -272,7 +260,6 @@ function CargoChargesPage() {
             <SelectField label="Billing" value={filters.billing_status} onChange={(value) => updateFilter("billing_status", value)} options={["", "Unbilled", "Outstanding", "Partially Paid", "Fully Paid", "Released With Balance"]} />
           </div>
         </SectionCard>
-        {message && <div className="mt-3 rounded border border-info/30 bg-info/10 px-3 py-2 text-xs font-semibold text-info">{message}</div>}
         <div className="mt-3">
           <SectionCard title="Dynamic Cargo Charges" icon={ReceiptText}>
             <DataTable
@@ -295,15 +282,6 @@ function CargoChargesPage() {
                 { key: "paid_amount", label: "Paid", render: (row) => formatMoney(row.paid_amount) },
                 { key: "outstanding_amount", label: "Outstanding", render: (row) => formatMoney(row.outstanding_amount) },
                 { key: "billing_status", label: "Billing", render: (row) => <StatusBadge tone={statusTone(row.billing_status)}>{row.billing_status}</StatusBadge> },
-                {
-                  key: "actions",
-                  label: "Actions",
-                  render: (row) => (
-                    <button type="button" disabled={row.management_release_status === "APPROVED"} title={row.management_release_status === "APPROVED" ? "Management Release Approved — charges waived" : row.management_release_status === "PENDING" ? "Management Release Pending — invoice is provisional and does not authorize Gate-Out" : "Generate draft invoice"} onClick={() => draftInvoice(row.cargo_reference)} className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground disabled:cursor-not-allowed disabled:opacity-40">
-                      Draft Invoice
-                    </button>
-                  )
-                }
               ]}
             />
           </SectionCard>
@@ -371,7 +349,7 @@ function InvoicesPage() {
 
   return (
     <>
-      <PageHeader eyebrow="Finance" title="Invoices" description="Preview, issue, cancel unpaid invoices, and continue payment workflows." />
+      <PageHeader eyebrow="Finance" title="Invoices" description="Monitor system-generated invoices and payment progress." />
       <div className="flex-1 overflow-auto p-4">
         <SectionCard title="Invoice Filter" icon={FileText}>
           <div className="w-56">
@@ -408,11 +386,6 @@ function InvoicesPage() {
                   render: (row) => (
                     <div className="flex gap-1">
                       <button type="button" onClick={() => openDetail(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">Details</button>
-                      {row.payment_url&&<button type="button" onClick={()=>copyLink(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">Copy Link</button>}
-                      {row.customer_email&&row.payment_url&&<button type="button" onClick={()=>resend(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">Resend Email</button>}
-                      {row.status === "Issued" && row.payment_status !== "Paid" && Number(row.outstanding_balance) > 0 && <button type="button" onClick={() => setGateway({ invoice: row, submitting: false, error: "", result: null })} className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground">Pay with Flutterwave</button>}
-                      {row.status === "Draft" && <button type="button" onClick={() => act("issue", row.invoice_number)} className="rounded bg-success px-2 py-1 text-[11px] font-semibold text-success-foreground">Issue</button>}
-                      {["Draft", "Issued"].includes(row.status) && <button type="button" onClick={() => act("cancel", row.invoice_number)} className="rounded border border-destructive/30 bg-destructive/10 px-2 py-1 text-[11px] font-semibold text-destructive">Cancel</button>}
                     </div>
                   )
                 }
@@ -508,7 +481,10 @@ function InvoiceDetailDialog({ detail, onClose }) {
             <div className="grid gap-3 sm:grid-cols-3">
               <ReadonlyValue label="Cargo" value={invoice.cargo_reference} />
               <ReadonlyValue label="Status" value={invoice.status} />
+              <ReadonlyValue label="Workflow State" value={invoice.workflow_state || invoice.status} />
+              <ReadonlyValue label="Cargo Approval" value={invoice.cargo_approval_status || (invoice.status === "Draft" ? "Pending Supervisor Approval" : "Approved / Awaiting Payment")} />
               <ReadonlyValue label="Payment" value={invoice.payment_status} />
+              <ReadonlyValue label="Payment Reference" value={invoice.payment_reference || "Available after supervisor approval"} />
               <ReadonlyValue label="Billing Period" value={`${formatDateTime(invoice.billing_period_start)} to ${formatDateTime(invoice.billing_period_end)}`} />
               <ReadonlyValue label="Billable Days" value={invoice.billable_days} />
               <ReadonlyValue label="Total" value={formatMoney(invoice.total_amount, invoice.currency)} />
@@ -516,6 +492,7 @@ function InvoiceDetailDialog({ detail, onClose }) {
               <ReadonlyValue label="Outstanding" value={formatMoney(invoice.outstanding_balance, invoice.currency)} />
               <ReadonlyValue label="Tariff" value={invoice.tariff?.tariff_name || "Snapshot unavailable"} />
             </div>
+            {invoice.cancellation_reason && <ReadonlyValue label="Cancellation Reason" value={invoice.cancellation_reason} />}
             <SectionCard title="Charge Breakdown" icon={ReceiptText}>
               <DataTable rows={invoice.line_items || []} emptyTitle="No line items" columns={[
                 { key: "line_type", label: "Type" },
@@ -523,6 +500,15 @@ function InvoiceDetailDialog({ detail, onClose }) {
                 { key: "quantity", label: "Quantity" },
                 { key: "unit_rate", label: "Unit Rate", render: (row) => formatMoney(row.unit_rate, invoice.currency) },
                 { key: "amount", label: "Amount", render: (row) => formatMoney(row.amount, invoice.currency) }
+              ]} />
+            </SectionCard>
+            <SectionCard title="Installment & Payment History" icon={ReceiptText}>
+              <DataTable rows={invoice.payment_history || []} emptyTitle="No payment attempts yet" columns={[
+                { key: "public_reference", label: "Attempt" },
+                { key: "amount", label: "Amount", render: (row) => formatMoney(row.amount, invoice.currency) },
+                { key: "status", label: "Status" },
+                { key: "gateway_status", label: "Gateway" },
+                { key: "confirmed_at", label: "Confirmed", render: (row) => formatDateTime(row.confirmed_at) }
               ]} />
             </SectionCard>
           </div>

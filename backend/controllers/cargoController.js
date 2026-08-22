@@ -517,6 +517,14 @@ const createCargo = async (req, res, next) => {
     );
 
     await client.query(
+      "UPDATE cargo SET charge_start_at = COALESCE(charge_start_at, CURRENT_TIMESTAMP) WHERE id = $1 RETURNING *",
+      [insertResult.rows[0].id]
+    );
+    const registeredCargo = (await client.query("SELECT * FROM cargo WHERE id = $1", [insertResult.rows[0].id])).rows[0];
+    const { createRegistrationInvoice } = require("../services/paymentService");
+    await createRegistrationInvoice({ cargoReference: registeredCargo.cargo_id, executor: client });
+
+    await client.query(
       `INSERT INTO cargo_movements
        (cargo_id, from_location, to_location, moved_by, moved_by_user_id, warehouse_id_at_action, movement_type, action)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $7)`,
@@ -581,7 +589,7 @@ const createCargo = async (req, res, next) => {
 
     await notifyCargoRegistrationPending(
       {
-        cargo: insertResult.rows[0],
+        cargo: registeredCargo,
         approvalRequestId: approvalResult.rows[0]?.id || null,
         actorId: req.auth?.userId || null
       },
@@ -589,14 +597,14 @@ const createCargo = async (req, res, next) => {
     );
     await notifyFinanceChargeStarted(
       {
-        cargo: insertResult.rows[0],
+        cargo: registeredCargo,
         actorId: req.auth?.userId || null
       },
       client
     );
     await notifyCustomsAwaitingInspection(
       {
-        cargo: insertResult.rows[0],
+        cargo: registeredCargo,
         actorId: req.auth?.userId || null
       },
       client
