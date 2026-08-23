@@ -3,7 +3,7 @@ const ensureStandardRolePermissions = async (client) => {
     USING roles r
     WHERE rp.role_id=r.id
       AND r.role_key='finance_officer'
-      AND rp.permission_key IN ('finance.invoices.create','finance.invoices.issue','finance.invoices.cancel');`);
+      AND rp.permission_key IN ('finance.invoices.create','finance.invoices.issue','finance.payments.confirm','finance.invoices.cancel');`);
   const query = `
     INSERT INTO role_permissions (role_id, permission_key)
     SELECT r.id, p.permission_key
@@ -27,7 +27,7 @@ const ensureStandardRolePermissions = async (client) => {
         'gate.history.view', 'gate.emergency_release.approve', 'notifications.view',
         'notifications.manage', 'management_release.view', 'management_release.request'
       )) OR
-      (r.role_key = 'finance_officer' AND ((p.permission_key LIKE 'finance.%' AND p.permission_key NOT IN ('finance.invoices.create', 'finance.invoices.issue', 'finance.invoices.cancel')) OR p.permission_key IN ('cargo.registration_metadata.view', 'notifications.view', 'notifications.manage'))) OR
+      (r.role_key = 'finance_officer' AND ((p.permission_key LIKE 'finance.%' AND p.permission_key NOT IN ('finance.invoices.create', 'finance.invoices.issue', 'finance.payments.confirm', 'finance.invoices.cancel')) OR p.permission_key IN ('cargo.registration_metadata.view', 'notifications.view', 'notifications.manage'))) OR
       (r.role_key = 'customs_officer' AND (p.permission_key LIKE 'customs.%' OR p.permission_key IN ('cargo.registration_metadata.view', 'notifications.view', 'notifications.manage'))) OR
       (r.role_key = 'gate_officer' AND (p.permission_key LIKE 'gate.%' OR p.permission_key IN ('cargo.registration_metadata.view', 'notifications.view', 'notifications.manage'))) OR
       (r.role_key = 'management' AND p.permission_key IN ('management.dashboard.view', 'management.reports.view', 'cargo.registration_metadata.view', 'notifications.view', 'notifications.manage', 'management_release.view', 'management_release.decide')) OR
