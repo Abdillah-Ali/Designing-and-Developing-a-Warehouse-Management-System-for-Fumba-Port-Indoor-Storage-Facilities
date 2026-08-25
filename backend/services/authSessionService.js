@@ -6,6 +6,8 @@ const { getDurationSetting, requireValidSetting } = require("./systemConfigurati
 
 const REFRESH_COOKIE = "fumba_wms_refresh";
 const ACCESS_TYPE = "access";
+const SESSION_SELECTOR_HEADER = "x-fumba-wms-session";
+const SESSION_SELECTOR_PATTERN = /^SES-[A-F0-9]{24}$/;
 
 const hashToken = (token) => crypto.createHash("sha256").update(String(token)).digest("hex");
 const randomRefreshToken = () => crypto.randomBytes(48).toString("base64url");
@@ -57,8 +59,19 @@ const revokeSession = async (sessionId, reason, executor, revokedBy = null) => {
 
 const authError = (code, message = "Session expired. Please sign in again.") => buildError(message, 401, undefined, code);
 
-const rotateRefreshCredential = async ({ token, ipAddress, userAgent }) => {
-  if (!token || String(token).includes(".")) throw authError("AUTH_TOKEN_TYPE_INVALID");
+const normalizeSessionSelector = (value) => {
+  const selector = String(value || "").trim().toUpperCase();
+  return SESSION_SELECTOR_PATTERN.test(selector) ? selector : null;
+};
+
+const getRefreshCookieName = (sessionSelector) => {
+  const selector = normalizeSessionSelector(sessionSelector);
+  return selector ? `${REFRESH_COOKIE}_${selector}` : null;
+};
+
+const rotateRefreshCredential = async ({ token, sessionSelector, ipAddress, userAgent }) => {
+  const selector = normalizeSessionSelector(sessionSelector);
+  if (!token || String(token).includes(".") || !selector) throw authError("AUTH_TOKEN_TYPE_INVALID");
   const client = await db.pool.connect();
   try {
     await client.query("BEGIN");
@@ -74,8 +87,10 @@ const rotateRefreshCredential = async ({ token, ipAddress, userAgent }) => {
        JOIN roles r ON r.id=u.role_id
        LEFT JOIN scanner_accounts sa ON sa.id=us.scanner_account_id AND sa.user_id=u.id
        LEFT JOIN roles sr ON sr.role_key='scanner'
-       WHERE rt.token_hash=$1 FOR UPDATE OF rt,us`,
-      [hashToken(token)]
+       WHERE rt.token_hash=$1
+         AND us.public_reference=$2
+       FOR UPDATE OF rt,us`,
+      [hashToken(token), selector]
     );
     if (!tokenResult.rowCount) throw authError("AUTH_INVALID_REFRESH_TOKEN");
     const row = tokenResult.rows[0];
@@ -135,7 +150,7 @@ const rotateRefreshCredential = async ({ token, ipAddress, userAgent }) => {
     };
     const accessToken = issueAccessToken(claims, row.session_id, lifetimes.accessMs);
     await client.query("COMMIT");
-    return { accessToken, refreshToken: replacement.token, refreshExpiresAt: replacement.expires_at };
+    return { accessToken, refreshToken: replacement.token, refreshExpiresAt: replacement.expires_at, sessionSelector: selector };
   } catch (error) {
     if (!error.transactionComplete) await client.query("ROLLBACK").catch(() => {});
     throw error;
@@ -143,12 +158,25 @@ const rotateRefreshCredential = async ({ token, ipAddress, userAgent }) => {
 };
 
 const cookieOptions = (maxAge) => ({ httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict", path: "/api/auth", maxAge });
-const setRefreshCookie = (res, token, maxAge) => res.cookie
-  ? res.cookie(REFRESH_COOKIE, token, cookieOptions(maxAge))
-  : res.setHeader("Set-Cookie", `${REFRESH_COOKIE}=${token}; Max-Age=${Math.floor(maxAge / 1000)}; Path=/api/auth; HttpOnly; SameSite=Strict${process.env.NODE_ENV === "production" ? "; Secure" : ""}`);
-const clearRefreshCookie = (res) => res.clearCookie
-  ? res.clearCookie(REFRESH_COOKIE, cookieOptions(0))
-  : res.setHeader("Set-Cookie", `${REFRESH_COOKIE}=; Max-Age=0; Path=/api/auth; HttpOnly; SameSite=Strict`);
-const readRefreshCookie = (req) => String(req.headers?.cookie || "").split(";").map(v => v.trim()).find(v => v.startsWith(`${REFRESH_COOKIE}=`))?.slice(REFRESH_COOKIE.length + 1) || null;
+const setRefreshCookie = (res, sessionSelector, token, maxAge) => {
+  const cookieName = getRefreshCookieName(sessionSelector);
+  if (!cookieName) throw new Error("A valid session selector is required for refresh cookies.");
+  return res.cookie
+    ? res.cookie(cookieName, token, cookieOptions(maxAge))
+    : res.setHeader("Set-Cookie", `${cookieName}=${token}; Max-Age=${Math.floor(maxAge / 1000)}; Path=/api/auth; HttpOnly; SameSite=Strict${process.env.NODE_ENV === "production" ? "; Secure" : ""}`);
+};
+const clearRefreshCookie = (res, sessionSelector) => {
+  const cookieName = getRefreshCookieName(sessionSelector);
+  if (!cookieName) return undefined;
+  return res.clearCookie
+    ? res.clearCookie(cookieName, cookieOptions(0))
+    : res.setHeader("Set-Cookie", `${cookieName}=; Max-Age=0; Path=/api/auth; HttpOnly; SameSite=Strict${process.env.NODE_ENV === "production" ? "; Secure" : ""}`);
+};
+const readRefreshCookie = (req, sessionSelector) => {
+  const cookieName = getRefreshCookieName(sessionSelector);
+  if (!cookieName) return null;
+  return String(req.headers?.cookie || "").split(";").map((value) => value.trim())
+    .find((value) => value.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1) || null;
+};
 
-module.exports = { ACCESS_TYPE, REFRESH_COOKIE, clearRefreshCookie, createRefreshCredential, getAuthLifetimes, hashToken, issueAccessToken, readRefreshCookie, revokeSession, rotateRefreshCredential, setRefreshCookie };
+module.exports = { ACCESS_TYPE, REFRESH_COOKIE, SESSION_SELECTOR_HEADER, clearRefreshCookie, createRefreshCredential, getAuthLifetimes, getRefreshCookieName, hashToken, issueAccessToken, normalizeSessionSelector, readRefreshCookie, revokeSession, rotateRefreshCredential, setRefreshCookie };

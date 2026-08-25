@@ -1,4 +1,4 @@
-import { getStoredAuthToken, setStoredAuthToken, setStoredPermissions, clearStoredAuthToken } from "@/lib/portal-access";
+import { clearStoredAuthToken, getStoredAuthToken, getStoredSessionSelector, setStoredAuthToken, setStoredPermissions, setStoredSessionSelector } from "@/lib/portal-access";
 
 const getDefaultApiBaseUrl = () => {
   if (typeof window === "undefined") {
@@ -19,21 +19,67 @@ const LOGIN_ERROR_MESSAGES = Object.freeze({
 });
 let refreshPromise = null;
 
-const refreshAccessToken = async () => {
+const delay = (milliseconds) => new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+const refreshWithSelector = async (sessionSelector) => {
+  const response = await fetch(`${API_BASE_URL}/auth/refresh`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Fumba-Wms-Session": sessionSelector
+    },
+    body: "{}"
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload.success === false || !payload.token) {
+    throw buildApiError("Your session has expired. Please sign in again.", { status: response.status, code: payload.code });
+  }
+  setStoredAuthToken(payload.token);
+  setStoredPermissions(payload.permissions || []);
+  return { token: payload.token, permissions: payload.permissions || [] };
+};
+
+const coordinateRefresh = async (sessionSelector) => {
+  const channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("fumba-wms-auth-refresh");
+  let sharedToken = null;
+  const onMessage = (event) => {
+    const message = event.data || {};
+    if (message.type !== "refresh-complete" || message.sessionSelector !== sessionSelector || !message.token) return;
+    setStoredAuthToken(message.token);
+    setStoredPermissions(message.permissions || []);
+    sharedToken = message.token;
+  };
+  channel?.addEventListener("message", onMessage);
+
+  const performRefresh = async () => {
+    await delay(35);
+    if (sharedToken) return sharedToken;
+    const refreshed = await refreshWithSelector(sessionSelector);
+    channel?.postMessage({ type: "refresh-complete", sessionSelector, ...refreshed });
+    return refreshed.token;
+  };
+
+  try {
+    if (typeof navigator !== "undefined" && navigator.locks?.request) {
+      return await navigator.locks.request(`fumba-wms-refresh:${sessionSelector}`, performRefresh);
+    }
+    return await performRefresh();
+  } finally {
+    channel?.removeEventListener("message", onMessage);
+    channel?.close();
+  }
+};
+
+export const refreshAccessToken = async () => {
   if (!refreshPromise) {
-    refreshPromise = fetch(`${API_BASE_URL}/auth/refresh`, {
-      method: "POST",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: "{}"
-    }).then(async (response) => {
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok || payload.success === false || !payload.token) {
-        throw buildApiError("Your session has expired. Please sign in again.", { status: response.status, code: payload.code });
-      }
-      setStoredAuthToken(payload.token);
-      return payload.token;
-    }).finally(() => { refreshPromise = null; });
+    const sessionSelector = getStoredSessionSelector();
+    if (!sessionSelector) {
+      refreshPromise = Promise.reject(buildApiError("Your session has expired. Please sign in again.", { status: 401, code: "AUTH_SESSION_SELECTOR_MISSING" }));
+    } else {
+      refreshPromise = coordinateRefresh(sessionSelector);
+    }
+    refreshPromise = refreshPromise.finally(() => { refreshPromise = null; });
   }
   return refreshPromise;
 };
@@ -176,6 +222,7 @@ export const login = async (username, password) => {
   }
 
   if (payload.data?.token) {
+    setStoredSessionSelector(payload.data.session?.selector);
     setStoredAuthToken(payload.data.token);
     setStoredPermissions(payload.data.permissions || []);
   }
@@ -192,6 +239,12 @@ export const logout = async () => {
     // Clear token from storage
     clearStoredAuthToken();
   }
+};
+
+export const refreshCurrentPermissions = async () => {
+  const response = await request("/auth/permissions");
+  setStoredPermissions(response.data || []);
+  return response.data || [];
 };
 
 export const getBootstrapOptions = () => request("/bootstrap/options");

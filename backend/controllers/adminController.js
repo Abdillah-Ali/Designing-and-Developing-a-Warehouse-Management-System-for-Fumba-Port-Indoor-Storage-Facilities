@@ -28,8 +28,10 @@ const {
   createRefreshCredential,
   getAuthLifetimes,
   issueAccessToken,
+  normalizeSessionSelector,
   readRefreshCookie,
   revokeSession,
+  SESSION_SELECTOR_HEADER,
   rotateRefreshCredential,
   setRefreshCookie
 } = require("../services/authSessionService");
@@ -1593,7 +1595,7 @@ const login = async (req, res, next) => {
     const loginRoleId = isScannerLogin ? user.scanner_role_id : user.role_id;
     const permissions = await loadRolePermissions(loginRoleId, client);
 
-    setRefreshCookie(res, refreshCredential.token, lifetimes.refreshMs);
+    setRefreshCookie(res, session.public_reference, refreshCredential.token, lifetimes.refreshMs);
     res.json({
       success: true,
       message: "Login successful.",
@@ -1627,6 +1629,7 @@ const login = async (req, res, next) => {
         },
         session: {
           id: session.id,
+          selector: session.public_reference,
           login_time: session.login_time,
           session_status: session.session_status
         }
@@ -1678,7 +1681,7 @@ const logout = async (req, res, next) => {
     await client.query("COMMIT");
     transactionStarted = false;
 
-    clearRefreshCookie(res);
+    clearRefreshCookie(res, req.auth?.sessionSelector);
     res.json({
       success: true,
       message: "Logout successful."
@@ -1961,24 +1964,30 @@ const changePassword = async (req, res, next) => {
 };
 
 const refreshToken = async (req, res, next) => {
+  const sessionSelector = normalizeSessionSelector(req.get?.(SESSION_SELECTOR_HEADER));
   try {
-    const submitted = readRefreshCookie(req) || req.body?.refresh_token || req.body?.refreshToken;
+    const submitted = readRefreshCookie(req, sessionSelector);
     const rotated = await rotateRefreshCredential({
       token: submitted,
+      sessionSelector,
       ipAddress: getClientIp(req),
       userAgent: req.get?.("user-agent")
     });
     const lifetimes = await getAuthLifetimes();
-    setRefreshCookie(res, rotated.refreshToken, lifetimes.refreshMs);
+    const claims = verifyToken(rotated.accessToken);
+    const permissions = await loadRolePermissions(claims?.roleId || claims?.role_id);
+    setRefreshCookie(res, rotated.sessionSelector, rotated.refreshToken, lifetimes.refreshMs);
     res.json({
       success: true,
       token: rotated.accessToken,
       accessToken: rotated.accessToken,
       access_token: rotated.accessToken,
+      permissions,
+      session_selector: rotated.sessionSelector,
       message: "Access token refreshed."
     });
   } catch (error) {
-    clearRefreshCookie(res);
+    clearRefreshCookie(res, sessionSelector);
     next(error);
   }
 };

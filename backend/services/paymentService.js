@@ -131,11 +131,22 @@ const findCustomerByEmail = async ({ email, fetchImpl }) => {
   }
   return null;
 };
+const SUPPORTED_NETWORKS = new Set(["vodacom", "airtel", "tigo", "halotel"]);
+const normalizeNetwork = (net) => {
+  const clean = String(net || "").trim().toLowerCase();
+  if (clean === "mpesa" || clean === "m-pesa") return "vodacom";
+  if (clean === "mixx" || clean === "tigopesa" || clean === "tigo pesa") return "tigo";
+  if (clean === "halopesa" || clean === "halo pesa") return "halotel";
+  return clean;
+};
+
 const resolveCustomerAndPaymentMethod = async ({ customer, fetchImpl }) => {
   if (customer.customer_id && customer.payment_method_id) return { customerId: String(customer.customer_id), paymentMethodId: String(customer.payment_method_id) };
   if (!customer.email || !customer.phone || !customer.network) throw buildError("Flutterwave v4 requires customer_id and payment_method_id, or external customer email, phone, and mobile-money network.", 400, null, "PAYMENT_CUSTOMER_DETAILS_REQUIRED");
   const digits = String(customer.phone).replace(/\D/g, ""); const countryCode = String(customer.country_code || "255").replace(/\D/g, ""); const localNumber = digits.startsWith(countryCode) ? digits.slice(countryCode.length) : digits.replace(/^0/, "");
   const email = String(customer.email).trim();
+  const network = normalizeNetwork(customer.network);
+  if (!network || !SUPPORTED_NETWORKS.has(network)) throw buildError("Select a valid mobile-money network.", 400, null, "INVALID_PAYMENT_NETWORK");
   let customerRecord;
   try {
     customerRecord = await providerRequest({ path: "/customers", method: "POST", fetchImpl, headers: { "X-Idempotency-Key": idempotencyKey("customer", email.toLowerCase()), "X-Trace-Id": idempotencyKey("customer-trace", email.toLowerCase()) }, payload: { email, name: normalizeName(customer.name), phone: { country_code: countryCode, number: localNumber }, meta: { source: "fumba_port_wms" } } });
@@ -145,8 +156,8 @@ const resolveCustomerAndPaymentMethod = async ({ customer, fetchImpl }) => {
     if (!customerRecord) throw buildError("Flutterwave reported an existing customer but it could not be retrieved.", 502, null, "PAYMENT_PROVIDER_CUSTOMER_CONFLICT");
   }
   if (!customerRecord.id) throw buildError("Flutterwave did not return a customer ID.", 502);
-  const methodIdentity = `${customerRecord.id}:${countryCode}:${localNumber}:${String(customer.network).toLowerCase()}`;
-  const paymentMethod = await providerRequest({ path: "/payment-methods", method: "POST", fetchImpl, headers: { "X-Idempotency-Key": idempotencyKey("payment-method", methodIdentity), "X-Trace-Id": idempotencyKey("payment-method-trace", methodIdentity) }, payload: { type: "mobile_money", customer_id: String(customerRecord.id), mobile_money: { country_code: countryCode, network: String(customer.network), phone_number: localNumber } } });
+  const methodIdentity = `${customerRecord.id}:${countryCode}:${localNumber}:${network}`;
+  const paymentMethod = await providerRequest({ path: "/payment-methods", method: "POST", fetchImpl, headers: { "X-Idempotency-Key": idempotencyKey("payment-method", methodIdentity), "X-Trace-Id": idempotencyKey("payment-method-trace", methodIdentity) }, payload: { type: "mobile_money", customer_id: String(customerRecord.id), mobile_money: { country_code: countryCode, network, phone_number: localNumber } } });
   if (!paymentMethod.id) throw buildError("Flutterwave did not return a payment-method ID.", 502);
   return { customerId: String(customerRecord.id), paymentMethodId: String(paymentMethod.id) };
 };
@@ -160,7 +171,8 @@ const validateCustomerPaymentInput=({amount,customer,token,attemptReference})=>{
   if(customer&&!customer.customer_id&&!customer.payment_method_id){
     if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(customer.email||"").trim())) throw buildError("Enter a valid customer email address.",400,null,"INVALID_CUSTOMER_EMAIL");
     if(!/^\+?[0-9\s()-]{7,24}$/.test(String(customer.phone||"").trim())) throw buildError("Enter a valid customer phone number.",400,null,"INVALID_CUSTOMER_PHONE");
-    if(!/^[a-z0-9_-]{2,30}$/i.test(String(customer.network||"").trim())) throw buildError("Select a valid mobile-money network.",400,null,"INVALID_PAYMENT_NETWORK");
+    const net = normalizeNetwork(customer.network);
+    if(!net || !SUPPORTED_NETWORKS.has(net)) throw buildError("Select a valid mobile-money network.",400,null,"INVALID_PAYMENT_NETWORK");
   }
 };
 
@@ -185,13 +197,162 @@ const getPaymentHistory = async ({ paymentReference, executor = db }) => {
   return { ...summary, installments:rows.rows.map(row=>({ ...row,attempt_reference:row.attempt_reference||row.public_reference })) };
 };
 
-const getPaymentAttemptStatus = async ({ attemptReference, token, executor = db, internal = false }) => {
-  validateCustomerPaymentInput({attemptReference,...(!internal?{token}:{})});
-  const values=[String(attemptReference||"").trim()]; let tokenClause="";
-  if (!internal) { values.push(String(token||"").trim()); tokenClause=" AND i.payment_public_token=$2"; }
-  const result=await executor.query(`SELECT p.attempt_reference,p.payment_reference,p.gateway_transaction_id,p.expected_amount,p.amount_received,p.currency,p.gateway_status,p.status,p.reconciliation_status,p.failure_reason,p.initiated_at,p.verified_at FROM payments p JOIN invoices i ON i.id=p.invoice_id WHERE (p.attempt_reference=$1 OR p.public_reference=$1)${tokenClause} LIMIT 1`,values);
-  if (!result.rowCount) throw buildError("Payment attempt was not found.",404,null,"PAYMENT_ATTEMPT_NOT_FOUND");
-  return result.rows[0];
+const verifyCharge = async (id, fetchImpl = global.fetch) => providerRequest({ path: `/charges/${encodeURIComponent(id)}`, fetchImpl });
+const classifyVerifiedCharge = ({ providerStatus, received, expected, currency, expectedCurrency }) => {
+  let status = "FAILED", reconciliation = "PENDING", failure = null;
+  if (providerStatus === "succeeded") {
+    if (currency !== expectedCurrency) { reconciliation = "EXCEPTION"; failure = "Currency mismatch"; }
+    else if (received < expected) { reconciliation = "EXCEPTION"; failure = "Provider amount is below the validated installment"; }
+    else if (received > expected) { reconciliation = "EXCEPTION"; failure = "Provider amount exceeds the validated installment"; }
+    else { status = "SUCCESSFUL"; reconciliation = "MATCHED"; }
+  } else if (providerStatus === "pending") status = "PENDING";
+  else failure = `Provider status: ${providerStatus || "unknown"}`;
+  return { status, reconciliation, failure };
+};
+
+const settlePaymentAttempt = async ({ payment, verified, eventId = null, executor = db }) => {
+  const chargeId = String(verified.id || payment.gateway_transaction_id || "");
+  const reference = String(verified.reference || payment.attempt_reference || payment.public_reference || "");
+  const received = centsFromAmount(verified.amount || 0);
+  const expected = centsFromAmount(payment.expected_amount);
+  const currency = String(verified.currency || payment.currency || "").toUpperCase();
+  const providerStatus = String(verified.status || "").toLowerCase();
+
+  const { status, reconciliation, failure } = classifyVerifiedCharge({
+    providerStatus,
+    received,
+    expected,
+    currency,
+    expectedCurrency: String(payment.currency).toUpperCase()
+  });
+
+  await executor.query(
+    `UPDATE payments
+     SET amount = $1,
+         amount_received = $1,
+         currency = $2,
+         gateway_status = $3,
+         status = CASE
+           WHEN $3 = 'SUCCESSFUL' THEN 'Confirmed'
+           WHEN $3 = 'FAILED' THEN 'Gateway Failed'
+           ELSE 'Gateway Pending'
+         END,
+         gateway_transaction_id = $4,
+         gateway_event_id = COALESCE($5, gateway_event_id),
+         payment_method = COALESCE($6, payment_method),
+         verified_at = CASE WHEN $3 = 'SUCCESSFUL' THEN CURRENT_TIMESTAMP ELSE verified_at END,
+         failed_at = CASE WHEN $3 = 'FAILED' THEN CURRENT_TIMESTAMP ELSE failed_at END,
+         failure_reason = $7,
+         reconciliation_status = $8,
+         gateway_response = $9::jsonb,
+         confirmed_at = CASE WHEN $3 = 'SUCCESSFUL' THEN CURRENT_TIMESTAMP ELSE confirmed_at END
+     WHERE id = $10`,
+    [
+      verified.amount || 0,
+      currency,
+      status,
+      chargeId,
+      eventId,
+      verified.payment_method_details?.type || payment.payment_method || null,
+      failure,
+      reconciliation,
+      JSON.stringify({ id: chargeId, status: providerStatus, amount: verified.amount, currency, reference }),
+      payment.id
+    ]
+  );
+
+  const invoice = await refreshInvoicePaymentStatus({ invoiceId: payment.invoice_id, executor });
+  const cargo = await updateCargoFinancialStatus({ cargoId: payment.cargo_id, executor });
+  const readiness = await recalculateReleaseReadiness({ cargoId: payment.cargo_id, executor, trigger: "PAYMENT_SETTLEMENT" });
+
+  await writeAuditLog(
+    {
+      user_id: null,
+      action: status === "SUCCESSFUL" ? "PAYMENT_VERIFIED" : status === "FAILED" ? "PAYMENT_FAILED" : "PAYMENT_PENDING",
+      module: "Billing and Payment",
+      description: `Flutterwave v4 charge ${chargeId} for ${reference} verified as ${status}.`,
+      metadata: { system_actor: true, event_id: eventId, charge_id: chargeId, expected_amount: payment.expected_amount, received_amount: String(verified.amount), currency, reconciliation }
+    },
+    executor
+  );
+
+  if (status === "SUCCESSFUL" || status === "FAILED") {
+    await createNotificationsForAudience(
+      {
+        notification_type: "finance_payment_update",
+        title: `Payment ${status}`,
+        message: `${reference} for ${payment.cargo_reference}: ${currency} ${verified.amount}.`,
+        related_module: "Billing and Payment",
+        priority: status === "SUCCESSFUL" ? "high" : "normal",
+        metadata: { deep_link: "/finance?section=payments" }
+      },
+      { roleName: "Finance Officer" },
+      executor,
+      { fallbackBroadTarget: true }
+    );
+  }
+
+  return {
+    payment_reference: payment.payment_reference,
+    attempt_reference: reference,
+    charge_id: chargeId,
+    status,
+    reconciliation_status: reconciliation,
+    invoice_status: invoice?.status,
+    cargo_financial_status: cargo?.financial_status,
+    release_readiness: readiness
+  };
+};
+
+const getPaymentAttemptStatus = async ({ attemptReference, token, executor = db, internal = false, syncProvider = true, fetchImpl = global.fetch }) => {
+  validateCustomerPaymentInput({ attemptReference, ...(!internal ? { token } : {}) });
+  const values = [String(attemptReference || "").trim()];
+  let tokenClause = "";
+  if (!internal) {
+    values.push(String(token || "").trim());
+    tokenClause = " AND i.payment_public_token=$2";
+  }
+  const result = await executor.query(
+    `SELECT p.*, i.payment_public_token, i.public_invoice_number, c.cargo_id AS cargo_reference
+     FROM payments p
+     JOIN invoices i ON i.id = p.invoice_id
+     JOIN cargo c ON c.id = p.cargo_id
+     WHERE (p.attempt_reference = $1 OR p.public_reference = $1)${tokenClause}
+     LIMIT 1`,
+    values
+  );
+  if (!result.rowCount) throw buildError("Payment attempt was not found.", 404, null, "PAYMENT_ATTEMPT_NOT_FOUND");
+  const payment = result.rows[0];
+
+  if (syncProvider && ["NOT_INITIATED", "PENDING", "PROCESSING"].includes(payment.gateway_status) && payment.gateway_transaction_id) {
+    try {
+      const verified = await verifyCharge(payment.gateway_transaction_id, fetchImpl);
+      if (verified && verified.id && String(verified.status || "").toLowerCase() !== "pending") {
+        await settlePaymentAttempt({ payment, verified, executor });
+        const refreshed = await executor.query(
+          `SELECT p.attempt_reference, p.payment_reference, p.gateway_transaction_id, p.expected_amount, p.amount_received, p.currency, p.gateway_status, p.status, p.reconciliation_status, p.failure_reason, p.initiated_at, p.verified_at
+           FROM payments p WHERE p.id = $1`,
+          [payment.id]
+        );
+        if (refreshed.rowCount) return refreshed.rows[0];
+      }
+    } catch {}
+  }
+
+  return {
+    attempt_reference: payment.attempt_reference || payment.public_reference,
+    payment_reference: payment.payment_reference,
+    gateway_transaction_id: payment.gateway_transaction_id,
+    expected_amount: payment.expected_amount,
+    amount_received: payment.amount_received,
+    currency: payment.currency,
+    gateway_status: payment.gateway_status,
+    status: payment.status,
+    reconciliation_status: payment.reconciliation_status,
+    failure_reason: payment.failure_reason,
+    initiated_at: payment.initiated_at,
+    verified_at: payment.verified_at
+  };
 };
 
 const initiatePayment = async ({ invoiceNumber, token, amount, customer = {}, auth, executor = db, fetchImpl = global.fetch }) => {
@@ -217,18 +378,6 @@ const initiatePayment = async ({ invoiceNumber, token, amount, customer = {}, au
   return { payment_reference: invoice.payment_reference,attempt_reference:attemptReference, invoice_reference: invoice.public_invoice_number, cargo_reference: invoice.cargo_reference,amount:validatedAmount, charge_id: String(charge.id), status: gatewayStatus, next_action: charge.next_action || null };
 };
 
-const verifyCharge = async (id, fetchImpl = global.fetch) => providerRequest({ path: `/charges/${encodeURIComponent(id)}`, fetchImpl });
-const classifyVerifiedCharge = ({ providerStatus, received, expected, currency, expectedCurrency }) => {
-  let status = "FAILED", reconciliation = "PENDING", failure = null;
-  if (providerStatus === "succeeded") {
-    if (currency !== expectedCurrency) { reconciliation = "EXCEPTION"; failure = "Currency mismatch"; }
-    else if (received < expected) { reconciliation = "EXCEPTION"; failure = "Provider amount is below the validated installment"; }
-    else if (received > expected) { reconciliation = "EXCEPTION"; failure = "Provider amount exceeds the validated installment"; }
-    else { status = "SUCCESSFUL"; reconciliation = "MATCHED"; }
-  } else if (providerStatus === "pending") status = "PENDING";
-  else failure = `Provider status: ${providerStatus || "unknown"}`;
-  return { status, reconciliation, failure };
-};
 const processWebhook = async ({ headers, rawBody, executor = db, fetchImpl = global.fetch }) => {
   const { data, eventId, chargeId, reference, payloadHash } = readVerifiedWebhookEnvelope({ headers, rawBody });
   const claim = await claimWebhookEvent({ eventId, payloadHash, executor });
@@ -238,14 +387,9 @@ const processWebhook = async ({ headers, rawBody, executor = db, fetchImpl = glo
   if (payment.gateway_transaction_id && String(payment.gateway_transaction_id) !== chargeId) throw buildError("Webhook charge does not belong to this payment.", 409, null, "PAYMENT_CHARGE_MISMATCH");
   let verified; try { verified = await verifyCharge(chargeId, fetchImpl); } catch (error) { await executor.query(`UPDATE payments SET gateway_status='PROCESSING',failure_reason='Verification temporarily failed' WHERE id=$1`, [payment.id]); throw error; }
   if (String(verified.id || "") !== chargeId || String(verified.reference || "") !== reference || reference !== String(payment.attempt_reference||payment.public_reference)) throw buildError("Verified charge reference or identity does not match the WMS payment.", 409, null, "PAYMENT_REFERENCE_MISMATCH");
-  const received = centsFromAmount(verified.amount || 0); const expected = centsFromAmount(payment.expected_amount); const currency = String(verified.currency || "").toUpperCase(); const providerStatus = String(verified.status || "").toLowerCase();
-  const { status, reconciliation, failure } = classifyVerifiedCharge({ providerStatus, received, expected, currency, expectedCurrency: String(payment.currency).toUpperCase() });
-  await executor.query(`UPDATE payments SET amount=$1,amount_received=$1,currency=$2,gateway_status=$3,status=CASE WHEN $3='SUCCESSFUL' THEN 'Confirmed' WHEN $3='FAILED' THEN 'Gateway Failed' ELSE 'Gateway Pending' END,gateway_transaction_id=$4,gateway_event_id=$5,payment_method=$6,verified_at=CASE WHEN $3='SUCCESSFUL' THEN CURRENT_TIMESTAMP END,failed_at=CASE WHEN $3='FAILED' THEN CURRENT_TIMESTAMP END,failure_reason=$7,reconciliation_status=$8,gateway_response=$9::jsonb,confirmed_at=CASE WHEN $3='SUCCESSFUL' THEN CURRENT_TIMESTAMP ELSE confirmed_at END WHERE id=$10`, [verified.amount || 0, currency, status, chargeId, eventId, verified.payment_method_details?.type || payment.payment_method || null, failure, reconciliation, JSON.stringify({ id: chargeId, status: providerStatus, amount: verified.amount, currency, reference: verified.reference }), payment.id]);
+  const res = await settlePaymentAttempt({ payment, verified, eventId, executor });
   await markWebhookProcessed({ eventRecordId: claim.event.id, paymentId: payment.id, executor });
-  const invoice = await refreshInvoicePaymentStatus({ invoiceId: payment.invoice_id, executor }); const cargo = await updateCargoFinancialStatus({ cargoId: payment.cargo_id, executor }); const readiness = await recalculateReleaseReadiness({ cargoId: payment.cargo_id, executor, trigger: "PAYMENT_WEBHOOK" });
-  await writeAuditLog({ user_id: null, action: status === "SUCCESSFUL" ? "PAYMENT_VERIFIED" : status === "FAILED" ? "PAYMENT_FAILED" : "PAYMENT_PENDING", module: "Billing and Payment", description: `Flutterwave v4 charge ${chargeId} for ${reference} verified as ${status}.`, metadata: { system_actor: true, event_id: eventId, charge_id: chargeId, expected_amount: payment.expected_amount, received_amount: String(verified.amount), currency, reconciliation } }, executor);
-  await createNotificationsForAudience({ notification_type: "finance_payment_update", title: `Payment ${status}`, message: `${reference} for ${payment.cargo_reference}: ${currency} ${verified.amount}.`, related_module: "Billing and Payment", priority: status === "SUCCESSFUL" ? "high" : "normal", metadata: { deep_link: "/finance?section=payments" } }, { roleName: "Finance Officer" }, executor, { fallbackBroadTarget: true });
-  return { payment_reference: payment.payment_reference,attempt_reference:reference, charge_id: chargeId, status, reconciliation_status: reconciliation, invoice_status: invoice?.status, cargo_financial_status: cargo?.financial_status, release_readiness: readiness };
+  return res;
 };
 
-module.exports = { activateRegistrationInvoice, cancelRegistrationInvoice, claimWebhookEvent, classifyVerifiedCharge, config, createRegistrationInvoice, createWebhookSignature, ensureAutomaticInvoice: activateRegistrationInvoice, findCustomerByEmail,getPaymentAttemptStatus,getPaymentHistory,getPaymentSummary, initiatePayment, markWebhookProcessed, processWebhook, providerRequest, publicHttpsUrl, readVerifiedWebhookEnvelope, recordWebhookFailure, resolveCustomerAndPaymentMethod, timingSafe,validateCustomerPaymentInput, verifyCharge, verifyWebhookSignature };
+module.exports = { activateRegistrationInvoice, cancelRegistrationInvoice, claimWebhookEvent, classifyVerifiedCharge, config, createRegistrationInvoice, createWebhookSignature, ensureAutomaticInvoice: activateRegistrationInvoice, findCustomerByEmail,getPaymentAttemptStatus,getPaymentHistory,getPaymentSummary, initiatePayment, markWebhookProcessed, processWebhook, providerRequest, publicHttpsUrl, readVerifiedWebhookEnvelope, recordWebhookFailure, resolveCustomerAndPaymentMethod, settlePaymentAttempt, timingSafe,validateCustomerPaymentInput, verifyCharge, verifyWebhookSignature };

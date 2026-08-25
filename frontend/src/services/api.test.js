@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCargo, getCargo, getCargoById, recommendBin } from "./api";
-import { clearStoredAuthToken, setStoredAuthToken } from "../lib/portal-access";
+import { clearStoredAuthToken, setStoredAuthToken, setStoredSessionSelector } from "../lib/portal-access";
 
 describe("cargo registration API errors", () => {
   afterEach(() => {
@@ -39,6 +39,7 @@ describe("cargo registration API errors", () => {
 
   it("uses one refresh rotation for simultaneous expired-access responses", async () => {
     setStoredAuthToken("expired.access.token");
+    setStoredSessionSelector("SES-AAAAAAAAAAAAAAAAAAAAAAAA");
     let cargoAttempts = 0;
     let refreshAttempts = 0;
     vi.stubGlobal("fetch", vi.fn(async (url) => {

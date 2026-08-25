@@ -1,6 +1,6 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -12,7 +12,10 @@ import {
   isStoredBootstrapAdmin,
   isPathAllowedForRole,
   mustChangeStoredPassword,
+  getStoredAuthToken,
+  subscribeToAuthState,
 } from "./lib/portal-access.js";
+import { refreshCurrentPermissions } from "./services/api.js";
 
 const queryClient = new QueryClient();
 const Landing = lazy(() => import("./pages/Landing.jsx"));
@@ -105,14 +108,49 @@ function ScannerAccessGate() {
   return <ScannerPortal />;
 }
 
+function AuthSessionMonitor({ children }) {
+  const navigate = useNavigate();
+  const [, setVersion] = useState(0);
+
+  useEffect(() => subscribeToAuthState((event) => {
+    setVersion((version) => version + 1);
+    if (event === "cleared") {
+      queryClient.clear();
+      navigate("/", { replace: true });
+    }
+    if (event === "permissions-updated") queryClient.clear();
+  }), [navigate]);
+
+  useEffect(() => {
+    const revalidate = () => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      if (getStoredAuthToken()) refreshCurrentPermissions().catch(() => {});
+    };
+    const handleVisibility = () => {
+      if (typeof document === "undefined" || !document.hidden) revalidate();
+    };
+    window.addEventListener("focus", revalidate);
+    document.addEventListener("visibilitychange", handleVisibility);
+    const interval = window.setInterval(revalidate, 60_000);
+    return () => {
+      window.removeEventListener("focus", revalidate);
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.clearInterval(interval);
+    };
+  }, []);
+
+  return children;
+}
+
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       <Toaster />
       <Sonner />
       <BrowserRouter>
-        <Suspense fallback={<PageFallback />}>
-          <Routes>
+        <AuthSessionMonitor>
+          <Suspense fallback={<PageFallback />}>
+            <Routes>
             <Route path="/" element={<Landing />} />
             <Route path="/pay/:token" element={<PublicPayment />} />
             <Route path="/scanner/login" element={<Navigate to="/" replace />} />
@@ -178,8 +216,9 @@ const App = () => (
             />
             <Route path="/auditor/*" element={<PortalAccessGate role={PORTAL_ROLES.AUDITOR}><AuditorPortal /></PortalAccessGate>} />
             <Route path="*" element={<NotFound />} />
-          </Routes>
-        </Suspense>
+            </Routes>
+          </Suspense>
+        </AuthSessionMonitor>
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>

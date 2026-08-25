@@ -4,6 +4,8 @@ const { buildError }=require("../utils/apiError");
 const { writeAuditLog }=require("../models/adminModel");
 const { logEvent }=require("../utils/logger");
 
+const centsFromAmount=(val)=>BigInt(Math.round(Number(val||0)*100));
+
 const cleanBaseUrl=()=>String(process.env.PUBLIC_PAYMENT_BASE_URL||"").trim().replace(/\/+$/,"");
 const buildPaymentUrl=(token)=>{
   const base=cleanBaseUrl();
@@ -29,18 +31,33 @@ const renderPaymentEmail=(data)=>({
   subject:`Fumba Port Cargo Payment Request - ${data.cargo_reference}`,
   text:[
     "Hello,","",`A payment obligation has been created for cargo ${data.cargo_reference}.`,"",
-    `Invoice: ${data.invoice_reference}`,`Payment Reference: ${data.payment_reference}`,
-    `Invoice Total: ${data.currency} ${data.invoice_total}`,`Paid: ${data.currency} ${data.amount_paid}`,
-    `Remaining: ${data.currency} ${data.outstanding_balance}`,"",
+    `Cargo Reference: ${data.cargo_reference}`,
+    `Invoice Reference: ${data.invoice_reference}`,
+    `PAY Payment Reference: ${data.payment_reference}`,
+    `Total Invoice Amount: ${data.currency} ${data.invoice_total}`,
+    `Amount Already Paid: ${data.currency} ${data.amount_paid}`,
+    `Remaining Balance: ${data.currency} ${data.outstanding_balance}`,"",
     "You may pay the balance in one or more installments.",`Payment Link: ${data.payment_url}`,"","Regards,","Fumba Port WMS"
   ].join("\n")
 });
 
 const loadDeliveryData=async({invoiceId,executor=db})=>{
-  const result=await executor.query(`SELECT i.id,i.public_invoice_number AS invoice_reference,i.payment_reference,i.payment_public_token,i.total_amount AS invoice_total,i.amount_paid,i.outstanding_balance,i.currency,c.cargo_id AS cargo_reference,c.email AS recipient FROM invoices i JOIN cargo c ON c.id=i.cargo_id WHERE i.id=$1 LIMIT 1`,[invoiceId]);
+  const result=await executor.query(`SELECT i.id,i.public_invoice_number AS invoice_reference,i.payment_reference,i.payment_public_token,i.total_amount,i.amount_paid,i.outstanding_balance,i.currency,c.cargo_id AS cargo_reference,c.email AS recipient FROM invoices i JOIN cargo c ON c.id=i.cargo_id WHERE i.id=$1 LIMIT 1`,[invoiceId]);
   if(!result.rowCount) throw buildError("Invoice was not found for payment email.",404);
   const row=result.rows[0];
-  return {...row,payment_url:buildPaymentUrl(row.payment_public_token)};
+  const totalCents=centsFromAmount(row.total_amount||0);
+  const paidCents=centsFromAmount(row.amount_paid||0);
+  const remainingCents=row.outstanding_balance!==null&&row.outstanding_balance!==undefined
+    ? centsFromAmount(row.outstanding_balance)
+    : (totalCents>paidCents?totalCents-paidCents:0n);
+
+  return {
+    ...row,
+    invoice_total:(Number(totalCents)/100).toFixed(2),
+    amount_paid:(Number(paidCents)/100).toFixed(2),
+    outstanding_balance:(Number(remainingCents)/100).toFixed(2),
+    payment_url:buildPaymentUrl(row.payment_public_token)
+  };
 };
 
 const queuePaymentLinkEmail=async({invoiceId,executor=db})=>{

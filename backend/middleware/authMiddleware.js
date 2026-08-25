@@ -403,6 +403,7 @@ const getActiveAccountContext = async ({ sessionId, userId, role, scannerAccount
     const scannerResult = await db.query(
       `SELECT
          u.status,
+         us.public_reference AS session_selector,
          scanner_role.id AS role_id,
          u.warehouse_id,
          u.shift_id,
@@ -439,6 +440,7 @@ const getActiveAccountContext = async ({ sessionId, userId, role, scannerAccount
   const result = await db.query(
     `SELECT
        u.status,
+       us.public_reference AS session_selector,
        u.role_id,
        u.warehouse_id,
        u.shift_id,
@@ -495,6 +497,7 @@ const requireAuthenticated = async (req, res, next) => {
       role: normalizeRole(account.role_key),
       permissions: permissionKeys,
       roleId: account.role_id,
+      sessionSelector: account.session_selector,
       warehouseId: account.warehouse_id,
       shiftId: account.shift_id,
       scannerStaffId: account.scanner_staff_id,
@@ -584,6 +587,7 @@ const requirePortalAccess = async (req, res, next) => {
       role,
       permissions: permissionKeys,
       roleId: account.role_id,
+      sessionSelector: account.session_selector,
       warehouseId: account.warehouse_id,
       shiftId: account.shift_id,
       scannerStaffId: account.scanner_staff_id,

@@ -1,6 +1,7 @@
 const PORTAL_SESSION_KEY = "fumba-wms-active-portal-role";
 const AUTH_TOKEN_KEY = "fumba-wms-auth-token";
 const AUTH_PERMISSIONS_KEY = "fumba-wms-auth-permissions";
+const AUTH_SESSION_SELECTOR_KEY = "fumba-wms-session-selector";
 
 export const PORTAL_ROLES = Object.freeze({
   SYSTEM_ADMIN: "system-admin",
@@ -283,12 +284,21 @@ function canUseSessionStorage() {
   return typeof window !== "undefined" && Boolean(window.sessionStorage);
 }
 
+function getPreferredStorage() {
+  if (canUseSessionStorage()) return window.sessionStorage;
+  return null;
+}
+
 let inMemoryAccessToken = null;
-if (canUseSessionStorage()) {
-  try {
-    window.sessionStorage.removeItem(AUTH_TOKEN_KEY);
-  } catch {
-  }
+const authStateListeners = new Set();
+
+const notifyAuthState = (event) => {
+  authStateListeners.forEach((listener) => listener(event));
+};
+
+export function subscribeToAuthState(listener) {
+  authStateListeners.add(listener);
+  return () => authStateListeners.delete(listener);
 }
 
 function normalizeRole(role) {
@@ -342,9 +352,8 @@ export function getPortalDefaultPath(role) {
   return getPortalConfig(role)?.defaultPath || "/";
 }
 
-export function getStoredPortalRole(storage = canUseSessionStorage() ? window.sessionStorage : null) {
+export function getStoredPortalRole(storage = getPreferredStorage()) {
   if (!storage) return null;
-
   try {
     const role = storage.getItem(PORTAL_SESSION_KEY);
     return isKnownPortalRole(role) ? role : null;
@@ -353,22 +362,20 @@ export function getStoredPortalRole(storage = canUseSessionStorage() ? window.se
   }
 }
 
-export function setStoredPortalRole(role, storage = canUseSessionStorage() ? window.sessionStorage : null) {
-  if (!storage || !isKnownPortalRole(role)) return;
+export function setStoredPortalRole(role, storage = getPreferredStorage()) {
+  if (!isKnownPortalRole(role)) return;
 
+  if (!storage) return;
   try {
     storage.setItem(PORTAL_SESSION_KEY, role);
-  } catch {
-  }
+  } catch {}
 }
 
-export function clearStoredPortalRole(storage = canUseSessionStorage() ? window.sessionStorage : null) {
+export function clearStoredPortalRole(storage = getPreferredStorage()) {
   if (!storage) return;
-
   try {
     storage.removeItem(PORTAL_SESSION_KEY);
-  } catch {
-  }
+  } catch {}
 }
 
 export function isPathAllowedForRole(role, pathname) {
@@ -380,78 +387,95 @@ export function isPathAllowedForRole(role, pathname) {
 
 // Auth token management
 export function getStoredAuthToken(storage) {
-  if (!storage) return inMemoryAccessToken;
-
-  try {
-    return storage.getItem(AUTH_TOKEN_KEY);
-  } catch {
-    return null;
+  if (storage) {
+    try {
+      const token = storage.getItem(AUTH_TOKEN_KEY);
+      if (token) return token;
+    } catch {}
   }
+  if (canUseSessionStorage()) {
+    try {
+      const token = window.sessionStorage.getItem(AUTH_TOKEN_KEY);
+      if (token) return token;
+    } catch {}
+  }
+  return inMemoryAccessToken;
 }
 
 export function setStoredAuthToken(token, storage) {
   if (!token) return;
 
   inMemoryAccessToken = token;
-  if (!storage) {
-    const role = extractRoleFromToken(token);
-    if (role && canUseSessionStorage()) setStoredPortalRole(role);
-    return;
-  }
+  const role = extractRoleFromToken(token);
+  const targetStorage = storage || getPreferredStorage();
 
-  try {
-    storage.setItem(AUTH_TOKEN_KEY, token);
-    const role = extractRoleFromToken(token);
-    if (role) {
-      storage.setItem(PORTAL_SESSION_KEY, role);
-    }
-  } catch {
+  if (targetStorage) {
+    try {
+      targetStorage.setItem(AUTH_TOKEN_KEY, token);
+      if (role) {
+        targetStorage.setItem(PORTAL_SESSION_KEY, role);
+      }
+    } catch {}
   }
+  notifyAuthState("updated");
 }
 
 export function clearStoredAuthToken(storage) {
   inMemoryAccessToken = null;
-  if (!storage) {
-    if (canUseSessionStorage()) {
-      window.sessionStorage.removeItem(AUTH_TOKEN_KEY);
-      window.sessionStorage.removeItem(AUTH_PERMISSIONS_KEY);
-      window.sessionStorage.removeItem(PORTAL_SESSION_KEY);
-    }
-    return;
-  }
+  const targetStorage = storage || getPreferredStorage();
 
-  try {
-    storage.removeItem(AUTH_TOKEN_KEY);
-    storage.removeItem(AUTH_PERMISSIONS_KEY);
-    // Also clear the old portal role key for backward compatibility
-    storage.removeItem(PORTAL_SESSION_KEY);
-  } catch {
+  if (targetStorage) {
+    try {
+      targetStorage.removeItem(AUTH_TOKEN_KEY);
+      targetStorage.removeItem(AUTH_PERMISSIONS_KEY);
+      targetStorage.removeItem(AUTH_SESSION_SELECTOR_KEY);
+      targetStorage.removeItem(PORTAL_SESSION_KEY);
+    } catch {}
   }
+  notifyAuthState("cleared");
 }
 
-export function setStoredPermissions(permissions, storage = canUseSessionStorage() ? window.sessionStorage : null) {
-  if (!storage || !Array.isArray(permissions)) return;
+export function setStoredPermissions(permissions, storage = getPreferredStorage()) {
+  if (!Array.isArray(permissions)) return;
 
-  try {
-    storage.setItem(AUTH_PERMISSIONS_KEY, JSON.stringify(permissions));
-  } catch {
+  if (storage) {
+    try {
+      storage.setItem(AUTH_PERMISSIONS_KEY, JSON.stringify(permissions));
+    } catch {}
   }
+  notifyAuthState("permissions-updated");
 }
 
-export function getStoredPermissions(storage = canUseSessionStorage() ? window.sessionStorage : null) {
-  if (!storage) return [];
-
-  try {
-    const parsed = JSON.parse(storage.getItem(AUTH_PERMISSIONS_KEY) || "[]");
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
+export function getStoredPermissions(storage = getPreferredStorage()) {
+  if (storage) {
+    try {
+      const parsed = JSON.parse(storage.getItem(AUTH_PERMISSIONS_KEY) || "[]");
+      if (Array.isArray(parsed) && parsed.length) return parsed;
+    } catch {}
   }
+  return [];
 }
 
-export function hasStoredPermission(permissionKey, storage = canUseSessionStorage() ? window.sessionStorage : null) {
+export function hasStoredPermission(permissionKey, storage = getPreferredStorage()) {
   const permissions = getStoredPermissions(storage);
   return permissions.includes("*") || permissions.includes(permissionKey);
+}
+
+export function setStoredSessionSelector(selector, storage = getPreferredStorage()) {
+  if (!/^SES-[A-F0-9]{24}$/.test(String(selector || "").toUpperCase()) || !storage) return;
+  try {
+    storage.setItem(AUTH_SESSION_SELECTOR_KEY, String(selector).toUpperCase());
+  } catch {}
+}
+
+export function getStoredSessionSelector(storage = getPreferredStorage()) {
+  if (!storage) return null;
+  try {
+    const selector = storage.getItem(AUTH_SESSION_SELECTOR_KEY);
+    return /^SES-[A-F0-9]{24}$/.test(String(selector || "").toUpperCase()) ? String(selector).toUpperCase() : null;
+  } catch {
+    return null;
+  }
 }
 
 export function extractRoleFromToken(token) {
@@ -470,7 +494,7 @@ const portalEntryPermissions = Object.freeze({
   ,[PORTAL_ROLES.AUDITOR]: "system.audit.view"
 });
 
-export function hasPortalEntryPermission(role, storage = canUseSessionStorage() ? window.sessionStorage : null) {
+export function hasPortalEntryPermission(role, storage = getPreferredStorage()) {
   if (role === PORTAL_ROLES.SCANNER) return true;
   const required = portalEntryPermissions[role];
   return Boolean(required && hasStoredPermission(required, storage));

@@ -11,11 +11,13 @@ import {
   getStoredAuthUserId,
   hasPortalEntryPermission,
   getStoredPortalRole,
+  getStoredSessionSelector,
   isStoredBootstrapAdmin,
   isStoredBootstrapCompleted,
   isStoredBootstrapSetupPending,
   mustChangeStoredPassword,
   setStoredAuthToken,
+  setStoredSessionSelector,
   isPathAllowedForRole,
   setStoredPortalRole
 } from "./portal-access";
@@ -130,6 +132,30 @@ describe("portal access", () => {
 
     clearStoredAuthToken(storage);
     expect(getStoredAuthRole(storage)).toBe(null);
+  });
+
+  it("keeps authenticated accounts independent between browser tabs", () => {
+    const firstTab = createMemoryStorage();
+    const secondTab = createMemoryStorage();
+    const firstToken = createUnsignedBrowserToken({ role: "Finance Officer", exp: Math.floor(Date.now() / 1000) + 60 });
+    const secondToken = createUnsignedBrowserToken({ role: "Customs Officer", exp: Math.floor(Date.now() / 1000) + 60 });
+
+    setStoredAuthToken(firstToken, firstTab);
+    setStoredAuthToken(secondToken, secondTab);
+
+    expect(getStoredAuthRole(firstTab)).toBe(PORTAL_ROLES.FINANCE_OFFICER);
+    expect(getStoredAuthRole(secondTab)).toBe(PORTAL_ROLES.CUSTOMS_OFFICER);
+  });
+
+  it("keeps the non-secret refresh selector scoped to its browser tab", () => {
+    const firstTab = createMemoryStorage();
+    const secondTab = createMemoryStorage();
+
+    setStoredSessionSelector("SES-AAAAAAAAAAAAAAAAAAAAAAAA", firstTab);
+    setStoredSessionSelector("SES-BBBBBBBBBBBBBBBBBBBBBBBB", secondTab);
+
+    expect(getStoredSessionSelector(firstTab)).toBe("SES-AAAAAAAAAAAAAAAAAAAAAAAA");
+    expect(getStoredSessionSelector(secondTab)).toBe("SES-BBBBBBBBBBBBBBBBBBBBBBBB");
   });
 
   it("maps the existing Supervisor database role to the supervisor portal", () => {

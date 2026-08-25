@@ -37,7 +37,7 @@ test("Phase 1 access tokens are purpose-bound and refresh credentials are opaque
   const lifetimes = await getAuthLifetimes();
   const session = (await db.query(
     `INSERT INTO user_sessions (user_id,identity_type,session_status,public_reference,expires_at,last_activity_at)
-     VALUES ($1,'user','active','SES-PHASE1-' || UPPER(ENCODE(GEN_RANDOM_BYTES(6),'hex')),$2,CURRENT_TIMESTAMP) RETURNING id,expires_at`,
+     VALUES ($1,'user','active','SES-' || UPPER(ENCODE(GEN_RANDOM_BYTES(12),'hex')),$2,CURRENT_TIMESTAMP) RETURNING id,expires_at`,
     [user.id, new Date(Date.now() + lifetimes.sessionMs)]
   )).rows[0];
   try {
@@ -59,11 +59,12 @@ test("Phase 1 access tokens are purpose-bound and refresh credentials are opaque
     assert.equal(stored.token_hash, hashToken(refresh.token));
     assert.notEqual(stored.token_hash, refresh.token);
 
-    const rotated = await rotateRefreshCredential({ token: refresh.token, ipAddress: "127.0.0.1", userAgent: "phase-1-test" });
+    const sessionSelector = (await db.query("SELECT public_reference FROM user_sessions WHERE id=$1", [session.id])).rows[0].public_reference;
+    const rotated = await rotateRefreshCredential({ token: refresh.token, sessionSelector, ipAddress: "127.0.0.1", userAgent: "phase-1-test" });
     assert.equal(verifyToken(rotated.accessToken).typ, "access");
     assert.notEqual(rotated.refreshToken, refresh.token);
     await assert.rejects(
-      rotateRefreshCredential({ token: refresh.token, ipAddress: "127.0.0.1", userAgent: "phase-1-replay" }),
+      rotateRefreshCredential({ token: refresh.token, sessionSelector, ipAddress: "127.0.0.1", userAgent: "phase-1-replay" }),
       (error) => error.errorCode === "AUTH_REFRESH_TOKEN_REPLAY"
     );
     const revoked = (await db.query("SELECT session_status,revoked_at FROM user_sessions WHERE id=$1", [session.id])).rows[0];
@@ -71,7 +72,7 @@ test("Phase 1 access tokens are purpose-bound and refresh credentials are opaque
     assert.ok(revoked.revoked_at);
     assert.equal((await authenticate(access)).res.statusCode, 401);
     await assert.rejects(
-      rotateRefreshCredential({ token: rotated.refreshToken, ipAddress: "127.0.0.1", userAgent: "phase-1-test" }),
+      rotateRefreshCredential({ token: rotated.refreshToken, sessionSelector, ipAddress: "127.0.0.1", userAgent: "phase-1-test" }),
       (error) => ["AUTH_REFRESH_TOKEN_REPLAY", "AUTH_SESSION_REVOKED"].includes(error.errorCode)
     );
   } finally {
@@ -80,10 +81,41 @@ test("Phase 1 access tokens are purpose-bound and refresh credentials are opaque
   }
 });
 
+test("a refresh credential cannot be used with a different session selector", async (t) => {
+  let sessions = [];
+  try {
+    const users = (await db.query("SELECT id FROM users WHERE status='active' ORDER BY id LIMIT 2")).rows;
+    if (users.length < 2) {
+      t.skip("Selector binding test requires two active users.");
+      return;
+    }
+    const lifetimes = await getAuthLifetimes();
+    for (const user of users) {
+      const session = (await db.query(
+        `INSERT INTO user_sessions (user_id,identity_type,session_status,public_reference,expires_at,last_activity_at)
+         VALUES ($1,'user','active','SES-' || UPPER(ENCODE(GEN_RANDOM_BYTES(12),'hex')),$2,CURRENT_TIMESTAMP)
+         RETURNING id,public_reference`,
+        [user.id, new Date(Date.now() + lifetimes.sessionMs)]
+      )).rows[0];
+      sessions.push(session);
+    }
+    const refresh = await createRefreshCredential({ sessionId: sessions[0].id, expiresAt: new Date(Date.now() + lifetimes.refreshMs) }, db);
+    await assert.rejects(
+      rotateRefreshCredential({ token: refresh.token, sessionSelector: sessions[1].public_reference }),
+      (error) => error.errorCode === "AUTH_INVALID_REFRESH_TOKEN"
+    );
+  } catch (error) {
+    if (/database|connect|ECONN/i.test(error.message || "")) t.skip(`Live database is unavailable: ${error.code || error.message}`);
+    else throw error;
+  } finally {
+    if (sessions.length) await db.query("DELETE FROM user_sessions WHERE id=ANY($1::int[])", [sessions.map((session) => session.id)]);
+  }
+});
+
 test("an access JWT is rejected as a refresh credential", async () => {
   const token = issueAccessToken({ userId: 1, role: "System Admin" }, 1, 60000);
   await assert.rejects(
-    rotateRefreshCredential({ token }),
+    rotateRefreshCredential({ token, sessionSelector: "SES-AAAAAAAAAAAAAAAAAAAAAAAA" }),
     (error) => error.errorCode === "AUTH_TOKEN_TYPE_INVALID"
   );
 });

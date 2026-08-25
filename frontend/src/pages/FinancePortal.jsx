@@ -304,9 +304,11 @@ function SelectField({ label, value, onChange, options }) {
   return (
     <FormField label={label}>
       <select className={inputClass} value={value} onChange={(event) => onChange(event.target.value)}>
-        {options.map((option) => (
-          <option key={option || "all"} value={option}>{option || "All"}</option>
-        ))}
+        {options.map((option) => {
+          const optionValue = typeof option === "string" ? option : option.value;
+          const optionLabel = typeof option === "string" ? option || "All" : option.label;
+          return <option key={optionValue || "all"} value={optionValue}>{optionLabel}</option>;
+        })}
       </select>
     </FormField>
   );
@@ -674,7 +676,23 @@ function TariffsPage() {
         <SectionCard title="New Tariff Version" icon={Plus}>
           <form className="grid gap-3 md:grid-cols-3 xl:grid-cols-4" onSubmit={submit}>
             <FormInput label="Tariff Name" value={form.tariff_name} onChange={(value) => setForm((current) => ({ ...current, tariff_name: value }))} required />
-            <FormInput label="Cargo Type Key (or default)" value={form.cargo_type} onChange={(value) => setForm((current) => ({ ...current, cargo_type: value }))} required />
+            <SelectField
+              label="Cargo Type Key (or default)"
+              value={form.cargo_type}
+              onChange={(value) => setForm((current) => ({ ...current, cargo_type: value }))}
+              options={[
+                { value: "", label: "Select cargo type key" },
+                { value: "general_goods", label: "general_goods (General Goods)" },
+                { value: "electronics", label: "electronics (Electronics)" },
+                { value: "machinery", label: "machinery (Machinery)" },
+                { value: "food_products", label: "food_products (Food Products)" },
+                { value: "construction_materials", label: "construction_materials (Construction Materials)" },
+                { value: "fragile_goods", label: "fragile_goods (Fragile Goods)" },
+                { value: "hazardous_cargo", label: "hazardous_cargo (Hazardous Cargo)" },
+                { value: "mixed_cargo", label: "mixed_cargo (Mixed Cargo)" },
+                { value: "default", label: "default (Default / All Types)" }
+              ]}
+            />
             <SelectField label="Charging Unit" value={form.charging_unit} onChange={(value) => setForm((current) => ({ ...current, charging_unit: value }))} options={["per_cargo_per_day", "per_kilogram_per_day", "per_tonne_per_day", "per_cubic_metre_per_day", "fixed_daily_charge"]} />
             <FormInput label="Daily Rate" type="number" value={form.daily_rate} onChange={(value) => setForm((current) => ({ ...current, daily_rate: value }))} required />
             <FormInput label="Currency" value="TZS" onChange={() => {}} required />
@@ -769,7 +787,23 @@ function TariffEditDialog({ tariff, onClose, onSave }) {
         </div>
         <div className="mt-4 grid gap-3 md:grid-cols-3">
           <FormInput label="Tariff Name" value={form.tariff_name || ""} onChange={(value) => setForm((current) => ({ ...current, tariff_name: value }))} required />
-          <FormInput label="Cargo Type Key (or default)" value={form.cargo_type_key || form.cargo_type || ""} onChange={(value) => setForm((current) => ({ ...current, cargo_type_key: value }))} required />
+          <SelectField
+            label="Cargo Type Key (or default)"
+            value={form.cargo_type_key || form.cargo_type || ""}
+            onChange={(value) => setForm((current) => ({ ...current, cargo_type_key: value }))}
+            options={[
+              { value: "", label: "Select cargo type key" },
+              { value: "general_goods", label: "general_goods (General Goods)" },
+              { value: "electronics", label: "electronics (Electronics)" },
+              { value: "machinery", label: "machinery (Machinery)" },
+              { value: "food_products", label: "food_products (Food Products)" },
+              { value: "construction_materials", label: "construction_materials (Construction Materials)" },
+              { value: "fragile_goods", label: "fragile_goods (Fragile Goods)" },
+              { value: "hazardous_cargo", label: "hazardous_cargo (Hazardous Cargo)" },
+              { value: "mixed_cargo", label: "mixed_cargo (Mixed Cargo)" },
+              { value: "default", label: "default (Default / All Types)" }
+            ]}
+          />
           <SelectField label="Charging Unit" value={form.charging_unit || "per_cargo_per_day"} onChange={(value) => setForm((current) => ({ ...current, charging_unit: value }))} options={["per_cargo_per_day", "per_kilogram_per_day", "per_tonne_per_day", "per_cubic_metre_per_day", "fixed_daily_charge"]} />
           <FormInput label="Daily Rate" type="number" value={form.daily_rate || ""} onChange={(value) => setForm((current) => ({ ...current, daily_rate: value }))} required />
           <FormInput label="Minimum Days" type="number" value={form.minimum_billable_days || 1} onChange={(value) => setForm((current) => ({ ...current, minimum_billable_days: value }))} />

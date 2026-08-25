@@ -245,17 +245,15 @@ const tariffToPublic = (row) => ({
 const getApplicableTariff = async (cargo, asOf, executor = db) => {
   const tariffDate = normalizeTimestamp(asOf, new Date());
   const result = await executor.query(
-    `SELECT
-       t.public_reference AS tariff_reference,
-       t.tariff_name,
-       t.description,
-       tv.*
+    `SELECT tv.*, t.public_reference AS tariff_reference, t.tariff_name, tv.tariff_scope
      FROM tariff_versions tv
      JOIN tariffs t ON t.id = tv.tariff_id
-     WHERE tv.is_active = TRUE AND tv.configuration_status = 'ready' AND tv.approval_status = 'APPROVED'
+     WHERE tv.is_active = TRUE
+       AND tv.configuration_status = 'ready'
+       AND tv.approval_status = 'APPROVED'
        AND (tv.cargo_type_key = $1 OR tv.tariff_scope = 'default')
-       AND tv.effective_from <= $2
-       AND (tv.effective_to IS NULL OR tv.effective_to > $2)
+       AND tv.effective_from <= $2::timestamptz
+       AND (tv.effective_to IS NULL OR tv.effective_to > $2::timestamptz)
      ORDER BY CASE WHEN tv.cargo_type_key = $1 THEN 0 ELSE 1 END,
               tv.effective_from DESC,
               tv.id DESC
@@ -912,8 +910,23 @@ const readTariffPayload = (payload) => {
 const createTariffVersion = async ({ payload, auth, executor = db }) => {
   const data = readTariffPayload(payload);
   if (data.cargoTypeKey) {
-    const option = await executor.query("SELECT storage_value FROM cargo_option_values WHERE catalog_key='cargo_type' AND option_key=$1 AND is_active=TRUE", [data.cargoTypeKey]);
+    const option = await executor.query(
+      `SELECT option_key, storage_value
+       FROM cargo_option_values
+       WHERE catalog_key = 'cargo_type'
+         AND (
+           option_key = $1
+           OR LOWER(option_key) = LOWER($1)
+           OR LOWER(storage_value) = LOWER($1)
+           OR option_key = LOWER(REPLACE($1, ' ', '_'))
+           OR LOWER(storage_value) = LOWER(REPLACE($1, '_', ' '))
+         )
+         AND is_active = TRUE
+       LIMIT 1`,
+      [data.cargoTypeKey]
+    );
     if (!option.rowCount) throw buildError("Cargo type key is not an active authoritative catalog option.", 400);
+    data.cargoTypeKey = option.rows[0].option_key;
     data.cargoType = option.rows[0].storage_value;
   }
   await assertTariffDoesNotOverlap({
@@ -1047,8 +1060,23 @@ const updateTariffVersion = async ({ tariffVersionReference, payload, auth, exec
     description: payload.description ?? existing.description
   });
   if (data.cargoTypeKey) {
-    const option = await executor.query("SELECT storage_value FROM cargo_option_values WHERE catalog_key='cargo_type' AND option_key=$1 AND is_active=TRUE", [data.cargoTypeKey]);
+    const option = await executor.query(
+      `SELECT option_key, storage_value
+       FROM cargo_option_values
+       WHERE catalog_key = 'cargo_type'
+         AND (
+           option_key = $1
+           OR LOWER(option_key) = LOWER($1)
+           OR LOWER(storage_value) = LOWER($1)
+           OR option_key = LOWER(REPLACE($1, ' ', '_'))
+           OR LOWER(storage_value) = LOWER(REPLACE($1, '_', ' '))
+         )
+         AND is_active = TRUE
+       LIMIT 1`,
+      [data.cargoTypeKey]
+    );
     if (!option.rowCount) throw buildError("Cargo type key is not an active authoritative catalog option.", 400);
+    data.cargoTypeKey = option.rows[0].option_key;
     data.cargoType = option.rows[0].storage_value;
   }
 
