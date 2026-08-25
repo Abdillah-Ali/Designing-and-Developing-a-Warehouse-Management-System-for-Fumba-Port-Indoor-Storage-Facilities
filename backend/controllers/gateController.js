@@ -45,6 +45,7 @@ const gateCargoSelect = `
     c.registration_status,
     c.placement_status,
     c.customs_status,
+    c.customs_status_key,
     c.financial_status,
     c.release_type,
     c.management_release_status,

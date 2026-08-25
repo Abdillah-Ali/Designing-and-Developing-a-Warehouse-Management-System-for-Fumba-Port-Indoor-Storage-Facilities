@@ -4,6 +4,7 @@ const { writeAuditLog } = require("../models/adminModel");
 const { buildError } = require("../utils/apiError");
 const { validatePlacement: runPlacementValidation } = require("./validationService");
 const { PLACEMENT_STATUS } = require("./cargoWorkflowService");
+const { recalculateReleaseReadiness } = require("./releaseReadinessService");
 
 const MANUAL_PLACEMENT_REASONS = Object.freeze([
   { value: "scanner_unavailable", label: "Barcode scanner unavailable" },
@@ -528,6 +529,12 @@ const confirmPlacementOperation = async (payload, auth = {}) => {
         description: `Resolved unallocated exception for cargo ${cargo.cargo_id} through a valid placement.`,
         metadata: { cargo_id: cargo.id, cargo_identifier: cargo.cargo_id, resolved_bin: validation.bin?.barcode || null } }, client);
     }
+    await recalculateReleaseReadiness({
+      cargoId: cargo.id,
+      executor: client,
+      actorId: auth.userId || null,
+      trigger: isRelocation ? "CARGO_RELOCATED" : "CARGO_PLACED"
+    });
     await client.query("COMMIT");
 
     const updatedBin = updatedBinResult.rows[0];

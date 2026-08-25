@@ -22,6 +22,11 @@ The provider-backed payment service, public payment route, invoice activation, a
   - Added checks for the new Finance link/email controls and absence of the legacy manual form.
 - `backend/tests/customerPaymentWorkflowIntegration.test.js`
   - Updated the integration fixture for the current safe activation order: issue the token first, then issue the invoice, then set the single master PAY reference.
+- `backend/services/paymentService.js`
+  - Enables the Sandbox-only `scenario:auth_redirect` header, returns Flutterwave `next_action` to the public page, and exposes verified, reserved, available, and remaining totals.
+  - Corrected the settlement query’s PostgreSQL parameter typing. Before this correction, provider polling silently retained an actual succeeded charge as pending.
+- `frontend/src/pages/PublicPayment.jsx`
+  - Shows the provider-hosted **Continue to Flutterwave Sandbox Authorization** action rather than attempting to collect an authorization PIN in WMS.
 
 Earlier working-tree changes retained by this task also correct draft-invoice activation timing and the automatic-invoice token constraint:
 
@@ -38,8 +43,9 @@ Earlier working-tree changes retained by this task also correct draft-invoice ac
 3. Supervisor approval activates the existing invoice, creates one `PAY-...` reference, generates a 256-bit token, queues the secure `/pay/:token` link email, and issues the invoice.
 4. A customer without a WMS account uses `/pay/:token` to see cargo/invoice/PAY totals, verified paid total, remaining balance, installment amount, phone, and provider network.
 5. Every payment initiation creates a unique `PMT-...` attempt, Flutterwave charge, and idempotency key. Previous attempts are retained.
-6. The raw-body HMAC-SHA256 webhook handler and polling both use the same centralized provider verification and settlement path. A customer click never settles an invoice.
-7. Settlement accepts only a verified Flutterwave charge whose charge ID, PMT reference, invoice relationship, expected amount, currency, and `succeeded` status match. It then refreshes invoice/cargo financial status and release readiness.
+6. In Sandbox, a mobile-money charge can request Flutterwave’s `auth_redirect` scenario. The public page exposes the returned provider-hosted redirect; the WMS never collects a PIN or treats the redirect click as payment success.
+7. The raw-body HMAC-SHA256 webhook handler and polling both use the same centralized provider verification and settlement path. A customer click never settles an invoice.
+8. Settlement accepts only a verified Flutterwave charge whose charge ID, PMT reference, invoice relationship, expected amount, currency, and `succeeded` status match. It then refreshes invoice/cargo financial status and release readiness.
 
 ## Installments and release safety
 
@@ -76,23 +82,20 @@ Full backend suite result at the time of verification: 308 passed, 4 failed, 1 s
 | Scenario | Result | Evidence |
 | --- | --- | --- |
 | OAuth client-credentials authentication | Executed successfully | Sandbox access token obtained; token length 1753 (token intentionally not recorded). |
-| Create charge | Not executed | The configured backend database did not contain a payable issued invoice for `CARGO-2026-00047`; no charge was fabricated. |
-| Webhook delivery | Not executed | Localhost is not a public webhook endpoint; no actual Flutterwave webhook event ID exists. |
-| Provider verification / settlement | Not executed | No actual charge ID exists. |
-| Pending, failure, retry, partial, full payment | Not executed live | Covered only by automated provider-mocked tests; not represented as Sandbox results. |
-
-No real Sandbox `PAY`, `PMT`, charge ID, webhook event ID, provider status, or settlement total is claimed because no actual Sandbox charge was returned.
+| Live partial mobile-money authorization and settlement | Executed successfully | Cargo `CARGO-2026-00048`; invoice `INV-2026-AARMZMRN`; master `PAY-2026-P3F60AXH`; attempt `PMT-2026-T7XO4NMY`; Flutterwave charge `chg_7a9cQRYMyd`. The customer completed the real Flutterwave Developer Sandbox hosted authorization page. Authoritative `GET /charges/chg_7a9cQRYMyd` then returned `succeeded`, reference `PMT-2026-T7XO4NMY`, amount `TZS 100`, currency `TZS`. Centralized WMS polling settled it as `SUCCESSFUL` / `MATCHED`. |
+| Post-settlement balances | Verified | Invoice total `TZS 1,000`; verified paid `TZS 100`; outstanding `TZS 900`; invoice and cargo both `Partially Paid`. Release readiness remains `WAITING_PLACEMENT` with payment, placement, and Customs blockers. |
+| Webhook delivery | Not observed for this charge | No provider webhook event ID was recorded. The configured Quick Tunnel must remain live for a later webhook UAT. Polling provided the authoritative settlement above. |
+| Pending, failure, retry, full payment | Not executed live | Covered by automated provider-mocked tests only; not represented as successful Sandbox outcomes. |
 
 ## Remaining issues
 
-1. Configure the runtime database used by the running WMS so it contains the intended UAT invoice, or create a fresh UAT cargo through the browser with a customer email.
-2. Configure a public HTTPS webhook URL in Flutterwave Sandbox; localhost cannot receive provider webhooks directly.
-3. Configure SMTP and a valid customer email to verify real email delivery.
-4. Complete live provider scenarios using actual Sandbox charge IDs and record the required evidence.
-5. Resolve the unrelated full-suite fixtures before claiming an all-green backend regression run.
+1. Complete a live remaining-balance payment and capture the final `Paid` / `Fully Paid` outcome; the demonstrated payment is deliberately partial.
+2. Keep a public HTTPS webhook URL live and demonstrate an actual webhook event ID and replay handling.
+3. Implement and verify the defined expiry/reconciliation policy for older pending attempts, so stale reservations cannot indefinitely consume the available balance.
+4. Resolve the unrelated full-suite fixtures before claiming an all-green backend regression run.
 
 ## Final verdict
 
 **PAYMENT GATEWAY INTEGRATION NOT ACCEPTED**
 
-The implementation and automated verification are substantially in place, and live Sandbox OAuth was confirmed. Acceptance is blocked by the absence of actual Sandbox charge, webhook, and settlement evidence, plus unresolved full-suite fixture failures. This verdict deliberately does not treat mocks, direct database work, or forged webhooks as live payment UAT.
+The implementation and automated verification are substantially in place. A real Flutterwave Sandbox partial charge and authoritative polling settlement are now evidenced above. Acceptance remains blocked by the absence of a live webhook, live failure/retry/full-settlement evidence, a defined stale-pending reconciliation policy, and an all-green full regression run. This verdict deliberately does not treat mocks, direct database updates, or forged webhooks as live payment UAT.

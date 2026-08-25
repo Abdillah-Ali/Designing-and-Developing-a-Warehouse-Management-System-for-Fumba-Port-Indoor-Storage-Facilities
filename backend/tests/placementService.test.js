@@ -125,6 +125,9 @@ const createPlacementQueryMock = ({
     if (sql.includes("SELECT * FROM cargo") && sql.includes("id::text")) {
       return { rowCount: 1, rows: [cargo] };
     }
+    if (sql.includes("SELECT * FROM cargo WHERE id=$1 AND is_deleted=FALSE")) {
+      return { rowCount: 1, rows: [cargo] };
+    }
     if (sql.includes("SELECT * FROM cargo WHERE id = $1")) {
       return { rowCount: 1, rows: [cargo] };
     }
@@ -519,6 +522,7 @@ test("staff can confirm placement for cargo they own", async () => {
     assert.equal(result.cargo.current_bin_id, 202);
     assert.equal(result.movement.to_bin_id, 202);
     assert.equal(result.movement.action, "Placed");
+    assert.equal(mock.queries.some((entry) => entry.sql.includes("WHERE id=$1 AND is_deleted=FALSE")), true);
   });
 });
 

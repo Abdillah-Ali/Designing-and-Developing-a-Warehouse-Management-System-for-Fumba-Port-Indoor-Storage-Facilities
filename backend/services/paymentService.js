@@ -14,7 +14,8 @@ const config = () => ({
   environment: (process.env.PAYMENT_ENVIRONMENT || "sandbox").toLowerCase(),
   base: process.env.FLUTTERWAVE_API_BASE_URL || "https://developersandbox-api.flutterwave.com",
   webhookSecret: process.env.FLUTTERWAVE_WEBHOOK_SECRET,
-  callback: process.env.PAYMENT_CALLBACK_URL
+  callback: process.env.PAYMENT_CALLBACK_URL,
+  sandboxScenario: (process.env.FLUTTERWAVE_SANDBOX_SCENARIO || "auth_redirect").trim()
 });
 const publicHttpsUrl = (value) => {
   try {
@@ -186,9 +187,9 @@ const getPaymentSummary = async ({ token, paymentReference, executor = db, inter
   const result = await executor.query(`SELECT i.id,i.public_invoice_number,i.payment_reference,i.total_amount,i.currency,i.status,i.payment_status,c.cargo_id AS cargo_reference FROM invoices i JOIN cargo c ON c.id=i.cargo_id WHERE ${lookup} AND i.status<>'Cancelled' LIMIT 1`, [value]);
   const invoice = result.rows[0];
   if (!invoice) throw buildError("Payment obligation was not found.", 404, null, "PAYMENT_NOT_FOUND");
-  const totals = await executor.query(`SELECT COALESCE(SUM(COALESCE(amount_received,amount)) FILTER (WHERE ${verifiedPaymentPredicate}),0) AS paid,COUNT(*)::int AS installment_count FROM payments WHERE invoice_id=$1`, [invoice.id]);
-  const total = centsFromAmount(invoice.total_amount); const paid = centsFromAmount(totals.rows[0]?.paid || 0); const outstanding = total > paid ? total - paid : 0n;
-  const data = { cargo_reference:invoice.cargo_reference,invoice_reference:invoice.public_invoice_number,payment_reference:invoice.payment_reference,currency:invoice.currency,invoice_total:(Number(total)/100).toFixed(2),total_verified_paid:(Number(paid)/100).toFixed(2),outstanding_balance:(Number(outstanding)/100).toFixed(2),financial_status:outstanding===0n?"Fully Paid":paid>0n?"Partially Paid":"Outstanding",installment_count:totals.rows[0]?.installment_count||0 };
+  const totals = await executor.query(`SELECT COALESCE(SUM(COALESCE(amount_received,amount)) FILTER (WHERE ${verifiedPaymentPredicate}),0) AS paid,COALESCE(SUM(expected_amount) FILTER (WHERE ${activeAttemptPredicate}),0) AS reserved,COUNT(*)::int AS installment_count FROM payments WHERE invoice_id=$1`, [invoice.id]);
+  const total = centsFromAmount(invoice.total_amount); const paid = centsFromAmount(totals.rows[0]?.paid || 0); const reserved = centsFromAmount(totals.rows[0]?.reserved || 0); const outstanding = total > paid ? total - paid : 0n; const available = outstanding > reserved ? outstanding - reserved : 0n;
+  const data = { cargo_reference:invoice.cargo_reference,invoice_reference:invoice.public_invoice_number,payment_reference:invoice.payment_reference,currency:invoice.currency,invoice_total:(Number(total)/100).toFixed(2),total_verified_paid:(Number(paid)/100).toFixed(2),pending_reserved:(Number(reserved)/100).toFixed(2),available_to_pay:(Number(available)/100).toFixed(2),outstanding_balance:(Number(outstanding)/100).toFixed(2),financial_status:outstanding===0n?"Fully Paid":paid>0n?"Partially Paid":"Outstanding",installment_count:totals.rows[0]?.installment_count||0 };
   if (internal) data.invoice_id=invoice.id;
   return data;
 };
@@ -236,19 +237,19 @@ const settlePaymentAttempt = async ({ payment, verified, eventId = null, executo
          currency = $2,
          gateway_status = $3,
          status = CASE
-           WHEN $3 = 'SUCCESSFUL' THEN 'Confirmed'
-           WHEN $3 = 'FAILED' THEN 'Gateway Failed'
+           WHEN $3::varchar = 'SUCCESSFUL' THEN 'Confirmed'
+           WHEN $3::varchar = 'FAILED' THEN 'Gateway Failed'
            ELSE 'Gateway Pending'
          END,
          gateway_transaction_id = $4,
          gateway_event_id = COALESCE($5, gateway_event_id),
          payment_method = COALESCE($6, payment_method),
-         verified_at = CASE WHEN $3 = 'SUCCESSFUL' THEN CURRENT_TIMESTAMP ELSE verified_at END,
-         failed_at = CASE WHEN $3 = 'FAILED' THEN CURRENT_TIMESTAMP ELSE failed_at END,
+         verified_at = CASE WHEN $3::varchar = 'SUCCESSFUL' THEN CURRENT_TIMESTAMP ELSE verified_at END,
+         failed_at = CASE WHEN $3::varchar = 'FAILED' THEN CURRENT_TIMESTAMP ELSE failed_at END,
          failure_reason = $7,
          reconciliation_status = $8,
          gateway_response = $9::jsonb,
-         confirmed_at = CASE WHEN $3 = 'SUCCESSFUL' THEN CURRENT_TIMESTAMP ELSE confirmed_at END
+         confirmed_at = CASE WHEN $3::varchar = 'SUCCESSFUL' THEN CURRENT_TIMESTAMP ELSE confirmed_at END
      WHERE id = $10`,
     [
       verified.amount || 0,
@@ -373,7 +374,8 @@ const initiatePayment = async ({ invoiceNumber, token, amount, customer = {}, au
   const identifiers = await resolveCustomerAndPaymentMethod({ customer, fetchImpl });
   const callback = publicHttpsUrl(cfg.callback);
   const validatedAmount=(Number(requested)/100).toFixed(2);
-  const charge = await providerRequest({ path: "/charges", method: "POST", fetchImpl, headers: { "X-Idempotency-Key": attemptKey, "X-Trace-Id": `wms-${attemptReference}` }, payload: { amount: Number(validatedAmount), currency: String(invoice.currency).toUpperCase(), customer_id: identifiers.customerId, payment_method_id: identifiers.paymentMethodId, reference: attemptReference, ...(callback ? { redirect_url: callback } : {}), meta: { wms_payment_reference: invoice.payment_reference,wms_payment_attempt:attemptReference,cargo_reference: invoice.cargo_reference, invoice_reference: invoice.public_invoice_number } } });
+  const sandboxScenarioHeaders = cfg.environment === "sandbox" && cfg.sandboxScenario === "auth_redirect" ? { "X-Scenario-Key": "scenario:auth_redirect" } : {};
+  const charge = await providerRequest({ path: "/charges", method: "POST", fetchImpl, headers: { "X-Idempotency-Key": attemptKey, "X-Trace-Id": `wms-${attemptReference}`, ...sandboxScenarioHeaders }, payload: { amount: Number(validatedAmount), currency: String(invoice.currency).toUpperCase(), customer_id: identifiers.customerId, payment_method_id: identifiers.paymentMethodId, reference: attemptReference, ...(callback ? { redirect_url: callback } : {}), meta: { wms_payment_reference: invoice.payment_reference,wms_payment_attempt:attemptReference,cargo_reference: invoice.cargo_reference, invoice_reference: invoice.public_invoice_number } } });
   if (!charge.id) throw buildError("Flutterwave v4 did not return a charge ID.", 502);
   const gatewayStatus = String(charge.status || "pending").toLowerCase() === "succeeded" ? "PROCESSING" : "PENDING";
   await executor.query(`UPDATE payments SET gateway_status=$1,initiated_at=COALESCE(initiated_at,CURRENT_TIMESTAMP),gateway_transaction_id=$2,payment_method='mobile_money',gateway_response=$3::jsonb WHERE id=$4`, [gatewayStatus, String(charge.id), JSON.stringify({ id: charge.id, status: charge.status, reference: charge.reference, next_action: charge.next_action || null }), payment.id]);
