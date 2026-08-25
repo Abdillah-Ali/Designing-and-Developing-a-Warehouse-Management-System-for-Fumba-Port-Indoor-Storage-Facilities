@@ -63,9 +63,13 @@ test("complete customer payment workflow lifecycle, scenarios, and invariants", 
         return { rows: [invoiceRow], rowCount: 1 };
       }
 
+      if (queryStr.includes("UPDATE invoices SET payment_public_token")) {
+        invoiceRow.payment_public_token = params[0];
+        return { rows: [invoiceRow], rowCount: 1 };
+      }
+
       if (queryStr.includes("UPDATE invoices SET payment_reference=")) {
         invoiceRow.payment_reference = params[0];
-        invoiceRow.payment_public_token = params[1] || invoiceRow.payment_public_token || "a".repeat(64);
         invoiceRow.status = "Issued";
         return { rows: [invoiceRow], rowCount: 1 };
       }

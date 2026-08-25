@@ -1301,8 +1301,25 @@ const createOrRegenerateDraftInvoice = async ({ payload, auth, executor = db }) 
   const now = await getServerNow(executor);
   const requestedEnd = normalizeTimestamp(payload.billing_period_end);
   const releaseEnd = cargo.charge_end_at || cargo.released_at;
-  const billingEnd = requestedEnd || releaseEnd || now;
+  const requestedBillingEnd = requestedEnd || releaseEnd || now;
   const chargeStart = normalizeTimestamp(cargo.charge_start_at || cargo.created_at);
+  const previousResult = await executor.query(
+    `SELECT MAX(billing_period_end) AS last_billed_at
+     FROM invoices
+     WHERE cargo_id = $1
+       AND status <> 'Cancelled'
+       AND status <> 'Draft'`,
+    [cargo.id]
+  );
+  const previousEnd = normalizeTimestamp(previousResult.rows[0]?.last_billed_at);
+  const billingStart = maxDate(chargeStart, previousEnd) || chargeStart;
+  // A cargo can be registered and invoiced within the same database timestamp.
+  // The started-day calculator requires a positive interval, so retain the
+  // actual start and extend only the invoice boundary by one millisecond.
+  const billingEnd = requestedBillingEnd <= billingStart
+    ? new Date(billingStart.getTime() + 1)
+    : requestedBillingEnd;
+
   const sameDayInvoice = await executor.query(
     `SELECT public_invoice_number
      FROM invoices
@@ -1322,16 +1339,6 @@ const createOrRegenerateDraftInvoice = async ({ payload, auth, executor = db }) 
       'INVOICE_PERIOD_ALREADY_EXISTS'
     );
   }
-  const previousResult = await executor.query(
-    `SELECT MAX(billing_period_end) AS last_billed_at
-     FROM invoices
-     WHERE cargo_id = $1
-       AND status <> 'Cancelled'
-       AND status <> 'Draft'`,
-    [cargo.id]
-  );
-  const previousEnd = normalizeTimestamp(previousResult.rows[0]?.last_billed_at);
-  const billingStart = maxDate(chargeStart, previousEnd) || chargeStart;
 
   if (billingEnd < billingStart) {
     throw buildError("There are no unbilled storage days for this cargo and period.", 409);

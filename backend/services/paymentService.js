@@ -98,10 +98,13 @@ const activateRegistrationInvoice = async ({ cargoReference, executor = db }) =>
   let existing = (await executor.query(`SELECT i.*,c.cargo_id AS cargo_reference FROM invoices i JOIN cargo c ON c.id=i.cargo_id WHERE c.cargo_id=$1 AND i.auto_generated=TRUE AND i.status<>'Cancelled' ORDER BY i.created_at DESC LIMIT 1 FOR UPDATE OF i`, [cargoReference])).rows[0];
   if (!existing) { await createRegistrationInvoice({ cargoReference, executor }); existing = (await executor.query(`SELECT i.*,c.cargo_id AS cargo_reference FROM invoices i JOIN cargo c ON c.id=i.cargo_id WHERE c.cargo_id=$1 AND i.auto_generated=TRUE AND i.status<>'Cancelled' ORDER BY i.created_at DESC LIMIT 1 FOR UPDATE OF i`, [cargoReference])).rows[0]; }
   if (existing.payment_reference) return existing;
-  if (existing.status === "Draft") await issueInvoice({ invoiceNumber: existing.public_invoice_number, auth: { username: "SYSTEM" }, executor });
   const paymentReference = await generatePublicReference("PAY", executor, "payments", "public_reference");
   const publicToken = crypto.randomBytes(32).toString("hex");
-  const updated = await executor.query(`UPDATE invoices SET payment_reference=$1,payment_public_token=COALESCE(payment_public_token,$2),issued_by=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=$3 RETURNING *`, [paymentReference, publicToken, existing.id]);
+  // An automatic invoice may become Issued only after it has a public token.
+  // This keeps the database invariant valid during the approval transition.
+  await executor.query(`UPDATE invoices SET payment_public_token=COALESCE(payment_public_token,$1),updated_at=CURRENT_TIMESTAMP WHERE id=$2 RETURNING *`, [publicToken, existing.id]);
+  if (existing.status === "Draft") await issueInvoice({ invoiceNumber: existing.public_invoice_number, auth: { username: "SYSTEM" }, executor });
+  const updated = await executor.query(`UPDATE invoices SET payment_reference=$1,issued_by=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=$2 RETURNING *`, [paymentReference, existing.id]);
   await executor.query(`UPDATE tariff_versions SET operationally_used_at=COALESCE(operationally_used_at,CURRENT_TIMESTAMP) WHERE id=$1`, [updated.rows[0].tariff_version_id]);
   await writeAuditLog({ user_id:null, action:"AUTOMATIC_PAYMENT_REFERENCE_GENERATED", module:"Billing and Payment", description:`System activated invoice ${existing.public_invoice_number} after supervisor approval.`, metadata:{system_actor:true,cargo_reference:cargoReference,invoice_reference:existing.public_invoice_number,payment_reference:paymentReference} }, executor);
   await queueAndAttemptPaymentEmail({invoiceId:updated.rows[0].id,executor});

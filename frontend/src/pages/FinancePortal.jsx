@@ -31,7 +31,6 @@ import { formatDateTime, getErrorMessage, statusTone } from "@/lib/wms-operation
 import {
   activateFinanceTariff,
   cancelFinanceInvoice,
-  confirmFinancePayment,
   createFinanceTariff,
   generateFinanceDraftInvoice,
   deactivateFinanceTariff,
@@ -43,9 +42,7 @@ import {
   getFinanceReports,
   getFinanceTariffs,
   issueFinanceInvoice,
-  initiateGatewayPayment,
   logout,
-  recordFinancePayment,
   updateFinanceTariff,
   submitFinanceTariff,
   resendPaymentEmail
@@ -318,7 +315,6 @@ function InvoicesPage() {
   const [status, setStatus] = useState("");
   const [message, setMessage] = useState("");
   const [detail, setDetail] = useState({ invoice: null, data: null, loading: false, error: "" });
-  const [gateway, setGateway] = useState({ invoice: null, submitting: false, error: "", result: null });
   const invoices = useLoad(() => getFinanceInvoices({ status, limit: 100 }), status);
 
   const act = async (action, invoiceNumber) => {
@@ -388,6 +384,8 @@ function InvoicesPage() {
                   render: (row) => (
                     <div className="flex gap-1">
                       <button type="button" onClick={() => openDetail(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">Details</button>
+                      <button type="button" disabled={!row.payment_url || row.status === "Cancelled"} onClick={() => copyLink(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-50">Copy link</button>
+                      <button type="button" disabled={row.status === "Cancelled"} onClick={() => resend(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-50">Resend email</button>
                     </div>
                   )
                 }
@@ -397,22 +395,6 @@ function InvoicesPage() {
         </div>
       </div>
       <InvoiceDetailDialog detail={detail} onClose={() => setDetail({ invoice: null, data: null, loading: false, error: "" })} />
-      <GatewayPaymentDialog
-        state={gateway}
-        onClose={() => setGateway({ invoice: null, submitting: false, error: "", result: null })}
-        onSubmit={async (customer) => {
-          setGateway((current) => ({ ...current, submitting: true, error: "" }));
-          try {
-            const response = await initiateGatewayPayment(gateway.invoice.invoice_number, customer);
-            const result = response.data;
-            setGateway((current) => ({ ...current, submitting: false, result }));
-            setMessage(`Flutterwave charge ${result.charge_id} initiated for ${result.payment_reference}.`);
-            await invoices.refresh();
-          } catch (error) {
-            setGateway((current) => ({ ...current, submitting: false, error: getErrorMessage(error) }));
-          }
-        }}
-      />
     </>
   );
 }
@@ -522,61 +504,12 @@ function InvoiceDetailDialog({ detail, onClose }) {
 
 function PaymentsPage() {
   const payments = useLoad(() => getFinancePayments(), "payments");
-  const [form, setForm] = useState({
-    invoice_number: "",
-    amount: "",
-    bank_name: "",
-    bank_reference: "",
-    payment_date: "",
-    notes: ""
-  });
-  const [message, setMessage] = useState("");
-
-  const submit = async (event) => {
-    event.preventDefault();
-    setMessage("");
-    try {
-      await recordFinancePayment(form);
-      setForm({ invoice_number: "", amount: "", bank_name: "", bank_reference: "", payment_date: "", notes: "" });
-      setMessage("Payment recorded. It will not affect the balance until explicitly confirmed.");
-      await payments.refresh();
-    } catch (error) {
-      setMessage(getErrorMessage(error));
-    }
-  };
 
   return (
     <>
       <PageHeader eyebrow="Finance" title="Payments" description="Monitor provider-verified payments, failures, exceptions, and reconciliation." />
       <div className="flex-1 overflow-auto p-4">
-        <div className="hidden"><SectionCard title="Legacy manual payment" icon={CreditCard}>
-          <form className="grid gap-3 md:grid-cols-3" onSubmit={submit}>
-            {["invoice_number", "amount", "bank_name", "bank_reference", "payment_date"].map((field) => (
-              <FormField key={field} label={field.replaceAll("_", " ").replace(/\b\w/g, (char) => char.toUpperCase())}>
-                <input
-                  className={inputClass}
-                  type={field === "payment_date" ? "datetime-local" : field === "amount" ? "number" : "text"}
-                  min={field === "amount" ? "0.01" : undefined}
-                  step={field === "amount" ? "0.01" : undefined}
-                  value={form[field]}
-                  onChange={(event) => setForm((current) => ({ ...current, [field]: event.target.value }))}
-                  required
-                />
-              </FormField>
-            ))}
-            <FormField label="Notes">
-              <input className={inputClass} value={form.notes} onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))} />
-            </FormField>
-            <div className="flex items-end">
-              <button type="submit" className="inline-flex h-9 items-center gap-2 rounded bg-info px-3 text-xs font-semibold text-info-foreground">
-                <Save className="h-4 w-4" />
-                Record Payment
-              </button>
-            </div>
-          </form>
-        </SectionCard></div>
-        {message && <div className="mt-3 rounded border border-info/30 bg-info/10 px-3 py-2 text-xs font-semibold text-info">{message}</div>}
-        <div className="mt-3">
+        <div>
           <SectionCard title="Recent Payments" icon={CreditCard}>
             <DataTable
               loading={payments.loading}

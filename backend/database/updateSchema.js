@@ -848,6 +848,7 @@ const runUpdates = async () => {
     await applySqlMigration(client, "038_installment_payment_workflow.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260822_installment_payment_workflow.sql"), "utf8"));
     await applySqlMigration(client, "039_payment_email_delivery.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260822_payment_email_delivery.sql"), "utf8"));
     await applySqlMigration(client, "040_public_payment_token_invariants.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260822_public_payment_token_invariants.sql"), "utf8"));
+    await applySqlMigration(client, "041_draft_invoice_payment_token_constraint.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260825_draft_invoice_payment_token_constraint.sql"), "utf8"));
     await applySqlMigration(client, "041_session_selector_cookie_isolation.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260823_session_selector_cookie_isolation.sql"), "utf8"));
     await ensureStandardRolePermissions(client);
   } catch (error) {

@@ -11,6 +11,7 @@ test("protected routes resolve to stable permission keys and unknown routes fail
   assert.equal(getRoutePermission("POST", "/cargo"), "cargo.register");
   assert.equal(getRoutePermission("POST", "/supervisor/approvals/4/approve"), "cargo.approve");
   assert.equal(getRoutePermission("POST", "/finance/payments"), "finance.payments.record");
+  assert.equal(getRoutePermission("POST", "/payments/invoices/INV-2026-TEST/payment-email/resend"), "finance.payments.initiate");
   assert.equal(getRoutePermission("POST", "/customs/cargo/CARGO-1/status"), "customs.clearance.update");
   assert.equal(getRoutePermission("POST", "/gate/cargo/CARGO-1/gate-out"), "gate.gate_out.confirm");
   assert.equal(getRoutePermission("POST", "/unknown-operation"), null);
