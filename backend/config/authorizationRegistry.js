@@ -46,7 +46,7 @@ const AUTHORIZATION_ROUTES = Object.freeze([
   route(["GET"], /^\/gate\/records$/, "gate.history.view"), route(["GET"], /^\/gate\/cargo\/[^/]+\/eligibility$/, "gate.release.validate"),
   route(["POST"], /^\/gate\/cargo\/[^/]+\/gate-out$/, "gate.gate_out.confirm"), route(["GET"], /^\/gate\/emergency-requests$/, "gate.history.view"),
   route(["POST"], /^\/gate\/emergency-requests$/, "gate.emergency_release.request"), route(["POST"], /^\/gate\/emergency-requests\/[^/]+\/(?:approve|reject)$/, "gate.emergency_release.approve"),
-  route(["GET"], /^\/management\/dashboard$/, "management.dashboard.view"), route(["GET"], /^\/management\/reports$/, "management.reports.view"),
+  route(["GET"], /^\/management\/dashboard$/, "management.dashboard.view"), route(["GET"], /^\/management\/reports(?:\/export\/(?:pdf|excel))?$/, "management.reports.view"),
   route(["POST"], /^\/finance\/tariffs\/[^/]+\/submit$/, "finance.tariffs.submit"),
   route(["GET"], /^\/management\/tariff-approvals$/, "management.tariffs.view"), route(["POST"], /^\/management\/tariff-approvals\/[^/]+\/(?:approve|reject)$/, "management.tariffs.decide"),
   route(["POST"], /^\/payments\/invoices\/[^/]+\/initiate$/, "finance.payments.initiate"),

@@ -850,6 +850,7 @@ const runUpdates = async () => {
     await applySqlMigration(client, "040_public_payment_token_invariants.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260822_public_payment_token_invariants.sql"), "utf8"));
     await applySqlMigration(client, "041_draft_invoice_payment_token_constraint.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260825_draft_invoice_payment_token_constraint.sql"), "utf8"));
     await applySqlMigration(client, "041_session_selector_cookie_isolation.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260823_session_selector_cookie_isolation.sql"), "utf8"));
+    await applySqlMigration(client, "042_role_based_reports_indexes.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260826_role_based_reports_indexes.sql"), "utf8"));
     await ensureStandardRolePermissions(client);
   } catch (error) {
     if (transactionOpen) await client.query("ROLLBACK").catch(() => {});

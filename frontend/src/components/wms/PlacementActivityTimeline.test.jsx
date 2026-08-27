@@ -21,7 +21,7 @@ describe("Warehouse Staff placement activity", () => {
     render(<PlacementActivityPanel title="My Placement Activity" />);
     expect(await screen.findByText("Validation Failed")).toBeInTheDocument();
     expect(screen.getByText("CARGO-2026-00001")).toBeInTheDocument();
-    expect(screen.getByText("Showing 1-25 of 26")).toBeInTheDocument();
+    expect(screen.getByText("1–10 of 26 activity records")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("page=2"), expect.any(Object)));

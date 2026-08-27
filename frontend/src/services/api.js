@@ -798,7 +798,19 @@ export const updateCustomsStatus = (cargoReference, payload) => request(`/custom
 // Gate endpoints
 export const getGateDashboard = () => request("/gate/dashboard");
 export const getManagementDashboard = () => request("/management/dashboard");
-export const getManagementReports = () => request("/management/reports");
+export const getManagementReports = (params = {}) => request(`/management/reports${buildQuerySuffix(params)}`);
+export const getRoleReports = (scope, params = {}) => request(`/reports/${encodeURIComponent(scope)}${buildQuerySuffix(params)}`);
+export const exportRoleReport = async (scope, format, params = {}) => {
+  const token=getStoredAuthToken(); const response=await fetch(`${API_BASE_URL}/reports/${encodeURIComponent(scope)}/export/${encodeURIComponent(format)}${buildQuerySuffix(params)}`,{credentials:"include",headers:token?{Authorization:`Bearer ${token}`}:{}});
+  if(!response.ok) throw new Error("The report export could not be generated."); const blob=await response.blob();const url=URL.createObjectURL(blob);const link=document.createElement("a");link.href=url;link.download=`${scope}-report.${format==="pdf"?"pdf":"xls"}`;link.click();URL.revokeObjectURL(url);
+};
+export const exportManagementReport = async (format, params = {}) => {
+  const token = getStoredAuthToken();
+  const response = await fetch(`${API_BASE_URL}/management/reports/export/${encodeURIComponent(format)}${buildQuerySuffix(params)}`, { credentials: "include", headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  if (!response.ok) throw new Error("The report export could not be generated.");
+  const blob = await response.blob(); const url = URL.createObjectURL(blob); const link = document.createElement("a");
+  link.href = url; link.download = `management-report.${format === "pdf" ? "pdf" : "xls"}`; link.click(); URL.revokeObjectURL(url);
+};
 export const getManagementReleaseRequests = (params={}) => request(`/management/release-requests${buildQuerySuffix(params)}`);
 export const getManagementReleaseRequest = (reference) => request(`/management/release-requests/${encodeURIComponent(reference)}`);
 export const approveManagementRelease = (reference,remarks="") => request(`/management/release-requests/${encodeURIComponent(reference)}/approve`,{method:"POST",body:{remarks}});

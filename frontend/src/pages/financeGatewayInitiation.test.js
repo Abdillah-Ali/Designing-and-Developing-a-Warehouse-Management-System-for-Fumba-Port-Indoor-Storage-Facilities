@@ -8,6 +8,9 @@ describe("Finance payment monitoring and email management", () => {
     expect(source).toContain("resendPaymentEmail");
     expect(source).toContain("Copy link");
     expect(source).toContain("Resend email");
+    expect(source).toContain("Resending payment email…");
+    expect(source).toContain("Payment email sent.");
+    expect(source).toContain("setTimeout(() => setResendNotice(null), 2000)");
     expect(source).toContain("master_payment_reference");
     expect(source).toContain("installment_count");
     expect(source).toContain("email_delivery_status");

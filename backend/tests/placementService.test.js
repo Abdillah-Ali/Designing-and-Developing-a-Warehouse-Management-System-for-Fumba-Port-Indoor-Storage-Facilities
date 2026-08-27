@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const db = require("../config/db");
+
 const { validatePlacement: validatePlacementController } = require("../controllers/placementController");
 const {
   confirmPlacementOperation,

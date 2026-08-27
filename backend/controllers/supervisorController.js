@@ -377,13 +377,15 @@ const decideApproval = async (req, res, next, decision, options = {}) => {
         const releaseType = String(req.body.release_type || "NORMAL").trim().toUpperCase();
         if (releaseType === "MANAGEMENT") {
           await submitManagementRelease({ cargoRef: approval.cargo_id, reason: req.body.management_release_reason, actor: req.auth, executor: client });
+          const { queueAndAttemptManagementReleaseEmail } = require("../services/emailService");
+          await queueAndAttemptManagementReleaseEmail({ cargoReference: approval.cargo_id, executor: client });
         } else if (releaseType === "NORMAL") {
           await selectNormalRelease({ cargoRef: approval.cargo_id, remarks: req.body.management_release_reason, actor: req.auth, executor: client });
+          const { activateRegistrationInvoice } = require("../services/paymentService");
+          await activateRegistrationInvoice({ cargoReference: approval.cargo_id, executor: client });
         } else {
           throw buildError("Release type must be NORMAL or MANAGEMENT.", 400);
         }
-        const { activateRegistrationInvoice } = require("../services/paymentService");
-        await activateRegistrationInvoice({ cargoReference: approval.cargo_id, executor: client });
       } else {
         const rejectedCargoResult = await client.query(
           "SELECT * FROM cargo WHERE id = $1",

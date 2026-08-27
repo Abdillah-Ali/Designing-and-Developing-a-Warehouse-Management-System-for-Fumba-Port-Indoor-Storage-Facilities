@@ -53,6 +53,7 @@ export const PORTAL_CONFIG = Object.freeze({
       "/admin/audit/user-activity",
       "/admin/audit/login-sessions",
       "/admin/audit/security-events",
+      "/admin/reports",
       "/admin/notifications",
       "/admin/profile"
     ]),
@@ -90,6 +91,7 @@ export const PORTAL_CONFIG = Object.freeze({
       "/staff/dispatch/queue",
       "/staff/dispatch/gate-release",
       "/staff/dispatch/released",
+      "/staff/reports",
       "/staff/notifications",
       "/staff/profile"
     ]),
@@ -125,6 +127,7 @@ export const PORTAL_CONFIG = Object.freeze({
       "/supervisor/dispatch/requests",
       "/supervisor/dispatch/approved",
       "/supervisor/dispatch/emergency-releases",
+      "/supervisor/reports",
       "/supervisor/notifications",
       "/supervisor/profile"
     ]),
@@ -176,6 +179,7 @@ export const PORTAL_CONFIG = Object.freeze({
       "/customs/records",
       "/customs/cleared",
       "/customs/holds",
+      "/customs/reports",
       "/customs/notifications",
       "/customs/profile"
     ]),
@@ -200,6 +204,7 @@ export const PORTAL_CONFIG = Object.freeze({
       "/gate/release-queue",
       "/gate/gate-out-records",
       "/gate/emergency-releases",
+      "/gate/reports",
       "/gate/notifications",
       "/gate/profile"
     ]),

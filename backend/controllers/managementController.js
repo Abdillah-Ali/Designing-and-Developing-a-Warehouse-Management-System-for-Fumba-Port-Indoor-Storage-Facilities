@@ -1,6 +1,7 @@
 const db = require("../config/db");
 const { buildError } = require("../utils/apiError");
 const { decide } = require("../services/managementReleaseService");
+const { getManagementReport } = require("../services/reportService");
 
 const getDashboard = async (_req, res, next) => {
   try {
@@ -21,26 +22,34 @@ const getDashboard = async (_req, res, next) => {
   }
 };
 
-const getReports = async (_req, res, next) => {
+const getReports = async (req, res, next) => {
   try {
-    const [cargo, finance, releases, managementRelease] = await Promise.all([
-      db.query(`SELECT cargo_type, COUNT(*)::int AS cargo_count FROM cargo WHERE is_deleted = FALSE GROUP BY cargo_type ORDER BY cargo_count DESC`),
-      db.query(`SELECT status, COUNT(*)::int AS invoice_count, COALESCE(SUM(total_amount),0)::numeric AS total_amount FROM invoices GROUP BY status ORDER BY status`),
-      db.query(`SELECT DATE(released_at) AS release_date, COUNT(*)::int AS release_count FROM cargo WHERE released_at IS NOT NULL GROUP BY DATE(released_at) ORDER BY release_date DESC LIMIT 31`),
-      db.query(`SELECT management_release_status,COUNT(*)::int AS cargo_count,COALESCE(SUM(management_release_waived_amount),0) AS waived_amount FROM cargo WHERE is_deleted=FALSE GROUP BY management_release_status ORDER BY management_release_status`)
-    ]);
-    res.json({
-      success: true,
-      data: {
-        cargo_by_type: cargo.rows,
-        invoices_by_status: finance.rows,
-        releases_by_date: releases.rows,
-        management_release_summary: managementRelease.rows
-      }
-    });
+    res.json({ success: true, data: await getManagementReport(req.query) });
   } catch (error) {
     next(error);
   }
+};
+
+const escapeXml = (value) => String(value ?? "").replace(/[<>&'\"]/g, c => ({"<":"&lt;",">":"&gt;","&":"&amp;","'":"&apos;",'"':"&quot;"})[c]);
+const exportReports = async (req, res, next) => {
+  try {
+    const data = await getManagementReport({ ...req.query, page: 1, pageSize: 100 });
+    const format = String(req.params.format || "").toLowerCase();
+    if (format === "excel") {
+      const headers = ["Cargo Reference","Cargo Status","Location","Customs Status","Invoice Status","Paid Amount","Outstanding Amount","Registration Date"];
+      const rows = data.cargo.map(r => [r.cargo_reference,r.cargo_status,r.current_location,r.customs_status,r.invoice_status,r.paid_amount,r.outstanding_amount,r.registration_date]);
+      const xml = `<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Cargo"><Table>${[headers,...rows].map((row,ri)=>`<Row>${row.map((v,ci)=>`<Cell><Data ss:Type="${ri&&ci>=5&&ci<=6?'Number':'String'}">${escapeXml(v)}</Data></Cell>`).join("")}</Row>`).join("")}</Table></Worksheet></Workbook>`;
+      res.set({"Content-Type":"application/vnd.ms-excel","Content-Disposition":"attachment; filename=management-report.xls"}).send(xml); return;
+    }
+    if (format === "pdf") {
+      const lines = ["Fumba Port WMS - Reports & Analytics",`Generated: ${new Date().toISOString()}`,`Total cargo: ${data.summary.total_cargo}`,`Storage occupied: ${data.summary.storage_occupied ?? 'N/A'}%`,`Verified revenue: TZS ${data.summary.total_revenue}`,`Outstanding: TZS ${data.summary.outstanding}`];
+      const stream = `BT /F1 12 Tf 50 780 Td ${lines.map((x,i)=>`${i?'0 -22 Td ':''}(${String(x).replace(/[()\\]/g,'\\$&')}) Tj`).join(' ')} ET`;
+      const objects=[`1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj`,`2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj`,`3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>endobj`,`4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj`,`5 0 obj<</Length ${Buffer.byteLength(stream)}>>stream\n${stream}\nendstream endobj`];
+      let pdf='%PDF-1.4\n', offsets=[0]; objects.forEach(o=>{offsets.push(Buffer.byteLength(pdf));pdf+=o+'\n'}); const xref=Buffer.byteLength(pdf);pdf+=`xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map(n=>String(n).padStart(10,'0')+' 00000 n ').join('\n')}\ntrailer<</Size 6/Root 1 0 R>>\nstartxref\n${xref}\n%%EOF`;
+      res.set({"Content-Type":"application/pdf","Content-Disposition":"attachment; filename=management-report.pdf"}).send(Buffer.from(pdf)); return;
+    }
+    res.status(400).json({success:false,message:"Unsupported export format."});
+  } catch (error) { next(error); }
 };
 
 const listReleaseRequests = async (req,res,next)=>{try{
@@ -56,4 +65,4 @@ const decideRequest=(decision)=>(req,res,next)=>{const clientPromise=db.pool.con
 const approveReleaseRequest=decideRequest("APPROVED");
 const rejectReleaseRequest=decideRequest("REJECTED");
 
-module.exports = { getDashboard, getReports, listReleaseRequests, getReleaseRequest, approveReleaseRequest, rejectReleaseRequest };
+module.exports = { getDashboard, getReports, exportReports, listReleaseRequests, getReleaseRequest, approveReleaseRequest, rejectReleaseRequest };

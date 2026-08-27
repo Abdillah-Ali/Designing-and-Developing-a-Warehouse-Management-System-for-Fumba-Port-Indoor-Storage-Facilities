@@ -41,6 +41,45 @@ const renderPaymentEmail=(data)=>({
   ].join("\n")
 });
 
+const renderManagementReleaseEmail=(data)=>({
+  subject:`Fumba Port Management Release Review - ${data.cargo_reference}`,
+  text:[
+    "Hello,","",`Cargo ${data.cargo_reference} has been approved by the Warehouse Supervisor and submitted for Management Release review.`,"",
+    `Cargo Reference: ${data.cargo_reference}`,
+    `Cargo Type: ${data.cargo_type||"Not specified"}`,
+    `Warehouse: ${data.warehouse_name||"Not specified"}`,
+    `Release Request Reason: ${data.management_release_reason||"Not specified"}`,"",
+    "No payment is requested while Management Release is under review.",
+    "You will be notified when the release decision is made.","","Regards,","Fumba Port WMS"
+  ].join("\n")
+});
+
+const loadManagementReleaseEmailData=async({cargoReference,executor=db})=>{
+  const result=await executor.query(`SELECT c.id,c.cargo_id AS cargo_reference,c.email AS recipient,c.cargo_type,c.management_release_reason,w.warehouse_name
+    FROM cargo c LEFT JOIN warehouses w ON w.id=c.warehouse_id WHERE c.cargo_id=$1 LIMIT 1`,[cargoReference]);
+  if(!result.rowCount) throw buildError("Cargo was not found for the Management Release email.",404);
+  return result.rows[0];
+};
+
+const queueAndAttemptManagementReleaseEmail=async({cargoReference,executor=db,transportFactory})=>{
+  const data=await loadManagementReleaseEmailData({cargoReference,executor});
+  const status=data.recipient?"PENDING":"SKIPPED";
+  const delivery=(await executor.query(`INSERT INTO payment_email_deliveries(invoice_id,email_type,recipient,delivery_status,last_error)
+    SELECT i.id,'MANAGEMENT_RELEASE_NOTICE',$2,$3,$4 FROM invoices i WHERE i.cargo_id=$1 ORDER BY i.created_at DESC LIMIT 1
+    ON CONFLICT(invoice_id,email_type) DO NOTHING RETURNING *`,[data.id,data.recipient||null,status,data.recipient?null:"Customer email unavailable"])).rows[0];
+  if(!delivery||delivery.delivery_status==="SKIPPED") return delivery||null;
+  try{
+    const transport=createTransport(transportFactory); const template=renderManagementReleaseEmail(data);
+    await transport.sendMail({from:process.env.EMAIL_FROM,to:data.recipient,subject:template.subject,text:template.text});
+    const sent=(await executor.query(`UPDATE payment_email_deliveries SET delivery_status='SENT',attempt_count=attempt_count+1,last_attempt_at=CURRENT_TIMESTAMP,sent_at=CURRENT_TIMESTAMP,last_error=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=$1 RETURNING *`,[delivery.id])).rows[0];
+    await writeAuditLog({user_id:null,action:"MANAGEMENT_RELEASE_EMAIL_SENT",module:"Management Release",description:`Management Release review email sent for cargo ${data.cargo_reference}.`,metadata:{system_actor:true,cargo_reference:data.cargo_reference,recipient:data.recipient}},executor);
+    return sent;
+  }catch(error){
+    const safeError=String(error?.message||"SMTP delivery failed").slice(0,500);
+    return (await executor.query(`UPDATE payment_email_deliveries SET delivery_status='FAILED',attempt_count=attempt_count+1,last_attempt_at=CURRENT_TIMESTAMP,last_error=$2,updated_at=CURRENT_TIMESTAMP WHERE id=$1 RETURNING *`,[delivery.id,safeError])).rows[0];
+  }
+};
+
 const loadDeliveryData=async({invoiceId,executor=db})=>{
   const result=await executor.query(`SELECT i.id,i.public_invoice_number AS invoice_reference,i.payment_reference,i.payment_public_token,i.total_amount,i.amount_paid,i.outstanding_balance,i.currency,c.cargo_id AS cargo_reference,c.email AS recipient FROM invoices i JOIN cargo c ON c.id=i.cargo_id WHERE i.id=$1 LIMIT 1`,[invoiceId]);
   if(!result.rowCount) throw buildError("Invoice was not found for payment email.",404);
@@ -100,4 +139,4 @@ const queueAndAttemptPaymentEmail=async({invoiceId,executor=db,transportFactory}
   return sendPaymentLinkEmail({invoiceId,executor,transportFactory});
 };
 
-module.exports={buildPaymentUrl,createTransport,loadDeliveryData,queueAndAttemptPaymentEmail,queuePaymentLinkEmail,renderPaymentEmail,sendPaymentLinkEmail,smtpConfig};
+module.exports={buildPaymentUrl,createTransport,loadDeliveryData,loadManagementReleaseEmailData,queueAndAttemptManagementReleaseEmail,queueAndAttemptPaymentEmail,queuePaymentLinkEmail,renderManagementReleaseEmail,renderPaymentEmail,sendPaymentLinkEmail,smtpConfig};

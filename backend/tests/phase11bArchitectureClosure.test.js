@@ -14,6 +14,7 @@ const validTariff = {
   daily_rate: "1000.00", tariff_scope: "default", cargo_type_key: "default",
   charging_unit: "per_cargo_per_day", minimum_billable_days: 1
 };
+test.after(async()=>{await db.pool.end().catch(()=>{});});
 
 const financeExecutor = ({ tariffs = [], overlaps = [], uncovered = [] } = {}) => ({
   query: async (sql) => {
@@ -52,7 +53,20 @@ test("live valid default tariff restores readiness without leaving fixture data"
   try {
     const actor=(await client.query("SELECT id FROM users WHERE status='active' ORDER BY id LIMIT 1")).rows[0];
     await client.query("UPDATE tariff_versions SET is_active=FALSE WHERE is_active=TRUE");
-    await createTariffVersion({payload:{tariff_name:"Phase 11B transactional readiness fixture",cargo_type_key:"default",charging_unit:"per_cargo_per_day",daily_rate:"1.00",currency:"TZS",minimum_billable_days:1,effective_from:"2026-01-01T00:00:00Z",is_active:true},auth:{userId:actor?.id},executor:client});
+    // The overlap rule deliberately includes inactive historical versions.  In
+    // this transaction, close every historical Default period at the fixture
+    // boundary so the test proves readiness with exactly one valid default
+    // tariff without depending on a developer's tariff history.
+    const fixtureStart = new Date(Date.now() - 60_000);
+    await client.query(
+      "UPDATE tariff_versions SET effective_to=$1 WHERE LOWER(cargo_type)='default' AND charging_unit='per_cargo_per_day'",
+      [fixtureStart]
+    );
+    // Readiness also verifies coverage at each open cargo's charging origin.
+    // Keep those origins inside the temporary default period; rollback restores
+    // every operational timestamp after the assertion.
+    await client.query("UPDATE cargo SET charge_start_at=$1 WHERE is_deleted=FALSE AND charge_end_at IS NULL", [fixtureStart]);
+    await createTariffVersion({payload:{tariff_name:"Phase 11B transactional readiness fixture",cargo_type_key:"default",charging_unit:"per_cargo_per_day",daily_rate:"1.00",currency:"TZS",minimum_billable_days:1,effective_from:fixtureStart.toISOString(),is_active:true},auth:{userId:actor?.id},executor:client});
     const result=await validateFinanceConfiguration(client);
     assert.equal(result.ready,true);
     assert.equal(result.usable_tariffs,1);

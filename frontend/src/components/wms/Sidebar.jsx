@@ -1,5 +1,6 @@
 import {
   Boxes,
+  BarChart3,
   ClipboardCheck,
   ClipboardList,
   DoorOpen,
@@ -57,6 +58,7 @@ const navigation = [
       { label: "Released Cargo", icon: PackageCheck, to: "/staff/dispatch/released" }
     ]
   },
+  { label: "Reports", icon: BarChart3, to: "/staff/reports" },
   {
     label: "Profile",
     icon: UserCircle2,

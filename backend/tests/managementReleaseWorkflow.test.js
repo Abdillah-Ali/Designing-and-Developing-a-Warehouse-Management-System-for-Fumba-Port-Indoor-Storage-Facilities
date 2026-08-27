@@ -23,6 +23,8 @@ test("request history preserves every submission and permits only one pending re
 test("Supervisor approval records release classification in the same transaction",()=>{
   assert.match(supervisor,/release_type \|\| "NORMAL"/);
   assert.match(supervisor,/submitManagementRelease/);
+  assert.match(supervisor,/queueAndAttemptManagementReleaseEmail/);
+  assert.match(supervisor,/releaseType === "NORMAL"[\s\S]*activateRegistrationInvoice/);
 });
 test("Management state transitions use row locks and server actors",()=>{
   assert.match(service,/FOR UPDATE OF mrr,c/);

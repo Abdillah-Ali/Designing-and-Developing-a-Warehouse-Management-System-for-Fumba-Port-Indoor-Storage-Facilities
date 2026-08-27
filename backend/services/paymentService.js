@@ -15,6 +15,7 @@ const config = () => ({
   base: process.env.FLUTTERWAVE_API_BASE_URL || "https://developersandbox-api.flutterwave.com",
   webhookSecret: process.env.FLUTTERWAVE_WEBHOOK_SECRET,
   callback: process.env.PAYMENT_CALLBACK_URL,
+  publicPaymentBase: process.env.PUBLIC_PAYMENT_BASE_URL,
   sandboxScenario: (process.env.FLUTTERWAVE_SANDBOX_SCENARIO || "auth_redirect").trim()
 });
 const publicHttpsUrl = (value) => {
@@ -22,6 +23,15 @@ const publicHttpsUrl = (value) => {
     const url = new URL(String(value || ""));
     return url.protocol === "https:" && !["localhost", "127.0.0.1", "::1"].includes(url.hostname) ? url.toString() : "";
   } catch { return ""; }
+};
+const publicPaymentReturnUrl = ({ token, attemptReference }) => {
+  const cfg = config();
+  const base = publicHttpsUrl(cfg.publicPaymentBase);
+  if (!base) return publicHttpsUrl(cfg.callback);
+  const url = new URL(base);
+  url.pathname = `${url.pathname.replace(/\/$/, "")}/pay/${encodeURIComponent(token)}`;
+  url.searchParams.set("attempt", attemptReference);
+  return url.toString();
 };
 const timingSafe = (a, b) => { const aa = Buffer.from(String(a || "")); const bb = Buffer.from(String(b || "")); return aa.length === bb.length && crypto.timingSafeEqual(aa, bb); };
 const createWebhookSignature = (rawBody, secret) => crypto.createHmac("sha256", String(secret || "")).update(Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(String(rawBody || ""))).digest("base64");
@@ -372,7 +382,7 @@ const initiatePayment = async ({ invoiceNumber, token, amount, customer = {}, au
   const attemptReference=await generatePublicReference("PMT",executor,"payments","public_reference"); const attemptKey=idempotencyKey("installment",`${invoice.payment_reference}:${attemptReference}`);
   const payment=(await executor.query(`INSERT INTO payments(public_reference,attempt_reference,idempotency_key,invoice_id,cargo_id,payment_reference,amount,expected_amount,currency,bank_name,payment_date,status,gateway_status,gateway_provider,recorded_by) VALUES($1,$1,$2,$3,$4,$5,$6,$6,$7,'Flutterwave v4 Sandbox',CURRENT_TIMESTAMP,'Gateway Pending','NOT_INITIATED','flutterwave',$8) RETURNING *`,[attemptReference,attemptKey,invoice.id,invoice.cargo_record_id,invoice.payment_reference,(Number(requested)/100).toFixed(2),invoice.currency,auth?.userId||null])).rows[0];
   const identifiers = await resolveCustomerAndPaymentMethod({ customer, fetchImpl });
-  const callback = publicHttpsUrl(cfg.callback);
+  const callback = publicPaymentReturnUrl({ token, attemptReference });
   const validatedAmount=(Number(requested)/100).toFixed(2);
   const sandboxScenarioHeaders = cfg.environment === "sandbox" && cfg.sandboxScenario === "auth_redirect" ? { "X-Scenario-Key": "scenario:auth_redirect" } : {};
   const charge = await providerRequest({ path: "/charges", method: "POST", fetchImpl, headers: { "X-Idempotency-Key": attemptKey, "X-Trace-Id": `wms-${attemptReference}`, ...sandboxScenarioHeaders }, payload: { amount: Number(validatedAmount), currency: String(invoice.currency).toUpperCase(), customer_id: identifiers.customerId, payment_method_id: identifiers.paymentMethodId, reference: attemptReference, ...(callback ? { redirect_url: callback } : {}), meta: { wms_payment_reference: invoice.payment_reference,wms_payment_attempt:attemptReference,cargo_reference: invoice.cargo_reference, invoice_reference: invoice.public_invoice_number } } });
@@ -397,4 +407,4 @@ const processWebhook = async ({ headers, rawBody, executor = db, fetchImpl = glo
   return res;
 };
 
-module.exports = { activateRegistrationInvoice, cancelRegistrationInvoice, claimWebhookEvent, classifyVerifiedCharge, config, createRegistrationInvoice, createWebhookSignature, ensureAutomaticInvoice: activateRegistrationInvoice, findCustomerByEmail,getPaymentAttemptStatus,getPaymentHistory,getPaymentSummary, initiatePayment, markWebhookProcessed, processWebhook, providerRequest, publicHttpsUrl, readVerifiedWebhookEnvelope, recordWebhookFailure, resolveCustomerAndPaymentMethod, settlePaymentAttempt, timingSafe,validateCustomerPaymentInput, verifyCharge, verifyWebhookSignature };
+module.exports = { activateRegistrationInvoice, cancelRegistrationInvoice, claimWebhookEvent, classifyVerifiedCharge, config, createRegistrationInvoice, createWebhookSignature, ensureAutomaticInvoice: activateRegistrationInvoice, findCustomerByEmail,getPaymentAttemptStatus,getPaymentHistory,getPaymentSummary, initiatePayment, markWebhookProcessed, processWebhook, providerRequest, publicHttpsUrl, publicPaymentReturnUrl, readVerifiedWebhookEnvelope, recordWebhookFailure, resolveCustomerAndPaymentMethod, settlePaymentAttempt, timingSafe,validateCustomerPaymentInput, verifyCharge, verifyWebhookSignature };

@@ -177,7 +177,7 @@ function PlacementActivityPanel({
   const [filters, setFilters] = useState(emptyFilters);
   const [appliedFilters, setAppliedFilters] = useState(emptyFilters);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(25);
+  const [pageSize, setPageSize] = useState(10);
   const [refreshKey, setRefreshKey] = useState(0);
   const [state, setState] = useState({ rows: [], summary: {}, total: 0, loading: true, error: "" });
 
@@ -254,6 +254,12 @@ function PlacementActivityPanel({
           loading={state.loading}
           error={state.error}
           rows={state.rows}
+          page={page}
+          pageSize={pageSize}
+          total={state.total}
+          onPageChange={setPage}
+          onPageSizeChange={setPageSize}
+          itemLabel="activity records"
           emptyTitle="No placement activity recorded"
           emptyBody="Placement events will appear after validation, confirmation, relocation, or override activity is recorded."
           columns={[
@@ -267,19 +273,6 @@ function PlacementActivityPanel({
             { key: "detail", label: "Detail", render: detailText, className: "max-w-[320px] truncate" }
           ]}
         />
-        {!state.loading && !state.error && state.total > 0 && (
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-3 text-xs">
-            <span className="text-muted-foreground">Showing {(page - 1) * pageSize + 1}-{Math.min(page * pageSize, state.total)} of {state.total}</span>
-            <div className="flex items-center gap-2">
-              <select className="h-8 rounded border border-input bg-background px-2" value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}>
-                {[10, 25, 50].map((size) => <option key={size} value={size}>{size} per page</option>)}
-              </select>
-              <button type="button" className="h-8 rounded border border-border px-3 disabled:opacity-40" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</button>
-              <span>Page {page} of {Math.max(Math.ceil(state.total / pageSize), 1)}</span>
-              <button type="button" className="h-8 rounded border border-border px-3 disabled:opacity-40" disabled={page * pageSize >= state.total} onClick={() => setPage((value) => value + 1)}>Next</button>
-            </div>
-          </div>
-        )}
         {!state.loading && !state.error && state.rows.length === 0 && (
           <div className="mt-3">
             <EmptyState title="No activity in this view" body="Adjust filters or record placement work to populate this timeline." />

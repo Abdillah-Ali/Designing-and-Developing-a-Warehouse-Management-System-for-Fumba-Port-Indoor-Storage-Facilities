@@ -30,6 +30,7 @@ const managementRoutes = require("./routes/managementRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const publicPaymentRoutes = require("./routes/publicPaymentRoutes");
 const releaseReadinessRoutes = require("./routes/releaseReadinessRoutes");
+const roleReportRoutes = require("./routes/roleReportRoutes");
 const { webhook: paymentWebhook } = require("./controllers/paymentController");
 const cargoRegistrationFormRoutes = require("./routes/cargoRegistrationFormRoutes");
 const {
@@ -140,6 +141,9 @@ app.use("/api/auth", authRoutes);
 app.use("/api/bootstrap", bootstrapRoutes);
 app.use("/api/profile", profileRoutes);
 app.use("/api/scanner", scannerRoutes);
+// Role reports authenticate and authorize their scope inside the route. They are
+// mounted before the legacy portal path allow-list so every mismatch returns 403.
+app.use("/api/reports", roleReportRoutes);
 app.use("/api", requirePortalAccess);
 app.use("/api", requireOperationalShift);
 

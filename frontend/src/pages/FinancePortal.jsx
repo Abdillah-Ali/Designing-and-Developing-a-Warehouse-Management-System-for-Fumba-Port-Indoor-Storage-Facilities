@@ -16,6 +16,7 @@ import {
   UserCircle2
 } from "lucide-react";
 import { HeaderActions } from "@/components/wms/HeaderActions";
+import { RoleReports } from "@/components/wms/RoleReports";
 import { NotificationsPage } from "@/components/wms/NotificationsPage";
 import { AccountProfilePage } from "@/components/wms/ProfilePage";
 import {
@@ -314,8 +315,16 @@ function SelectField({ label, value, onChange, options }) {
 function InvoicesPage() {
   const [status, setStatus] = useState("");
   const [message, setMessage] = useState("");
+  const [resendNotice, setResendNotice] = useState(null);
+  const [resendingInvoice, setResendingInvoice] = useState("");
   const [detail, setDetail] = useState({ invoice: null, data: null, loading: false, error: "" });
   const invoices = useLoad(() => getFinanceInvoices({ status, limit: 100 }), status);
+
+  useEffect(() => {
+    if (!resendNotice || resendNotice.state === "resending") return undefined;
+    const timer = window.setTimeout(() => setResendNotice(null), 2000);
+    return () => window.clearTimeout(timer);
+  }, [resendNotice]);
 
   const act = async (action, invoiceNumber) => {
     setMessage("");
@@ -343,10 +352,11 @@ function InvoicesPage() {
     }
   };
   const copyLink=async(row)=>{try{await navigator.clipboard.writeText(row.payment_url);setMessage("Secure payment link copied.");}catch{setMessage("Copy failed. Select the link from invoice details instead.");}};
-  const resend=async(row)=>{setMessage("");try{const response=await resendPaymentEmail(row.invoice_number);setMessage(response.data?.delivery_status==="SENT"?"Payment email sent.":`Email status: ${response.data?.delivery_status||"unknown"}.`);await invoices.refresh();}catch(error){setMessage(getErrorMessage(error));}};
+  const resend=async(row)=>{setMessage("");setResendingInvoice(row.invoice_number);setResendNotice({state:"resending",text:"Resending payment email…"});try{const response=await resendPaymentEmail(row.invoice_number);const sent=response.data?.delivery_status==="SENT";setResendNotice({state:sent?"success":"error",text:sent?"Payment email sent.":`Email status: ${response.data?.delivery_status||"unknown"}.`});await invoices.refresh();}catch(error){setResendNotice({state:"error",text:getErrorMessage(error)});}finally{setResendingInvoice("");}};
 
   return (
     <>
+      {resendNotice&&<div role="status" className={`fixed right-4 top-4 z-50 rounded-lg px-4 py-3 text-sm font-semibold shadow-lg ${resendNotice.state==="error"?"bg-rose-600 text-white":"bg-slate-900 text-white"}`}>{resendNotice.text}</div>}
       <PageHeader eyebrow="Finance" title="Invoices" description="Monitor system-generated invoices and payment progress." />
       <div className="flex-1 overflow-auto p-4">
         <SectionCard title="Invoice Filter" icon={FileText}>
@@ -385,7 +395,7 @@ function InvoicesPage() {
                     <div className="flex gap-1">
                       <button type="button" onClick={() => openDetail(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">Details</button>
                       <button type="button" disabled={!row.payment_url || row.status === "Cancelled"} onClick={() => copyLink(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-50">Copy link</button>
-                      <button type="button" disabled={row.status === "Cancelled"} onClick={() => resend(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-50">Resend email</button>
+                      <button type="button" disabled={row.status === "Cancelled" || resendingInvoice===row.invoice_number} onClick={() => resend(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-50">{resendingInvoice===row.invoice_number?"Resending…":"Resend email"}</button>
                     </div>
                   )
                 }
@@ -763,32 +773,7 @@ function FormInput({ label, value, onChange, type = "text", required = false }) 
 }
 
 function ReportsPage() {
-  const reports = useLoad(() => getFinanceReports(), "reports");
-  const revenueRows = reports.data?.revenue_by_date || [];
-  const chargeRows = reports.data?.charges_by_cargo_type || [];
-  return (
-    <>
-      <PageHeader eyebrow="Finance" title="Financial Reports" description="Revenue by date range and charges grouped by cargo type." />
-      <div className="flex-1 overflow-auto p-4">
-        <div className="grid gap-3 xl:grid-cols-2">
-          <SectionCard title="Revenue By Date" icon={BarChart3}>
-            <ReportBarChart data={revenueRows} xKey="date" yKey="amount" />
-            <DataTable loading={reports.loading} error={reports.error} rows={revenueRows} emptyTitle="No revenue data" columns={[
-              { key: "date", label: "Date", render: (row) => formatDateTime(row.date) },
-              { key: "amount", label: "Revenue", render: (row) => formatMoney(row.amount) }
-            ]} />
-          </SectionCard>
-          <SectionCard title="Charges By Cargo Type" icon={PackageSearch}>
-            <ReportBarChart data={chargeRows} xKey="cargo_type" yKey="amount" />
-            <DataTable loading={reports.loading} error={reports.error} rows={chargeRows} emptyTitle="No charge data" columns={[
-              { key: "cargo_type", label: "Cargo Type" },
-              { key: "amount", label: "Charges", render: (row) => formatMoney(row.amount) }
-            ]} />
-          </SectionCard>
-        </div>
-      </div>
-    </>
-  );
+  return <RoleReports scope="finance" />;
 }
 
 function ReportBarChart({ data, xKey, yKey }) {

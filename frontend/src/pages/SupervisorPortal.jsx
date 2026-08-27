@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, NavLink, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Activity,
+  BarChart3,
   AlertTriangle,
   Boxes,
   CheckCircle2,
@@ -17,6 +18,7 @@ import {
   UserCircle2,
   Users,
   Warehouse,
+  X,
   XCircle
 } from "lucide-react";
 import {
@@ -34,6 +36,7 @@ import { ManualPlacementSetting } from "@/components/wms/ManualPlacementSetting"
 import { PlacementActivityPanel } from "@/components/wms/PlacementActivityTimeline";
 import { ReviewActionModal } from "@/components/wms/ReviewActionModal";
 import { HeaderActions } from "@/components/wms/HeaderActions";
+import { RoleReports } from "@/components/wms/RoleReports";
 import { NotificationsPage } from "@/components/wms/NotificationsPage";
 import { AccountProfilePage } from "@/components/wms/ProfilePage";
 import { cn } from "@/lib/utils";
@@ -102,6 +105,7 @@ const navigation = [
       { label: "Emergency Releases", icon: AlertTriangle, to: "/supervisor/dispatch/emergency-releases" }
     ]
   },
+  { label: "Reports", icon: BarChart3, to: "/supervisor/reports" },
   { label: "Profile", icon: UserCircle2, to: "/supervisor/profile" }
 ];
 
@@ -558,15 +562,32 @@ function CargoRecordsPage() {
   const [selectedId, setSelectedId] = useState("");
   const [detail, setDetail] = useState(null);
   const [detailError, setDetailError] = useState("");
+  const [detailLoading, setDetailLoading] = useState(false);
 
   useEffect(() => {
     if (!selectedId) {
       setDetail(null);
+      setDetailError("");
       return;
     }
+    let active = true;
+    setDetail(null);
+    setDetailError("");
+    setDetailLoading(true);
     getCargoById(selectedId)
-      .then((response) => setDetail(response.data))
-      .catch((error) => setDetailError(getErrorMessage(error)));
+      .then((response) => active && setDetail(response.data))
+      .catch((error) => active && setDetailError(getErrorMessage(error)))
+      .finally(() => active && setDetailLoading(false));
+    return () => { active = false; };
+  }, [selectedId]);
+
+  const closeDetail = () => setSelectedId("");
+
+  useEffect(() => {
+    if (!selectedId) return undefined;
+    const closeOnEscape = (event) => event.key === "Escape" && closeDetail();
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
   }, [selectedId]);
 
   return (
@@ -598,33 +619,51 @@ function CargoRecordsPage() {
               ]}
             />
           </SectionCard>
-          {detailError && <ErrorState message={detailError} />}
-          {detail ? (
-            <div className="grid gap-3 xl:grid-cols-2">
-              <SectionCard title={`Current Location: ${detail.cargo_id}`} icon={Warehouse}>
-                <div className="grid gap-2 sm:grid-cols-2 text-xs">
-                  <div>Zone: <strong>{detail.zone_code || "Unassigned"}</strong></div>
-                  <div>Rack: <strong>{detail.rack_code || "Unassigned"}</strong></div>
-                  <div>Level: <strong>{detail.level_code || "Unassigned"}</strong></div>
-                  <div>Bin: <strong>{detail.bin_barcode || "Unassigned"}</strong></div>
-                </div>
-              </SectionCard>
-              <SectionCard title="Movement History" icon={Activity}>
-                <DataTable
-                  rows={detail.movement_history || []}
-                  emptyTitle="No movement history"
-                  columns={[
-                    { key: "created_at", label: "Time", render: (row) => formatDateTime(row.created_at) },
-                    { key: "from_location", label: "From", render: (row) => row.from_location || "Receiving" },
-                    { key: "to_location", label: "To", render: (row) => row.to_location || "Not assigned" },
-                    { key: "action", label: "Action" }
-                  ]}
-                />
-              </SectionCard>
-            </div>
-          ) : <EmptyState title="Select a cargo record to view location and movement history" />}
         </div>
       </div>
+      {selectedId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeDetail()}>
+          <div role="dialog" aria-modal="true" aria-labelledby="cargo-detail-title" className="max-h-[90vh] w-full max-w-5xl overflow-auto rounded-lg border border-border bg-background shadow-2xl">
+            <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border bg-background px-5 py-4">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Cargo Record</div>
+                <h2 id="cargo-detail-title" className="text-lg font-semibold">{detail?.cargo_id || "Loading cargo details..."}</h2>
+              </div>
+              <button type="button" aria-label="Close cargo details" onClick={closeDetail} className="rounded border border-border p-2 text-muted-foreground hover:bg-muted hover:text-foreground">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="space-y-4 p-5">
+              {detailLoading && <div className="rounded border border-border bg-muted/20 p-6 text-center text-sm text-muted-foreground">Loading cargo details...</div>}
+              {detailError && <ErrorState message={detailError} />}
+              {detail && (
+                <>
+                  <SectionCard title={`Current Location: ${detail.cargo_id}`} icon={Warehouse}>
+                    <div className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+                      <div>Zone: <strong>{detail.zone_code || "Unassigned"}</strong></div>
+                      <div>Rack: <strong>{detail.rack_code || "Unassigned"}</strong></div>
+                      <div>Level: <strong>{detail.level_code || "Unassigned"}</strong></div>
+                      <div>Bin: <strong>{detail.bin_barcode || "Unassigned"}</strong></div>
+                    </div>
+                  </SectionCard>
+                  <SectionCard title="Movement History" icon={Activity}>
+                    <DataTable
+                      rows={detail.movement_history || []}
+                      emptyTitle="No movement history"
+                      columns={[
+                        { key: "created_at", label: "Time", render: (row) => formatDateTime(row.created_at) },
+                        { key: "from_location", label: "From", render: (row) => row.from_location || "Receiving" },
+                        { key: "to_location", label: "To", render: (row) => row.to_location || "Not assigned" },
+                        { key: "action", label: "Action" }
+                      ]}
+                    />
+                  </SectionCard>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -720,8 +759,6 @@ function WarehousePage({ scope }) {
   const [zoneFilter, setZoneFilter] = useState("All");
   const [rackFilter, setRackFilter] = useState("All");
   const [levelFilter, setLevelFilter] = useState("All");
-  const [page, setPage] = useState(1);
-  const pageSize = scope === "bins" ? 50 : scope === "levels" ? 30 : 25;
 
   const uniqueRows = useMemo(() => {
     const seen = new Set();
@@ -785,14 +822,6 @@ function WarehousePage({ scope }) {
       ].some((value) => String(value || "").toLowerCase().includes(term));
     });
   }, [levelFilter, rackFilter, search, status, uniqueRows, zoneFilter]);
-
-  const pageCount = Math.max(1, Math.ceil(filteredRows.length / pageSize));
-  const currentPage = Math.min(page, pageCount);
-  const visibleRows = filteredRows.slice((currentPage - 1) * pageSize, currentPage * pageSize);
-
-  useEffect(() => {
-    setPage(1);
-  }, [levelFilter, rackFilter, scope, search, status, zoneFilter]);
 
   useEffect(() => {
     setSearch("");
@@ -881,36 +910,10 @@ function WarehousePage({ scope }) {
           <DataTable
             loading={data.loading}
             error={data.error}
-            rows={visibleRows}
+            rows={filteredRows}
             emptyTitle={`No ${titles[scope].toLowerCase()} available`}
             columns={warehouseColumns[scope]}
           />
-          {!data.loading && !data.error && filteredRows.length > pageSize && (
-            <div className="mt-3 flex items-center justify-between gap-3 text-xs">
-              <span className="text-muted-foreground">
-                Showing {(currentPage - 1) * pageSize + 1}-{Math.min(currentPage * pageSize, filteredRows.length)} of {filteredRows.length}
-              </span>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  disabled={currentPage === 1}
-                  onClick={() => setPage((value) => Math.max(1, value - 1))}
-                  className="rounded border border-border px-3 py-1.5 font-semibold disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  Previous
-                </button>
-                <span>Page {currentPage} of {pageCount}</span>
-                <button
-                  type="button"
-                  disabled={currentPage === pageCount}
-                  onClick={() => setPage((value) => Math.min(pageCount, value + 1))}
-                  className="rounded border border-border px-3 py-1.5 font-semibold disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  Next
-                </button>
-              </div>
-            </div>
-          )}
         </SectionCard>
       </div>
     </>
@@ -1142,6 +1145,7 @@ function SupervisorPortal() {
         <Route path="warehouse/levels" element={<WarehousePage scope="levels" />} />
         <Route path="warehouse/bins" element={<WarehousePage scope="bins" />} />
         <Route path="dispatch/emergency-releases" element={<EmergencyReleasePage />} />
+        <Route path="reports" element={<RoleReports scope="supervisor" />} />
         <Route path="notifications" element={<NotificationsPage />} />
         <Route path="profile" element={<ProfilePage />} />
         <Route path="*" element={<Navigate to="/supervisor" replace />} />

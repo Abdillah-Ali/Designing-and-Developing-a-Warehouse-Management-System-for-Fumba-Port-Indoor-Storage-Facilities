@@ -2,6 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
+@media print {
+  body { background: white !important; }
+  aside, header, nav, .report-actions, .report-filters { display: none !important; }
+  .report-print-root { position: absolute; inset: 0; overflow: visible !important; padding: 12px !important; }
+  table { font-size: 9px !important; }
+  section { break-inside: avoid; }
+}
+
 /* Fumba Port WMS — Enterprise design tokens. All colors HSL. */
 
 @layer base {

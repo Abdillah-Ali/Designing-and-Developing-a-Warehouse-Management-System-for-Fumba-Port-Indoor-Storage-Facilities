@@ -16,11 +16,13 @@ import {
   Warehouse
 } from "lucide-react";
 import { AppLayout } from "@/components/wms/AppLayout";
+import { RoleReports } from "@/components/wms/RoleReports";
 import { BarcodeLabel, printBarcodeLabel } from "@/components/wms/BarcodeLabel";
 import { CargoCorrectionModal } from "@/components/wms/CargoCorrectionModal";
 import { DetailForm } from "@/components/wms/DetailForm";
 import { EnterpriseModal } from "@/components/wms/EnterpriseModal";
 import { PlacementSessionModal } from "@/components/wms/PlacementSessionModal";
+import { ManualPlacementModal } from "@/components/wms/ManualPlacementModal";
 import { PlacementActivityPanel } from "@/components/wms/PlacementActivityTimeline";
 import { NotificationsPage } from "@/components/wms/NotificationsPage";
 import { AccountProfilePage } from "@/components/wms/ProfilePage";
@@ -50,6 +52,7 @@ import {
   getMyUploadedDocuments,
   getRacks,
   getZones,
+  getPlacementSettings,
   printCargoBarcode,
   createPlacementScanSession,
   recommendBin,
@@ -172,6 +175,7 @@ function useCargo(status) {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
@@ -406,15 +410,36 @@ function PlacementQueuePanel() {
     instanceKey: 0
   });
   const [placementStartingId, setPlacementStartingId] = useState("");
+  const [manualPlacement, setManualPlacement] = useState({ enabled: false, cargo: null });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
+  const refreshManualPlacementSetting = useCallback(async () => {
+    try {
+      const response = await getPlacementSettings();
+      const enabled = Boolean(response.data?.manual_placement_enabled);
+      setManualPlacement((current) => ({
+        enabled,
+        cargo: enabled ? current.cargo : null
+      }));
+    } catch {
+      // The placement endpoints still enforce the setting if a background refresh fails.
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const response = await getCargo({ limit: 500 });
-      setRecords(response.data || []);
+      const [cargoResponse, settingsResponse] = await Promise.all([
+        getCargo({ limit: 500 }),
+        getPlacementSettings()
+      ]);
+      setRecords(cargoResponse.data || []);
+      setManualPlacement((current) => ({
+        ...current,
+        enabled: Boolean(settingsResponse.data?.manual_placement_enabled)
+      }));
     } catch (loadError) {
       setError(getErrorMessage(loadError));
     } finally {
@@ -425,6 +450,16 @@ function PlacementQueuePanel() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    const refreshOnFocus = () => refreshManualPlacementSetting();
+    window.addEventListener("focus", refreshOnFocus);
+    const interval = window.setInterval(refreshManualPlacementSetting, 15000);
+    return () => {
+      window.removeEventListener("focus", refreshOnFocus);
+      window.clearInterval(interval);
+    };
+  }, [refreshManualPlacementSetting]);
 
   useEffect(() => {
     const socket = createScannerSocket();
@@ -604,6 +639,15 @@ function PlacementQueuePanel() {
                             ? "Relocate"
                             : "Start Placement"}
                       </button>
+                      {manualPlacement.enabled && gate.canPlace && (
+                        <button
+                          type="button"
+                          onClick={() => setManualPlacement((current) => ({ ...current, cargo: row }))}
+                          className="min-w-0 whitespace-nowrap rounded border border-warning/40 bg-warning/10 px-1.5 py-1 text-[9px] font-semibold text-warning"
+                        >
+                          Manual
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => setSelected(row)}
@@ -713,6 +757,12 @@ function PlacementQueuePanel() {
         initialSession={placementScan.session}
         recommendation={placementScan.recommendation}
         onClose={resetPlacementScan}
+        onCompleted={load}
+      />
+      <ManualPlacementModal
+        open={Boolean(manualPlacement.cargo)}
+        cargo={manualPlacement.cargo}
+        onClose={() => setManualPlacement((current) => ({ ...current, cargo: null }))}
         onCompleted={load}
       />
       {printCargo && (
@@ -1618,6 +1668,7 @@ const Index = () => {
         <Route path="dispatch/queue" element={<DispatchOperationPage mode="queue" />} />
         <Route path="dispatch/gate-release" element={<DispatchOperationPage mode="gate" />} />
         <Route path="dispatch/released" element={<DispatchOperationPage mode="released" />} />
+        <Route path="reports" element={<RoleReports scope="warehouse" />} />
         <Route path="notifications" element={<NotificationsPage />} />
         <Route path="profile" element={<ProfilePage />} />
         <Route path="*" element={<Navigate to="/staff" replace />} />

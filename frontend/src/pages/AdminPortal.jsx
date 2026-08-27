@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   Anchor,
   Ban,
+  BarChart3,
   Box,
   Boxes,
   CalendarClock,
@@ -65,6 +66,7 @@ import { ManualPlacementSetting } from "@/components/wms/ManualPlacementSetting"
 import { PlacementActivityPanel } from "@/components/wms/PlacementActivityTimeline";
 import { ReviewActionModal } from "@/components/wms/ReviewActionModal";
 import { HeaderActions } from "@/components/wms/HeaderActions";
+import { RoleReports } from "@/components/wms/RoleReports";
 import { NotificationsPage } from "@/components/wms/NotificationsPage";
 import { AccountProfilePage } from "@/components/wms/ProfilePage";
 import { cn } from "@/lib/utils";
@@ -280,6 +282,7 @@ const adminNavigation = [
       { label: "Security Logs", icon: AlertTriangle, to: "/admin/audit/security-events" }
     ]
   },
+  { label: "Reports", icon: BarChart3, to: "/admin/reports" },
   { label: "Profile", icon: UserCircle2, to: "/admin/profile" }
 ];
 
@@ -4690,6 +4693,7 @@ function AdminPortal() {
         <Route path="audit/user-activity" element={<AuditPage mode="activity" />} />
         <Route path="audit/login-sessions" element={<AuditPage mode="sessions" />} />
         <Route path="audit/security-events" element={<AuditPage mode="security" />} />
+        <Route path="reports" element={<RoleReports scope="admin" />} />
         <Route path="notifications" element={<NotificationsPage />} />
         <Route path="profile" element={<ProfilePage />} />
         <Route path="*" element={<Navigate to="/admin" replace />} />

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, NavLink, Route, Routes, useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
+  BarChart3,
   Bell,
   CheckCircle2,
   ClipboardList,
@@ -15,6 +16,7 @@ import {
   UserCircle2
 } from "lucide-react";
 import { HeaderActions } from "@/components/wms/HeaderActions";
+import { RoleReports } from "@/components/wms/RoleReports";
 import { NotificationsPage } from "@/components/wms/NotificationsPage";
 import { AccountProfilePage } from "@/components/wms/ProfilePage";
 import {
@@ -45,6 +47,7 @@ const navigation = [
   { label: "Release Queue", icon: DoorOpen, to: "/gate/release-queue" },
   { label: "Gate-Out Records", icon: History, to: "/gate/gate-out-records" },
   { label: "Emergency Releases", icon: ShieldAlert, to: "/gate/emergency-releases" },
+  { label: "Reports", icon: BarChart3, to: "/gate/reports" },
   { label: "Notifications", icon: Bell, to: "/gate/notifications" },
   { label: "Profile", icon: UserCircle2, to: "/gate/profile" }
 ];
@@ -444,6 +447,7 @@ function GatePortal() {
         <Route path="release-queue" element={<ReleaseQueuePage />} />
         <Route path="gate-out-records" element={<GateRecordsPage />} />
         <Route path="emergency-releases" element={<EmergencyReleasesPage />} />
+        <Route path="reports" element={<RoleReports scope="gate" />} />
         <Route path="notifications" element={<NotificationsPage />} />
         <Route path="profile" element={<ProfilePage />} />
         <Route path="*" element={<Navigate to="/gate" replace />} />

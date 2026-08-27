@@ -3,6 +3,7 @@ const {
   activateTariff,
   createTariff,
   deactivateTariff,
+  generateDraftInvoice,
   getCargoCharges,
   getDashboard,
   getInvoice,
@@ -10,6 +11,8 @@ const {
   getPayments,
   getReports,
   getTariffs,
+  issueInvoiceByNumber,
+  cancelInvoiceByNumber,
   recordInvoicePayment,
   confirmInvoicePayment,
   updateTariff
@@ -32,7 +35,10 @@ router.post("/tariffs/:reference/activate", requirePermission("finance.tariffs.a
 router.post("/tariffs/:reference/deactivate", requirePermission("finance.tariffs.activate"), deactivateTariff);
 
 router.get("/invoices", requirePermission("finance.invoices.view"), getInvoices);
+router.post("/invoices/draft", requirePermission("finance.invoices.create"), generateDraftInvoice);
 router.get("/invoices/:invoiceNumber", requirePermission("finance.invoices.view"), getInvoice);
+router.post("/invoices/:invoiceNumber/issue", requirePermission("finance.invoices.issue"), issueInvoiceByNumber);
+router.post("/invoices/:invoiceNumber/cancel", requirePermission("finance.invoices.cancel"), cancelInvoiceByNumber);
 
 router.get("/payments", requirePermission("finance.payments.record"), getPayments);
 router.post("/payments", requirePermission("finance.payments.record"), recordInvoicePayment);

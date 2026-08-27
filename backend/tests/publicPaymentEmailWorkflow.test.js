@@ -12,6 +12,13 @@ test("dynamic payment email contains safe invoice values and the secure URL",()=
   assert.doesNotMatch(result.text,/SMTP_PASSWORD|FLUTTERWAVE_CLIENT_SECRET|webhook/i);
 });
 
+test("Management Release review email contains no payment reference or payment link",()=>{
+  const result=email.renderManagementReleaseEmail({cargo_reference:"CRG-2",cargo_type:"General Goods",warehouse_name:"Warehouse A",management_release_reason:"Office cargo"});
+  assert.match(result.subject,/Management Release Review/);assert.match(result.text,/Cargo Reference: CRG-2/);
+  assert.match(result.text,/No payment is requested/);
+  assert.doesNotMatch(result.text,/PAY-|Payment Link:|\/pay\//);
+});
+
 test("payment URL uses configuration and never hardcodes a LAN address",()=>{
   const previous=process.env.PUBLIC_PAYMENT_BASE_URL;process.env.PUBLIC_PAYMENT_BASE_URL="http://10.0.0.20:3000/";
   assert.equal(email.buildPaymentUrl("a".repeat(64)),`http://10.0.0.20:3000/pay/${"a".repeat(64)}`);

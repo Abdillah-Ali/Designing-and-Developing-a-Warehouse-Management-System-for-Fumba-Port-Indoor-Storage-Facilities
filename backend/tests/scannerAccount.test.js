@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 process.env.JWT_SECRET ||= "test-only-jwt-secret-that-is-at-least-32-characters";
 
 const db = require("../config/db");
+
 const { createScanner, login } = require("../controllers/adminController");
 const { hashPassword } = require("../utils/password");
 const { verifyToken } = require("../utils/token");

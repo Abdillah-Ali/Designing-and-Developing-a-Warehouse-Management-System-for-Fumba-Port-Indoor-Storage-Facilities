@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, NavLink, Route, Routes, useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
+  BarChart3,
   Bell,
   CheckCircle2,
   ClipboardList,
@@ -16,6 +17,7 @@ import {
   XCircle
 } from "lucide-react";
 import { HeaderActions } from "@/components/wms/HeaderActions";
+import { RoleReports } from "@/components/wms/RoleReports";
 import { NotificationsPage } from "@/components/wms/NotificationsPage";
 import { AccountProfilePage } from "@/components/wms/ProfilePage";
 import {
@@ -49,6 +51,7 @@ const navigation = [
   { label: "Customs Records", icon: ClipboardList, to: "/customs/records" },
   { label: "Cleared Cargo", icon: CheckCircle2, to: "/customs/cleared" },
   { label: "Cargo on Hold", icon: AlertTriangle, to: "/customs/holds" },
+  { label: "Reports", icon: BarChart3, to: "/customs/reports" },
   { label: "Notifications", icon: Bell, to: "/customs/notifications" },
   { label: "Profile", icon: UserCircle2, to: "/customs/profile" }
 ];
@@ -405,6 +408,7 @@ function CustomsPortal() {
         <Route path="records" element={<CustomsListPage mode="records" />} />
         <Route path="cleared" element={<CustomsListPage mode="cleared" />} />
         <Route path="holds" element={<CustomsListPage mode="holds" />} />
+        <Route path="reports" element={<RoleReports scope="customs" />} />
         <Route path="notifications" element={<NotificationsPage />} />
         <Route path="profile" element={<ProfilePage />} />
         <Route path="*" element={<Navigate to="/customs" replace />} />

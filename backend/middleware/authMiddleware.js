@@ -284,7 +284,7 @@ const portalPermissions = Object.freeze({
     { methods: ["PATCH"], pattern: /^\/profile(?:\/change-password)?$/ }
   ]),
   [PORTAL_ROLES.MANAGEMENT]: Object.freeze([
-    { methods: ["GET"], pattern: /^\/management\/(?:dashboard|reports)$/ },
+    { methods: ["GET"], pattern: /^\/management\/(?:dashboard|reports(?:\/export\/(?:pdf|excel))?)$/ },
     { methods: ["GET"], pattern: /^\/management\/release-requests(?:\/[^/]+)?$/ },
     { methods: ["POST"], pattern: /^\/management\/release-requests\/[^/]+\/(?:approve|reject)$/ },
     { methods: ["GET"], pattern: /^\/cargo(?:\/[^/]+)?$/ },
@@ -295,7 +295,7 @@ const portalPermissions = Object.freeze({
   ]),
   [PORTAL_ROLES.AUDITOR]: Object.freeze([
     { methods: ["GET"], pattern: /^\/audit-logs(?:\/export)?$/ },
-    { methods: ["GET"], pattern: /^\/management\/(?:dashboard|reports)$/ },
+    { methods: ["GET"], pattern: /^\/management\/(?:dashboard|reports(?:\/export\/(?:pdf|excel))?)$/ },
     { methods: ["GET"], pattern: /^\/cargo(?:\/[^/]+)?$/ },
     { methods: ["GET"], pattern: /^\/cargo\/[^/]+\/placement-activity$/ },
     { methods: ["GET", "PATCH", "DELETE"], pattern: /^\/notifications(?:\/.*)?$/ },

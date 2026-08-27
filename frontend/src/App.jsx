@@ -131,7 +131,8 @@ function AuthSessionMonitor({ children }) {
     };
     window.addEventListener("focus", revalidate);
     document.addEventListener("visibilitychange", handleVisibility);
-    const interval = window.setInterval(revalidate, 60_000);
+    // Keep syntax compatible with the ESLint parser configured by this project.
+    const interval = window.setInterval(revalidate, 60000);
     return () => {
       window.removeEventListener("focus", revalidate);
       document.removeEventListener("visibilitychange", handleVisibility);

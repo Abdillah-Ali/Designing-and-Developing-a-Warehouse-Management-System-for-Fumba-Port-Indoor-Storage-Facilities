@@ -1,13 +1,28 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const bcrypt = require("bcryptjs");
-const db = require("../config/db");
+const { Pool } = require("pg");
 
 const API = process.env.FPWMS_VALIDATION_API || "http://127.0.0.1:5000/api";
+// The API defaults to the Docker-published service.  Its fixture connection
+// must target that same database, not an unrelated local PostgreSQL instance.
+const db = { pool: new Pool({
+  host: process.env.FPWMS_VALIDATION_DB_HOST || "127.0.0.1",
+  port: Number(process.env.FPWMS_VALIDATION_DB_PORT || 5433),
+  database: process.env.FPWMS_VALIDATION_DB_NAME || process.env.POSTGRES_DB || process.env.DB_NAME || "fumbaport_wms",
+  user: process.env.FPWMS_VALIDATION_DB_USER || process.env.POSTGRES_USER || process.env.DB_USER || "postgres",
+  password: process.env.FPWMS_VALIDATION_DB_PASSWORD || process.env.POSTGRES_PASSWORD || process.env.DB_PASSWORD
+}) };
 const PREFIX = `FPWMS-VAL-CONC-${Date.now()}-${process.pid}`;
 const SHORT_TAG = String(Date.now()).slice(-5);
+const FIXTURE_PASSWORD = `Validation!${crypto.randomBytes(18).toString("hex")}`;
 const ids = { cargo: [], bins: [], users: [], warehouse: null, tariff: null, tariffVersion: null, cargoOption:null, shift: null };
 const evidence = [];
+
+// This live validation file owns its PostgreSQL pool. Close it even when an
+// assertion fails so the full node:test suite can report the failure and exit.
+test.after(async () => { await db.pool.end().catch(() => {}); });
 
 const request = async (method, path, token, body) => {
   const startedAt = new Date();
@@ -30,7 +45,7 @@ const race = async (...operations) => {
   return Promise.all(pending);
 };
 
-const q = (sql, values = []) => db.query(sql, values);
+const q = (sql, values = []) => db.pool.query(sql, values);
 const scalar = async (sql, values = []) => (await q(sql, values)).rows[0];
 
 const createCargo = async (suffix, userId, overrides = {}) => {
@@ -58,7 +73,7 @@ const createCargo = async (suffix, userId, overrides = {}) => {
 };
 
 const login = async (username) => {
-  const response = await request("POST", "/auth/login", null, { username, password: "Validation-Only-2026!" });
+  const response = await request("POST", "/auth/login", null, { username, password: FIXTURE_PASSWORD });
   assert.equal(response.status, 200, JSON.stringify(response.payload));
   return response.payload.data.access_token;
 };
@@ -99,11 +114,10 @@ const financiallyClear = async (cargo, suffix, token) => {
 
 test("final validation closure executes real authenticated HTTP races and Gate rollback", { timeout: 120_000 }, async (t) => {
   try {
-    if (!process.env.DB_HOST) return t.skip("Docker-backed live validation environment is unavailable.");
     const health = await request("GET", "/health");
     if (health.status !== 200) return t.skip("Live backend/PostgreSQL validation environment is unavailable.");
 
-    const passwordHash = await bcrypt.hash("Validation-Only-2026!", 10);
+    const passwordHash = await bcrypt.hash(FIXTURE_PASSWORD, 10);
     const warehouseLetter=(await scalar(`SELECT chr(code) AS letter FROM generate_series(65,90) code WHERE NOT EXISTS (SELECT 1 FROM warehouses WHERE warehouse_letter=chr(code)) ORDER BY code LIMIT 1`)).letter;
     const warehouse = (await q(`INSERT INTO warehouses(warehouse_name,warehouse_code,status,warehouse_letter,total_capacity,max_volume)
       VALUES($1,$2,'active',$3,1000,100) RETURNING *`, [`${PREFIX} Warehouse`, `VC${String(Date.now()).slice(-6)}`, warehouseLetter])).rows[0];

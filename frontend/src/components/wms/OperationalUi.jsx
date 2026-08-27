@@ -1,4 +1,5 @@
-import { AlertTriangle, Database, Loader2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { AlertTriangle, ChevronLeft, ChevronRight, Database, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 function StatusBadge({ children, tone, className }) {
@@ -82,13 +83,128 @@ function PageHeader({ eyebrow, title, description, action }) {
   );
 }
 
-function DataTable({ columns, rows, loading, error, emptyTitle, emptyBody, tableClassName, containerClassName }) {
+const PAGE_SIZES = [10, 20, 50, 100];
+
+function PaginationControls({
+  page,
+  pageSize,
+  total,
+  onPageChange,
+  onPageSizeChange,
+  itemLabel = "records"
+}) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.min(Math.max(page, 1), totalPages);
+  const start = total ? (currentPage - 1) * pageSize + 1 : 0;
+  const end = Math.min(total, currentPage * pageSize);
+  const pageItems = [];
+
+  for (let candidate = 1; candidate <= totalPages; candidate += 1) {
+    if (candidate === 1 || candidate === totalPages || Math.abs(candidate - currentPage) <= 1) {
+      pageItems.push(candidate);
+    } else if (pageItems[pageItems.length - 1] !== "ellipsis") {
+      pageItems.push("ellipsis");
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3 border-t border-border bg-muted/10 px-3 py-3 text-xs text-muted-foreground lg:flex-row lg:items-center lg:justify-between">
+      <span className="font-medium">{start.toLocaleString()}–{end.toLocaleString()} of {Number(total).toLocaleString()} {itemLabel}</span>
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-2">
+          <span>Rows per page</span>
+          <select
+            aria-label="Rows per page"
+            value={pageSize}
+            onChange={(event) => onPageSizeChange(Number(event.target.value))}
+            className="h-8 rounded border border-input bg-background px-2 text-foreground"
+          >
+            {PAGE_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}
+          </select>
+        </label>
+        <nav aria-label="Table pagination" className="flex items-center gap-1">
+          <button type="button" disabled={currentPage === 1} onClick={() => onPageChange(currentPage - 1)} className="inline-flex h-8 items-center gap-1 rounded border border-border px-2 font-semibold text-foreground disabled:cursor-not-allowed disabled:opacity-40">
+            <ChevronLeft className="h-3.5 w-3.5" /> Previous
+          </button>
+          {pageItems.map((item, index) => item === "ellipsis" ? (
+            <span key={`ellipsis-${index}`} className="px-1" aria-hidden="true">…</span>
+          ) : (
+            <button
+              key={item}
+              type="button"
+              aria-label={`Page ${item}`}
+              aria-current={item === currentPage ? "page" : undefined}
+              onClick={() => onPageChange(item)}
+              className={cn("h-8 min-w-8 rounded border px-2 font-semibold", item === currentPage ? "border-info bg-info text-info-foreground" : "border-border text-foreground hover:bg-muted")}
+            >
+              {item}
+            </button>
+          ))}
+          <button type="button" disabled={currentPage === totalPages} onClick={() => onPageChange(currentPage + 1)} className="inline-flex h-8 items-center gap-1 rounded border border-border px-2 font-semibold text-foreground disabled:cursor-not-allowed disabled:opacity-40">
+            Next <ChevronRight className="h-3.5 w-3.5" />
+          </button>
+        </nav>
+      </div>
+    </div>
+  );
+}
+
+function DataTable({
+  columns,
+  rows = [],
+  loading,
+  error,
+  emptyTitle = "No records",
+  emptyBody,
+  tableClassName,
+  containerClassName,
+  pagination = true,
+  initialPageSize = 10,
+  page: controlledPage,
+  pageSize: controlledPageSize,
+  total: controlledTotal,
+  onPageChange,
+  onPageSizeChange,
+  itemLabel = "records",
+  resetKey
+}) {
+  const validInitialSize = PAGE_SIZES.includes(initialPageSize) ? initialPageSize : 10;
+  const [localPage, setLocalPage] = useState(1);
+  const [localPageSize, setLocalPageSize] = useState(validInitialSize);
+  const serverMode = controlledTotal !== undefined || controlledPage !== undefined;
+  const page = controlledPage ?? localPage;
+  const pageSize = controlledPageSize ?? localPageSize;
+  const total = controlledTotal ?? rows.length;
+  const rowSignature = useMemo(() => rows.map((row, index) => row.id ?? row.public_reference ?? row.cargo_id ?? row.barcode ?? row.code ?? index).join("|"), [rows]);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const currentPage = Math.min(page, totalPages);
+
+  useEffect(() => {
+    if (controlledPage === undefined) setLocalPage(1);
+    else if (controlledPage > totalPages) onPageChange?.(totalPages);
+  }, [rowSignature, resetKey, controlledPage, totalPages, onPageChange]);
+
+  const changePage = (nextPage) => {
+    if (controlledPage === undefined) setLocalPage(nextPage);
+    onPageChange?.(nextPage);
+  };
+  const changePageSize = (nextSize) => {
+    if (controlledPageSize === undefined) setLocalPageSize(nextSize);
+    if (controlledPage === undefined) setLocalPage(1);
+    onPageSizeChange?.(nextSize);
+    onPageChange?.(1);
+  };
+  const visibleRows = pagination && !serverMode
+    ? rows.slice((currentPage - 1) * pageSize, currentPage * pageSize)
+    : rows;
+
   if (loading && !rows.length) return <LoadingState />;
   if (error) return <ErrorState message={error} />;
 
   return (
-    <div className={cn("overflow-auto rounded border border-border", containerClassName)}>
-      <table className={cn("w-full min-w-[720px] text-xs", tableClassName)}>
+    <div className={cn("overflow-hidden rounded border border-border", containerClassName)}>
+      <div className="overflow-auto">
+        <table className={cn("w-full min-w-[720px] text-xs", tableClassName)}>
         <thead className="bg-panel-header text-panel-header-foreground">
           <tr>
             {columns.map((column) => (
@@ -106,7 +222,7 @@ function DataTable({ columns, rows, loading, error, emptyTitle, emptyBody, table
               </td>
             </tr>
           ) : (
-            rows.map((row, rowIndex) => (
+            visibleRows.map((row, rowIndex) => (
               <tr key={row.id ?? row.cargo_id ?? row.barcode ?? row.code ?? rowIndex} className="border-t border-border">
                 {columns.map((column) => (
                   <td key={column.key} className={cn("px-2 py-2 align-top", column.className)}>
@@ -117,7 +233,11 @@ function DataTable({ columns, rows, loading, error, emptyTitle, emptyBody, table
             ))
           )}
         </tbody>
-      </table>
+        </table>
+      </div>
+      {pagination && rows.length > 0 && (
+        <PaginationControls page={currentPage} pageSize={pageSize} total={total} onPageChange={changePage} onPageSizeChange={changePageSize} itemLabel={itemLabel} />
+      )}
     </div>
   );
 }
@@ -167,6 +287,7 @@ export {
   LoadingState,
   OperationalStatCard,
   PageHeader,
+  PaginationControls,
   SectionCard,
   StatusBadge
 };

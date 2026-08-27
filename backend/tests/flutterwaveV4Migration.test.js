@@ -102,6 +102,20 @@ test("localhost callback is omitted while a public HTTPS callback is accepted", 
   assert.equal(payment.publicHttpsUrl("https://payments.example.test/return"), "https://payments.example.test/return");
 });
 
+test("public payment return URL restores the same token-scoped payment page", () => {
+  const original = process.env.PUBLIC_PAYMENT_BASE_URL;
+  process.env.PUBLIC_PAYMENT_BASE_URL = "https://payments.example.test";
+  try {
+    assert.equal(
+      payment.publicPaymentReturnUrl({ token: "secure-token", attemptReference: "PMT-2026-RETURN" }),
+      "https://payments.example.test/pay/secure-token?attempt=PMT-2026-RETURN"
+    );
+  } finally {
+    if (original === undefined) delete process.env.PUBLIC_PAYMENT_BASE_URL;
+    else process.env.PUBLIC_PAYMENT_BASE_URL = original;
+  }
+});
+
 test("duplicate signed processed webhook event is acknowledged without verification or settlement", async () => {
   const raw=Buffer.from(JSON.stringify({id:"wbk_duplicate",type:"charge.completed",data:{id:"chg_1",reference:"PAY-2026-ABCDEF",status:"succeeded"}}));
   let queries=0,fetches=0;const executor={query:async(sql)=>{queries+=1;if(sql.startsWith("SELECT id,processing_status"))return{rows:[{id:1,processing_status:"PROCESSED"}],rowCount:1};return{rows:[],rowCount:0}}};

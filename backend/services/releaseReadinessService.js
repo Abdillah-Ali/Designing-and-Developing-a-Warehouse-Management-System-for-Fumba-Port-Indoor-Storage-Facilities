@@ -2,13 +2,10 @@ const db = require("../config/db");
 const { writeAuditLog } = require("../models/adminModel");
 const { createNotificationsForAudience } = require("./notificationService");
 
-const placementIsValid = (cargo) => ["Placed", "Relocated"].includes(cargo.placement_status) && Boolean(cargo.current_bin_id || cargo.bin_id || cargo.location);
-
 const evaluate = (cargo) => {
   if (cargo.gate_out_status && cargo.gate_out_status !== "Not Released") return { status: "RELEASED", blockers: [] };
   const blockers = [];
   if (cargo.registration_status !== "Approved") blockers.push({ code: "WAITING_REGISTRATION", message: "Registration approval is required." });
-  if (!placementIsValid(cargo)) blockers.push({ code: "WAITING_PLACEMENT", message: "A valid current placement is required." });
   if (cargo.customs_status !== "Cleared") blockers.push({ code: "WAITING_CUSTOMS", message: "Customs clearance is required." });
   const managementCleared = cargo.release_type === "MANAGEMENT" && cargo.management_release_status === "APPROVED";
   if (cargo.financial_status !== "Fully Paid" && !managementCleared) blockers.push({ code: "WAITING_PAYMENT", message: "Verified payment or an approved Management Release is required." });
@@ -30,7 +27,7 @@ const recalculateReleaseReadiness = async ({ cargoId, executor = db, actorId = n
   if (previous !== readiness.status) {
     await writeAuditLog({ user_id: actorId, action: readiness.status === "READY_FOR_RELEASE" ? "CARGO_READY_FOR_RELEASE" : "RECALCULATE_RELEASE_READINESS", module: "Release Readiness", description: `Cargo ${cargo.cargo_id} readiness changed from ${previous} to ${readiness.status}.`, metadata: { system_actor: !actorId, trigger, before: previous, after: readiness.status, blockers: readiness.blockers }, executor });
     if (readiness.status === "READY_FOR_RELEASE") {
-      await createNotificationsForAudience({ notification_type: "gate_release_update", title: "Cargo Ready for Release", message: `${cargo.cargo_id} has satisfied registration, placement, Customs, and financial controls.`, related_module: "Release Readiness", related_entity_type: "cargo", related_entity_id: cargo.id, priority: "high", created_by: actorId, metadata: { deep_link: "/staff?section=cargo-to-release", trigger } }, { roleName: "Warehouse Staff", warehouseId: cargo.warehouse_id }, executor);
+      await createNotificationsForAudience({ notification_type: "gate_release_update", title: "Cargo Ready for Release", message: `${cargo.cargo_id} has satisfied registration, Customs, and financial controls.`, related_module: "Release Readiness", related_entity_type: "cargo", related_entity_id: cargo.id, priority: "high", created_by: actorId, metadata: { deep_link: "/staff?section=cargo-to-release", trigger } }, { roleName: "Warehouse Staff", warehouseId: cargo.warehouse_id }, executor);
     }
   }
   return { cargo_reference: cargo.cargo_id, ...readiness };
