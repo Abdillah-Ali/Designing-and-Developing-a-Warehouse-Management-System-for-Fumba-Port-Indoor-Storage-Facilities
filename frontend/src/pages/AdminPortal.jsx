@@ -4175,6 +4175,7 @@ function CargoRecordsPage({ mode = "records" }) {
                   <ReadonlyValue label="Bin" value={selectedCargo.bin_barcode || "Unassigned"} />
                   <ReadonlyValue label="Registration Status" value={selectedCargo.registration_status} />
                   <ReadonlyValue label="Placement Status" value={selectedCargo.placement_status || "Unassigned"} />
+                  <ReadonlyValue label="Customer Collection" value={selectedCargo.customer_collection_status || "Not Collected"} />
                 </div>
               </SectionCard>
               <SectionCard title="Movement History" icon={Activity}>

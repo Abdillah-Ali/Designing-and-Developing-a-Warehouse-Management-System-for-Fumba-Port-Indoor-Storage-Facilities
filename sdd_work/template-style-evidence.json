@@ -1,0 +1,95 @@
+{
+  "input": "D:\\BCS\\THIRD YEAR\\PROJECT-Final Year Project\\Project\\WMS-FumbaPort\\sdd_work\\SDD_Template_Converted.docx",
+  "fonts_by_char_count": {
+    "Bookman Old Style": 208
+  },
+  "direct_run_formatting_runs": 11,
+  "direct_paragraph_formatting_paragraphs": 63,
+  "heading_like_paragraphs_not_heading_style": [
+    {
+      "para_index": 3,
+      "text": "THE STATE UNIVERSITY OF ZANZIBAR",
+      "style": "Normal"
+    },
+    {
+      "para_index": 4,
+      "text": "SCHOOL COMPUTING, COMMUNICATION AND MEDIA STUDIES",
+      "style": "Normal"
+    },
+    {
+      "para_index": 5,
+      "text": "DEPARTMENT OF COMPUTER SCIENCE AND INFORMATION",
+      "style": "Normal"
+    },
+    {
+      "para_index": 6,
+      "text": "TECHNOLOGY",
+      "style": "Normal"
+    },
+    {
+      "para_index": 8,
+      "text": "Software Design Document (SDD) Template for Final Year Project",
+      "style": "Normal"
+    }
+  ],
+  "examples": {
+    "direct_paragraph_formatting": [
+      {
+        "para_index": 2,
+        "text": "",
+        "style": "Normal"
+      },
+      {
+        "para_index": 3,
+        "text": "THE STATE UNIVERSITY OF ZANZIBAR",
+        "style": "Normal"
+      },
+      {
+        "para_index": 4,
+        "text": "SCHOOL COMPUTING, COMMUNICATION AND MEDIA STUDIES",
+        "style": "Normal"
+      },
+      {
+        "para_index": 5,
+        "text": "DEPARTMENT OF COMPUTER SCIENCE AND INFORMATION",
+        "style": "Normal"
+      },
+      {
+        "para_index": 6,
+        "text": "TECHNOLOGY",
+        "style": "Normal"
+      }
+    ],
+    "direct_run_formatting": [
+      {
+        "para_index": 3,
+        "run_text": "THE STATE UNIVERSITY OF ZANZIBAR",
+        "style": "Normal"
+      },
+      {
+        "para_index": 4,
+        "run_text": "SCHOOL COMPUTING, COMMUNICATION AND MEDIA STUDIES",
+        "style": "Normal"
+      },
+      {
+        "para_index": 5,
+        "run_text": "DEPARTMENT OF COMPUTER SCIENCE AND INFORMATION",
+        "style": "Normal"
+      },
+      {
+        "para_index": 6,
+        "run_text": "TECHNOLOGY",
+        "style": "Normal"
+      },
+      {
+        "para_index": 8,
+        "run_text": "Software Design Document (SDD) Template for Final Year Project",
+        "style": "Normal"
+      }
+    ]
+  },
+  "notes": [
+    "Direct formatting is not always wrong, but it often causes inconsistent output when templates change.",
+    "Heading-like paragraphs not using Heading styles can break TOC and accessibility."
+  ]
+}

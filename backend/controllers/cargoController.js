@@ -90,6 +90,13 @@ const cargoSelect = `
     z.code AS zone_code,
     z.name AS zone_name
     ,c.placement_status
+    ,CASE
+      WHEN c.placement_status = 'Dispatched'
+        OR c.gate_out_status IN ('Released', 'Emergency Released')
+        OR c.released_at IS NOT NULL
+      THEN 'Collected by Customer'
+      ELSE 'Not Collected'
+    END AS customer_collection_status
     ,w.warehouse_name
     ,w.warehouse_code
     ,(
@@ -242,6 +249,16 @@ const getCargo = async (req, res, next) => {
         OR c.container_number ILIKE $${values.length}
         OR c.vehicle_number ILIKE $${values.length}
         OR c.delivery_note_number ILIKE $${values.length}
+        OR c.placement_status ILIKE $${values.length}
+        OR c.dispatch_status ILIKE $${values.length}
+        OR c.gate_out_status ILIKE $${values.length}
+        OR (CASE
+          WHEN c.placement_status = 'Dispatched'
+            OR c.gate_out_status IN ('Released', 'Emergency Released')
+            OR c.released_at IS NOT NULL
+          THEN 'Collected by Customer'
+          ELSE 'Not Collected'
+        END) ILIKE $${values.length}
       )`);
     }
 

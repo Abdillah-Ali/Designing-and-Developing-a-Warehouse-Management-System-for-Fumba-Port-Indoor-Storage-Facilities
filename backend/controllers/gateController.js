@@ -398,6 +398,7 @@ const confirmGateOut = async (req, res, next) => {
       await client.query(
         `UPDATE cargo
          SET current_bin_id = NULL,
+             location = 'Collected by Customer (Gate Out)',
              charge_end_at = $1,
              released_at = $1,
              dispatch_status = $2::varchar,

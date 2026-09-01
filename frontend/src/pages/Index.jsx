@@ -1034,6 +1034,11 @@ function CompactCargoList({ records, loading, error, emptyTitle }) {
                   >
                     {record.placement_status || "Unplaced"}
                   </StatusBadge>
+                  {record.customer_collection_status === "Collected by Customer" && (
+                    <span className="truncate text-[9px] font-semibold text-emerald-700" title="Cargo has left the port and was collected by the customer">
+                      Collected by customer
+                    </span>
+                  )}
                 </div>
               </td>
               <td className="whitespace-nowrap px-2 py-2.5 text-[10px] text-muted-foreground">
