@@ -118,6 +118,11 @@ const activateRegistrationInvoice = async ({ cargoReference, executor = db }) =>
   const updated = await executor.query(`UPDATE invoices SET payment_reference=$1,issued_by=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=$2 RETURNING *`, [paymentReference, existing.id]);
   await executor.query(`UPDATE tariff_versions SET operationally_used_at=COALESCE(operationally_used_at,CURRENT_TIMESTAMP) WHERE id=$1`, [updated.rows[0].tariff_version_id]);
   await writeAuditLog({ user_id:null, action:"AUTOMATIC_PAYMENT_REFERENCE_GENERATED", module:"Billing and Payment", description:`System activated invoice ${existing.public_invoice_number} after supervisor approval.`, metadata:{system_actor:true,cargo_reference:cargoReference,invoice_reference:existing.public_invoice_number,payment_reference:paymentReference} }, executor);
+  try{
+    await require('./emailService').queuePaymentLinkEmail({invoiceId:updated.rows[0].id,executor});
+  }catch(error){
+    await writeAuditLog({user_id:null,action:'PAYMENT_EMAIL_QUEUE_FAILED',module:'Billing and Payment',description:`Could not queue the automatic payment email for invoice ${existing.public_invoice_number}.`,metadata:{system_actor:true,cargo_reference:cargoReference,invoice_reference:existing.public_invoice_number,error_code:error.errorCode||error.code||error.name}},executor);
+  }
   return { ...updated.rows[0], cargo_reference: cargoReference };
 };
 

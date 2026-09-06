@@ -83,3 +83,10 @@ test("public route is login-free and rate limited",()=>{
   const route=fs.readFileSync(path.join(__dirname,"../routes/publicPaymentRoutes.js"),"utf8");
   assert.match(route,/createRateLimiter/);assert.doesNotMatch(route,/requirePermission/);
 });
+
+test("Supervisor approval activation queues the customer payment email and starts automatic delivery",()=>{
+  const paymentSource=fs.readFileSync(path.join(__dirname,"../services/paymentService.js"),"utf8");
+  const serverSource=fs.readFileSync(path.join(__dirname,"../server.js"),"utf8");
+  assert.match(paymentSource,/AUTOMATIC_PAYMENT_REFERENCE_GENERATED[\s\S]*queuePaymentLinkEmail/);
+  assert.match(serverSource,/startPaymentEmailScheduler/);
+});
