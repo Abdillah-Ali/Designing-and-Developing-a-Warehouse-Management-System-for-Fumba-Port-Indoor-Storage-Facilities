@@ -12,6 +12,7 @@ const PORT = Number(process.env.PORT || 5000);
 const startConfiguredBusinessServices = async (readiness) => {
   require("./services/billingScheduler").startBillingScheduler();
   require("./services/paymentReconciliationScheduler").startPaymentReconciliationScheduler();
+  require("./services/notificationEmailScheduler").startNotificationEmailScheduler();
   if (readiness.domains.notifications.ready) await startNotificationSchedulers();
   else console.log(JSON.stringify({operation:"notification_scheduler_startup",result:"configuration_required"}));
   if (readiness.domains.scanner.ready) await startScannerSessionCleanup();

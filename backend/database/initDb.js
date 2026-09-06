@@ -277,6 +277,7 @@ const applySchema = async () => {
     await applySqlMigration(client, "046_gate_presence_state_split.sql", await fs.readFile(path.join(__dirname, "migrations", "20260906_gate_presence_state_split.sql"), "utf8"));
     await applySqlMigration(client, "047_payment_settlement_timestamp.sql", await fs.readFile(path.join(__dirname, "migrations", "20260906_payment_settlement_timestamp.sql"), "utf8"));
     await applySqlMigration(client, "048_configurable_late_penalty.sql", await fs.readFile(path.join(__dirname, "migrations", "20260906_configurable_late_penalty.sql"), "utf8"));
+    await applySqlMigration(client, "049_notification_email_outbox.sql", await fs.readFile(path.join(__dirname, "migrations", "20260906_notification_email_outbox.sql"), "utf8"));
     await client.query(
       `INSERT INTO role_permissions (role_id, permission_key)
        SELECT r.id, p.permission_key
