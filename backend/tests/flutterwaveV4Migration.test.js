@@ -76,7 +76,7 @@ test("existing Flutterwave customer conflict is resolved and reused", async () =
     if (url.endsWith("/payment-methods")) return response({ status: "success", data: { id: "pmd_new" } });
     throw new Error(`Unexpected request: ${url}`);
   };
-  const result = await payment.resolveCustomerAndPaymentMethod({ customer: { email: "UAT@example.invalid", phone: "0712345678", country_code: "255", network: "airtel" }, fetchImpl });
+  const result = await payment.resolveCustomerAndPaymentMethod({ customer: { email: "UAT@example.invalid", phone: "0682345678", country_code: "255", network: "airtel" }, fetchImpl });
   assert.deepEqual(result, { customerId: "cus_existing", paymentMethodId: "pmd_new" });
   const methodCall = calls.find((item) => item.url.endsWith("/payment-methods"));
   assert.match(methodCall.options.headers["X-Idempotency-Key"], /^wms-payment-method-/);
@@ -87,7 +87,8 @@ test("charge retrieval uses GET /charges/{charge_id}", async () => {
   assert.equal((await payment.verifyCharge("chg_X",fetchImpl)).status,"succeeded"); assert.equal(urls[1],"https://developersandbox-api.flutterwave.com/charges/chg_X");
 });
 
-test("payment initiation maps WMS invoice data and stores the returned charge ID", async () => {
+test("payment initiation maps WMS invoice data and stores the returned charge ID", async (t) => {
+  t.mock.method(require('../services/financeService'),'getCargoFinancialSnapshot',async()=>({}));
   const queries=[];
   const executor={query:async(sql,params=[])=>{queries.push({sql,params});if(sql.includes("SELECT i.*,c.cargo_id"))return{rows:[{id:4,public_invoice_number:"INV-2026-A",cargo_reference:"CRG-2026-A",cargo_record_id:7,payment_reference:"PAY-2026-ABCDEF",outstanding_balance:"100000.00",currency:"TZS",status:"Issued",payment_status:"Unpaid"}],rowCount:1};if(sql.includes("SELECT 1 FROM payments WHERE public_reference"))return{rows:[],rowCount:0};if(sql.includes("INSERT INTO payments"))return{rows:[{id:9}],rowCount:1};return{rows:[{}],rowCount:1}}};
   const calls=[];const fetchImpl=async(url,options)=>{calls.push({url,options});if(calls.length===1)return response({access_token:"oauth",expires_in:600});const body=JSON.parse(options.body);return response({status:"success",data:{id:"chg_WMS",status:"pending",reference:body.reference,next_action:{type:"payment_instruction"}}})};
@@ -135,7 +136,7 @@ test("HMAC accepts the exact raw body and rejects missing, altered, or wrong-bod
 test("v4 status, amount, and currency mapping preserves financial integrity", () => {
   const classify=(providerStatus,received=100n,currency="TZS")=>payment.classifyVerifiedCharge({providerStatus,received,expected:100n,currency,expectedCurrency:"TZS"});
   assert.deepEqual(classify("succeeded"),{status:"SUCCESSFUL",reconciliation:"MATCHED",failure:null});
-  assert.equal(classify("pending").status,"PENDING"); assert.equal(classify("failed").status,"FAILED"); assert.equal(classify("voided").status,"FAILED");
+  assert.equal(classify("pending").status,"PENDING"); assert.equal(classify("failed").status,"FAILED"); assert.equal(classify("cancelled").status,"CANCELLED"); assert.equal(classify("canceled").status,"CANCELLED"); assert.equal(classify("voided").status,"CANCELLED");
   assert.equal(classify("succeeded",80n).reconciliation,"EXCEPTION"); assert.equal(classify("succeeded",110n).reconciliation,"EXCEPTION"); assert.equal(classify("succeeded",100n,"USD").reconciliation,"EXCEPTION");
 });
 
@@ -157,9 +158,9 @@ test("tariff billing remains limited to Management-approved active versions", ()
   assert.doesNotMatch(finance,/approval_status\s+IN\s*\([^)]*PENDING_APPROVAL|approval_status\s+IN\s*\([^)]*REJECTED/);
 });
 
-test("Gate and readiness controls still require Customs and do not require normal dispatch approval", () => {
+test("Gate and readiness controls require Customs and configured dispatch approval", () => {
   const readiness=fs.readFileSync(path.join(__dirname,"../services/releaseReadinessService.js"),"utf8");
   const eligibility=fs.readFileSync(path.join(__dirname,"../services/releaseEligibilityService.js"),"utf8");
   assert.match(readiness,/cargo\.customs_status !== "Cleared"/);
-  assert.match(eligibility,/target==='normal_gate_release'&&r\.evaluator_key==='dispatch_approval'/);
+  assert.match(eligibility,/const requirements=configured\.map/);
 });

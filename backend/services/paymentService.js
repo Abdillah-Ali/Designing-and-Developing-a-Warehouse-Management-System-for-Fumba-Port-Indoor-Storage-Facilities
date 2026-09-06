@@ -7,7 +7,7 @@ const { createOrRegenerateDraftInvoice, issueInvoice, generatePublicReference, r
 const { recalculateReleaseReadiness } = require("./releaseReadinessService");
 const { getAccessToken } = require("./flutterwaveOAuthService");
 const { logEvent } = require("../utils/logger");
-const { queueAndAttemptPaymentEmail } = require("./emailService");
+const { publicNetworkConfiguration, validateTanzanianMobileMoney } = require("./tanzaniaMobileMoney");
 
 const config = () => ({
   provider: (process.env.PAYMENT_PROVIDER || "flutterwave").toLowerCase(),
@@ -118,7 +118,6 @@ const activateRegistrationInvoice = async ({ cargoReference, executor = db }) =>
   const updated = await executor.query(`UPDATE invoices SET payment_reference=$1,issued_by=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=$2 RETURNING *`, [paymentReference, existing.id]);
   await executor.query(`UPDATE tariff_versions SET operationally_used_at=COALESCE(operationally_used_at,CURRENT_TIMESTAMP) WHERE id=$1`, [updated.rows[0].tariff_version_id]);
   await writeAuditLog({ user_id:null, action:"AUTOMATIC_PAYMENT_REFERENCE_GENERATED", module:"Billing and Payment", description:`System activated invoice ${existing.public_invoice_number} after supervisor approval.`, metadata:{system_actor:true,cargo_reference:cargoReference,invoice_reference:existing.public_invoice_number,payment_reference:paymentReference} }, executor);
-  await queueAndAttemptPaymentEmail({invoiceId:updated.rows[0].id,executor});
   return { ...updated.rows[0], cargo_reference: cargoReference };
 };
 
@@ -145,22 +144,13 @@ const findCustomerByEmail = async ({ email, fetchImpl }) => {
   }
   return null;
 };
-const SUPPORTED_NETWORKS = new Set(["vodacom", "airtel", "tigo", "halotel"]);
-const normalizeNetwork = (net) => {
-  const clean = String(net || "").trim().toLowerCase();
-  if (clean === "mpesa" || clean === "m-pesa") return "vodacom";
-  if (clean === "mixx" || clean === "tigopesa" || clean === "tigo pesa") return "tigo";
-  if (clean === "halopesa" || clean === "halo pesa") return "halotel";
-  return clean;
-};
-
 const resolveCustomerAndPaymentMethod = async ({ customer, fetchImpl }) => {
   if (customer.customer_id && customer.payment_method_id) return { customerId: String(customer.customer_id), paymentMethodId: String(customer.payment_method_id) };
   if (!customer.email || !customer.phone || !customer.network) throw buildError("Flutterwave v4 requires customer_id and payment_method_id, or external customer email, phone, and mobile-money network.", 400, null, "PAYMENT_CUSTOMER_DETAILS_REQUIRED");
-  const digits = String(customer.phone).replace(/\D/g, ""); const countryCode = String(customer.country_code || "255").replace(/\D/g, ""); const localNumber = digits.startsWith(countryCode) ? digits.slice(countryCode.length) : digits.replace(/^0/, "");
+  const mobile = validateTanzanianMobileMoney({phone:customer.phone,network:customer.network});
+  const countryCode = mobile.countryCode; const localNumber = mobile.localNumber;
   const email = String(customer.email).trim();
-  const network = normalizeNetwork(customer.network);
-  if (!network || !SUPPORTED_NETWORKS.has(network)) throw buildError("Select a valid mobile-money network.", 400, null, "INVALID_PAYMENT_NETWORK");
+  const network = mobile.network;
   let customerRecord;
   try {
     customerRecord = await providerRequest({ path: "/customers", method: "POST", fetchImpl, headers: { "X-Idempotency-Key": idempotencyKey("customer", email.toLowerCase()), "X-Trace-Id": idempotencyKey("customer-trace", email.toLowerCase()) }, payload: { email, name: normalizeName(customer.name), phone: { country_code: countryCode, number: localNumber }, meta: { source: "fumba_port_wms" } } });
@@ -184,9 +174,7 @@ const validateCustomerPaymentInput=({amount,customer,token,attemptReference})=>{
   if(amount!==undefined&&(!/^\d+(?:\.\d{1,2})?$/.test(String(amount))||centsFromAmount(amount)<=0n)) throw buildError("Installment amount must be a positive monetary value.",400,null,"INVALID_INSTALLMENT_AMOUNT");
   if(customer&&!customer.customer_id&&!customer.payment_method_id){
     if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(customer.email||"").trim())) throw buildError("Enter a valid customer email address.",400,null,"INVALID_CUSTOMER_EMAIL");
-    if(!/^\+?[0-9\s()-]{7,24}$/.test(String(customer.phone||"").trim())) throw buildError("Enter a valid customer phone number.",400,null,"INVALID_CUSTOMER_PHONE");
-    const net = normalizeNetwork(customer.network);
-    if(!net || !SUPPORTED_NETWORKS.has(net)) throw buildError("Select a valid mobile-money network.",400,null,"INVALID_PAYMENT_NETWORK");
+    validateTanzanianMobileMoney({phone:customer.phone,network:customer.network});
   }
 };
 
@@ -194,21 +182,72 @@ const getPaymentSummary = async ({ token, paymentReference, executor = db, inter
   if(token) validateCustomerPaymentInput({token});
   const value = String(token || paymentReference || "").trim();
   const lookup = token ? "i.payment_public_token=$1" : "i.payment_reference=$1";
-  const result = await executor.query(`SELECT i.id,i.public_invoice_number,i.payment_reference,i.total_amount,i.currency,i.status,i.payment_status,c.cargo_id AS cargo_reference FROM invoices i JOIN cargo c ON c.id=i.cargo_id WHERE ${lookup} AND i.status<>'Cancelled' LIMIT 1`, [value]);
-  const invoice = result.rows[0];
+  const result = await executor.query(`SELECT i.id,i.cargo_id,i.public_invoice_number,i.payment_reference,i.total_amount,i.currency,i.status,i.payment_status,c.cargo_id AS cargo_reference,c.registration_status FROM invoices i JOIN cargo c ON c.id=i.cargo_id WHERE ${lookup} AND i.status<>'Cancelled' LIMIT 1`, [value]);
+  let invoice = result.rows[0];
   if (!invoice) throw buildError("Payment obligation was not found.", 404, null, "PAYMENT_NOT_FOUND");
+  if (invoice.status === "Draft") throw buildError("Payment cannot be requested while the invoice is still in Draft status.",409,null,"DRAFT_INVOICE_PAYMENT_BLOCKED");
+  if (invoice.registration_status !== "Approved") throw buildError("Payment cannot be requested until Warehouse Supervisor approval is complete.",409,null,"SUPERVISOR_APPROVAL_REQUIRED");
+  await require('./financeService').getCargoFinancialSnapshot({cargoId:invoice.cargo_id,executor});
+  invoice = {...invoice,...(await executor.query('SELECT total_amount,status,payment_status FROM invoices WHERE id=$1',[invoice.id])).rows[0]};
   const totals = await executor.query(`SELECT COALESCE(SUM(COALESCE(amount_received,amount)) FILTER (WHERE ${verifiedPaymentPredicate}),0) AS paid,COALESCE(SUM(expected_amount) FILTER (WHERE ${activeAttemptPredicate}),0) AS reserved,COUNT(*)::int AS installment_count FROM payments WHERE invoice_id=$1`, [invoice.id]);
   const total = centsFromAmount(invoice.total_amount); const paid = centsFromAmount(totals.rows[0]?.paid || 0); const reserved = centsFromAmount(totals.rows[0]?.reserved || 0); const outstanding = total > paid ? total - paid : 0n; const available = outstanding > reserved ? outstanding - reserved : 0n;
-  const data = { cargo_reference:invoice.cargo_reference,invoice_reference:invoice.public_invoice_number,payment_reference:invoice.payment_reference,currency:invoice.currency,invoice_total:(Number(total)/100).toFixed(2),total_verified_paid:(Number(paid)/100).toFixed(2),pending_reserved:(Number(reserved)/100).toFixed(2),available_to_pay:(Number(available)/100).toFixed(2),outstanding_balance:(Number(outstanding)/100).toFixed(2),financial_status:outstanding===0n?"Fully Paid":paid>0n?"Partially Paid":"Outstanding",installment_count:totals.rows[0]?.installment_count||0 };
+  const data = { cargo_reference:invoice.cargo_reference,invoice_reference:invoice.public_invoice_number,payment_reference:invoice.payment_reference,currency:invoice.currency,invoice_total:(Number(total)/100).toFixed(2),total_verified_paid:(Number(paid)/100).toFixed(2),pending_reserved:(Number(reserved)/100).toFixed(2),available_to_pay:(Number(available)/100).toFixed(2),outstanding_balance:(Number(outstanding)/100).toFixed(2),financial_status:outstanding===0n?"Fully Paid":paid>0n?"Partially Paid":"Outstanding",installment_count:totals.rows[0]?.installment_count||0,mobile_money_networks:publicNetworkConfiguration() };
   if (internal) data.invoice_id=invoice.id;
   return data;
 };
 
 const getPaymentHistory = async ({ paymentReference, executor = db }) => {
-  const summary = await getPaymentSummary({ paymentReference, executor, internal:true });
+  let summary = await getPaymentSummary({ paymentReference, executor, internal:true });
+  await reconcileInvoicePendingPayments({ invoiceId: summary.invoice_id, executor });
+  summary = await getPaymentSummary({ paymentReference, executor, internal:true });
   const rows = await executor.query(`SELECT attempt_reference,public_reference,gateway_provider,gateway_transaction_id,expected_amount,amount_received,currency,gateway_status,status,payment_method,initiated_at,verified_at,reconciliation_status,failure_reason FROM payments WHERE invoice_id=$1 ORDER BY created_at ASC,id ASC`,[summary.invoice_id]);
   delete summary.invoice_id;
   return { ...summary, installments:rows.rows.map(row=>({ ...row,attempt_reference:row.attempt_reference||row.public_reference })) };
+};
+
+const reconcileInvoicePendingPayments = async ({ invoiceId, executor = db, fetchImpl = global.fetch, waitForTerminalMs = 5000 }) => {
+  const pending = await executor.query(
+    `SELECT attempt_reference
+       FROM payments
+      WHERE invoice_id=$1
+        AND gateway_provider='flutterwave'
+        AND gateway_status IN ('PENDING','PROCESSING')
+        AND gateway_transaction_id IS NOT NULL
+      ORDER BY created_at,id`,
+    [invoiceId]
+  );
+  for (const row of pending.rows) {
+    try {
+      await getPaymentAttemptStatus({ attemptReference:row.attempt_reference,internal:true,executor,fetchImpl,waitForTerminalMs });
+    } catch (error) {
+      logEvent("error",{operation:"payment_reconciliation",result:"failure",attempt_reference:row.attempt_reference,error_category:error.errorCode||error.code||error.name});
+    }
+  }
+  return { checked:pending.rowCount };
+};
+
+const reconcilePendingPayments = async ({ executor = db, fetchImpl = global.fetch, limit = 100 } = {}) => {
+  if(config().provider!=="flutterwave"||!process.env.FLUTTERWAVE_CLIENT_ID||!process.env.FLUTTERWAVE_CLIENT_SECRET)return {checked:0,skipped:true};
+  const pending=await executor.query(
+    `SELECT attempt_reference
+       FROM payments
+      WHERE gateway_provider='flutterwave'
+        AND gateway_status IN ('PENDING','PROCESSING')
+        AND gateway_transaction_id IS NOT NULL
+      ORDER BY initiated_at NULLS FIRST,id
+      LIMIT $1`,
+    [Math.max(1,Math.min(Number(limit)||100,500))]
+  );
+  let reconciled=0;
+  for(const row of pending.rows){
+    try{
+      const result=await getPaymentAttemptStatus({attemptReference:row.attempt_reference,internal:true,executor,fetchImpl});
+      if(['SUCCESSFUL','FAILED','CANCELLED'].includes(result.gateway_status))reconciled+=1;
+    }catch(error){
+      logEvent("error",{operation:"payment_reconciliation",result:"failure",attempt_reference:row.attempt_reference,error_category:error.errorCode||error.code||error.name});
+    }
+  }
+  return {checked:pending.rowCount,reconciled};
 };
 
 const verifyCharge = async (id, fetchImpl = global.fetch) => providerRequest({ path: `/charges/${encodeURIComponent(id)}`, fetchImpl });
@@ -220,11 +259,20 @@ const classifyVerifiedCharge = ({ providerStatus, received, expected, currency, 
     else if (received > expected) { reconciliation = "EXCEPTION"; failure = "Provider amount exceeds the validated installment"; }
     else { status = "SUCCESSFUL"; reconciliation = "MATCHED"; }
   } else if (providerStatus === "pending") status = "PENDING";
+  else if (["cancelled","canceled","voided"].includes(providerStatus)) { status = "CANCELLED"; failure = `Provider status: ${providerStatus}`; }
   else failure = `Provider status: ${providerStatus || "unknown"}`;
   return { status, reconciliation, failure };
 };
 
 const settlePaymentAttempt = async ({ payment, verified, eventId = null, executor = db }) => {
+  if(executor===db) {
+    const client=await db.pool.connect();
+    try {await client.query('BEGIN');const result=await settlePaymentAttempt({payment,verified,eventId,executor:client});await client.query('COMMIT');return result;}
+    catch(error){await client.query('ROLLBACK');throw error;} finally{client.release();}
+  }
+  await executor.query('SELECT id FROM cargo WHERE id=$1 FOR UPDATE',[payment.cargo_id]);
+  const locked=await executor.query('SELECT * FROM payments WHERE id=$1 FOR UPDATE',[payment.id]);
+  if(locked.rows[0]?.gateway_status==='SUCCESSFUL' && locked.rows[0]?.reconciliation_status==='MATCHED') return {status:'SUCCESSFUL',duplicate:true};
   const chargeId = String(verified.id || payment.gateway_transaction_id || "");
   const reference = String(verified.reference || payment.attempt_reference || payment.public_reference || "");
   const received = centsFromAmount(verified.amount || 0);
@@ -249,13 +297,14 @@ const settlePaymentAttempt = async ({ payment, verified, eventId = null, executo
          status = CASE
            WHEN $3::varchar = 'SUCCESSFUL' THEN 'Confirmed'
            WHEN $3::varchar = 'FAILED' THEN 'Gateway Failed'
+           WHEN $3::varchar = 'CANCELLED' THEN 'Gateway Cancelled'
            ELSE 'Gateway Pending'
          END,
          gateway_transaction_id = $4,
          gateway_event_id = COALESCE($5, gateway_event_id),
          payment_method = COALESCE($6, payment_method),
-         verified_at = CASE WHEN $3::varchar = 'SUCCESSFUL' THEN CURRENT_TIMESTAMP ELSE verified_at END,
-         failed_at = CASE WHEN $3::varchar = 'FAILED' THEN CURRENT_TIMESTAMP ELSE failed_at END,
+         verified_at = CASE WHEN $3::varchar = 'SUCCESSFUL' THEN COALESCE(verified_at,CURRENT_TIMESTAMP) ELSE verified_at END,
+         failed_at = CASE WHEN $3::varchar IN ('FAILED','CANCELLED') THEN CURRENT_TIMESTAMP ELSE failed_at END,
          failure_reason = $7,
          reconciliation_status = $8,
          gateway_response = $9::jsonb,
@@ -275,14 +324,14 @@ const settlePaymentAttempt = async ({ payment, verified, eventId = null, executo
     ]
   );
 
-  const invoice = await refreshInvoicePaymentStatus({ invoiceId: payment.invoice_id, executor });
   const cargo = await updateCargoFinancialStatus({ cargoId: payment.cargo_id, executor });
+  const invoice = await refreshInvoicePaymentStatus({ invoiceId: payment.invoice_id, executor });
   const readiness = await recalculateReleaseReadiness({ cargoId: payment.cargo_id, executor, trigger: "PAYMENT_SETTLEMENT" });
 
   await writeAuditLog(
     {
       user_id: null,
-      action: status === "SUCCESSFUL" ? "PAYMENT_VERIFIED" : status === "FAILED" ? "PAYMENT_FAILED" : "PAYMENT_PENDING",
+      action: status === "SUCCESSFUL" ? "PAYMENT_VERIFIED" : status === "CANCELLED" ? "PAYMENT_CANCELLED" : status === "FAILED" ? "PAYMENT_FAILED" : "PAYMENT_PENDING",
       module: "Billing and Payment",
       description: `Flutterwave v4 charge ${chargeId} for ${reference} verified as ${status}.`,
       metadata: { system_actor: true, event_id: eventId, charge_id: chargeId, expected_amount: payment.expected_amount, received_amount: String(verified.amount), currency, reconciliation }
@@ -290,7 +339,7 @@ const settlePaymentAttempt = async ({ payment, verified, eventId = null, executo
     executor
   );
 
-  if (status === "SUCCESSFUL" || status === "FAILED") {
+  if (["SUCCESSFUL","FAILED","CANCELLED"].includes(status)) {
     await createNotificationsForAudience(
       {
         notification_type: "finance_payment_update",
@@ -318,8 +367,10 @@ const settlePaymentAttempt = async ({ payment, verified, eventId = null, executo
   };
 };
 
-const getPaymentAttemptStatus = async ({ attemptReference, token, executor = db, internal = false, syncProvider = true, fetchImpl = global.fetch }) => {
-  validateCustomerPaymentInput({ attemptReference, ...(!internal ? { token } : {}) });
+const getPaymentAttemptStatus = async ({ attemptReference, token, executor = db, internal = false, syncProvider = true, fetchImpl = global.fetch, waitForTerminalMs = 0 }) => {
+  if(internal){
+    if(!/^(?:PMT|PAY)-[A-Z0-9-]{6,46}$/i.test(String(attemptReference||"")))throw buildError("Invalid stored payment attempt reference.",400,null,"INVALID_PAYMENT_ATTEMPT");
+  }else validateCustomerPaymentInput({ attemptReference, token });
   const values = [String(attemptReference || "").trim()];
   let tokenClause = "";
   if (!internal) {
@@ -340,16 +391,22 @@ const getPaymentAttemptStatus = async ({ attemptReference, token, executor = db,
 
   if (syncProvider && ["NOT_INITIATED", "PENDING", "PROCESSING"].includes(payment.gateway_status) && payment.gateway_transaction_id) {
     try {
-      const verified = await verifyCharge(payment.gateway_transaction_id, fetchImpl);
-      if (verified && verified.id && String(verified.status || "").toLowerCase() !== "pending") {
-        await settlePaymentAttempt({ payment, verified, executor });
-        const refreshed = await executor.query(
-          `SELECT p.attempt_reference, p.payment_reference, p.gateway_transaction_id, p.expected_amount, p.amount_received, p.currency, p.gateway_status, p.status, p.reconciliation_status, p.failure_reason, p.initiated_at, p.verified_at
-           FROM payments p WHERE p.id = $1`,
-          [payment.id]
-        );
-        if (refreshed.rowCount) return refreshed.rows[0];
-      }
+      const deadline=Date.now()+Math.max(0,Math.min(Number(waitForTerminalMs)||0,30000));
+      do{
+        const verified = await verifyCharge(payment.gateway_transaction_id, fetchImpl);
+        if (verified && verified.id && String(verified.status || "").toLowerCase() !== "pending") {
+          await settlePaymentAttempt({ payment, verified, executor });
+          const refreshed = await executor.query(
+            `SELECT p.attempt_reference, p.payment_reference, p.gateway_transaction_id, p.expected_amount, p.amount_received, p.currency, p.gateway_status, p.status, p.reconciliation_status, p.failure_reason, p.initiated_at, p.verified_at
+             FROM payments p WHERE p.id = $1`,
+            [payment.id]
+          );
+          if (refreshed.rowCount) return refreshed.rows[0];
+          break;
+        }
+        if(Date.now()>=deadline)break;
+        await new Promise(resolve=>setTimeout(resolve,Math.min(1000,Math.max(1,deadline-Date.now()))));
+      }while(true);
     } catch {}
   }
 
@@ -371,7 +428,12 @@ const getPaymentAttemptStatus = async ({ attemptReference, token, executor = db,
 
 const initiatePayment = async ({ invoiceNumber, token, amount, customer = {}, auth, executor = db, fetchImpl = global.fetch }) => {
   validateCustomerPaymentInput({amount,customer,...(token?{token}:{})});
+  await executor.query("SELECT id FROM cargo WHERE id=(SELECT cargo_id FROM invoices WHERE public_invoice_number=$1) FOR UPDATE",[invoiceNumber]);
   const invoice = (await executor.query(`SELECT i.*,c.cargo_id AS cargo_reference,c.id AS cargo_record_id FROM invoices i JOIN cargo c ON c.id=i.cargo_id WHERE i.public_invoice_number=$1 FOR UPDATE OF i`, [invoiceNumber])).rows[0];
+  if (invoice && (!token || token === invoice.payment_public_token)) {
+    await require('./financeService').getCargoFinancialSnapshot({cargoId:invoice.cargo_record_id,executor});
+    Object.assign(invoice,(await executor.query('SELECT total_amount,outstanding_balance,payment_status,status FROM invoices WHERE id=$1',[invoice.id])).rows[0]);
+  }
   if (!invoice || invoice.status === "Cancelled" || invoice.payment_status === "Paid" || (token && token !== invoice.payment_public_token)) throw buildError("A payable invoice was not found.", 409);
   const cfg = config(); if (cfg.provider !== "flutterwave" || !process.env.FLUTTERWAVE_CLIENT_ID || !process.env.FLUTTERWAVE_CLIENT_SECRET) throw buildError("Flutterwave v4 Sandbox credentials are not configured.", 503, null, "PAYMENT_PROVIDER_NOT_CONFIGURED");
   const paidRow=await executor.query(`SELECT COALESCE(SUM(amount_received) FILTER (WHERE ${verifiedPaymentPredicate}),0) AS paid,COALESCE(SUM(expected_amount) FILTER (WHERE ${activeAttemptPredicate}),0) AS reserved FROM payments WHERE invoice_id=$1`,[invoice.id]);
@@ -380,7 +442,7 @@ const initiatePayment = async ({ invoiceNumber, token, amount, customer = {}, au
   if(requested<=0n) throw buildError("Installment amount must be greater than zero.",400,null,"INVALID_INSTALLMENT_AMOUNT");
   if(requested>available) throw buildError("Installment amount exceeds the currently available outstanding balance.",409,{outstanding_balance:(Number(outstanding)/100).toFixed(2),available_balance:(Number(available)/100).toFixed(2)},"INSTALLMENT_EXCEEDS_OUTSTANDING");
   const attemptReference=await generatePublicReference("PMT",executor,"payments","public_reference"); const attemptKey=idempotencyKey("installment",`${invoice.payment_reference}:${attemptReference}`);
-  const payment=(await executor.query(`INSERT INTO payments(public_reference,attempt_reference,idempotency_key,invoice_id,cargo_id,payment_reference,amount,expected_amount,currency,bank_name,payment_date,status,gateway_status,gateway_provider,recorded_by) VALUES($1,$1,$2,$3,$4,$5,$6,$6,$7,'Flutterwave v4 Sandbox',CURRENT_TIMESTAMP,'Gateway Pending','NOT_INITIATED','flutterwave',$8) RETURNING *`,[attemptReference,attemptKey,invoice.id,invoice.cargo_record_id,invoice.payment_reference,(Number(requested)/100).toFixed(2),invoice.currency,auth?.userId||null])).rows[0];
+  const payment=(await executor.query(`INSERT INTO payments(public_reference,attempt_reference,idempotency_key,invoice_id,cargo_id,payment_reference,amount,expected_amount,currency,bank_name,payment_date,status,gateway_status,gateway_provider,recorded_by,confirmed_at) VALUES($1,$1,$2,$3,$4,$5,$6,$6,$7,'Flutterwave v4 Sandbox',CURRENT_TIMESTAMP,'Gateway Pending','NOT_INITIATED','flutterwave',$8,NULL) RETURNING *`,[attemptReference,attemptKey,invoice.id,invoice.cargo_record_id,invoice.payment_reference,(Number(requested)/100).toFixed(2),invoice.currency,auth?.userId||null])).rows[0];
   const identifiers = await resolveCustomerAndPaymentMethod({ customer, fetchImpl });
   const callback = publicPaymentReturnUrl({ token, attemptReference });
   const validatedAmount=(Number(requested)/100).toFixed(2);
@@ -397,6 +459,7 @@ const processWebhook = async ({ headers, rawBody, executor = db, fetchImpl = glo
   const { data, eventId, chargeId, reference, payloadHash } = readVerifiedWebhookEnvelope({ headers, rawBody });
   const claim = await claimWebhookEvent({ eventId, payloadHash, executor });
   if (!claim.claimed) return { duplicate: true, event_id: eventId, processing_status: "PROCESSED" };
+  await executor.query("SELECT id FROM cargo WHERE id=(SELECT cargo_id FROM payments WHERE attempt_reference=$1 OR public_reference=$1 LIMIT 1) FOR UPDATE",[reference]);
   const payment = (await executor.query(`SELECT p.*,i.total_amount,i.outstanding_balance,i.public_invoice_number,c.cargo_id AS cargo_reference FROM payments p JOIN invoices i ON i.id=p.invoice_id JOIN cargo c ON c.id=p.cargo_id WHERE (p.attempt_reference=$1 OR p.public_reference=$1) AND (p.gateway_transaction_id=$2 OR p.gateway_transaction_id IS NULL) FOR UPDATE OF p,i,c`, [reference,chargeId])).rows[0];
   if (!payment) throw buildError("Unknown WMS payment reference.", 404, null, "UNKNOWN_PAYMENT_REFERENCE");
   if (payment.gateway_transaction_id && String(payment.gateway_transaction_id) !== chargeId) throw buildError("Webhook charge does not belong to this payment.", 409, null, "PAYMENT_CHARGE_MISMATCH");
@@ -407,4 +470,4 @@ const processWebhook = async ({ headers, rawBody, executor = db, fetchImpl = glo
   return res;
 };
 
-module.exports = { activateRegistrationInvoice, cancelRegistrationInvoice, claimWebhookEvent, classifyVerifiedCharge, config, createRegistrationInvoice, createWebhookSignature, ensureAutomaticInvoice: activateRegistrationInvoice, findCustomerByEmail,getPaymentAttemptStatus,getPaymentHistory,getPaymentSummary, initiatePayment, markWebhookProcessed, processWebhook, providerRequest, publicHttpsUrl, publicPaymentReturnUrl, readVerifiedWebhookEnvelope, recordWebhookFailure, resolveCustomerAndPaymentMethod, settlePaymentAttempt, timingSafe,validateCustomerPaymentInput, verifyCharge, verifyWebhookSignature };
+module.exports = { activateRegistrationInvoice, cancelRegistrationInvoice, claimWebhookEvent, classifyVerifiedCharge, config, createRegistrationInvoice, createWebhookSignature, ensureAutomaticInvoice: activateRegistrationInvoice, findCustomerByEmail,getPaymentAttemptStatus,getPaymentHistory,getPaymentSummary, initiatePayment, markWebhookProcessed, processWebhook, providerRequest, publicHttpsUrl, publicPaymentReturnUrl, readVerifiedWebhookEnvelope, reconcileInvoicePendingPayments,reconcilePendingPayments,recordWebhookFailure, resolveCustomerAndPaymentMethod, settlePaymentAttempt, timingSafe,validateCustomerPaymentInput, verifyCharge, verifyWebhookSignature };

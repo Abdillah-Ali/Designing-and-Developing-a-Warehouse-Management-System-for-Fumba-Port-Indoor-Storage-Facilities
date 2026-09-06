@@ -851,6 +851,12 @@ const runUpdates = async () => {
     await applySqlMigration(client, "041_draft_invoice_payment_token_constraint.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260825_draft_invoice_payment_token_constraint.sql"), "utf8"));
     await applySqlMigration(client, "041_session_selector_cookie_isolation.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260823_session_selector_cookie_isolation.sql"), "utf8"));
     await applySqlMigration(client, "042_role_based_reports_indexes.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260826_role_based_reports_indexes.sql"), "utf8"));
+    await applySqlMigration(client, "043_collection_billing.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260906_collection_billing.sql"), "utf8"));
+    await applySqlMigration(client, "044_billing_timestamp_precision.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260906_billing_timestamp_precision.sql"), "utf8"));
+    await applySqlMigration(client, "045_gate_fpfg_presence.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260906_gate_fpfg_presence.sql"), "utf8"));
+    await applySqlMigration(client, "046_gate_presence_state_split.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260906_gate_presence_state_split.sql"), "utf8"));
+    await applySqlMigration(client, "047_payment_settlement_timestamp.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260906_payment_settlement_timestamp.sql"), "utf8"));
+    await applySqlMigration(client, "048_configurable_late_penalty.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260906_configurable_late_penalty.sql"), "utf8"));
     await ensureStandardRolePermissions(client);
   } catch (error) {
     if (transactionOpen) await client.query("ROLLBACK").catch(() => {});

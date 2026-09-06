@@ -818,8 +818,12 @@ export const rejectManagementRelease = (reference,remarks="") => request(`/manag
 export const convertManagementReleaseToNormal = (cargoReference,remarks="") => request(`/supervisor/cargo/${encodeURIComponent(cargoReference)}/management-release/normal`,{method:"POST",body:{remarks}});
 export const resubmitManagementRelease = (cargoReference,reason) => request(`/supervisor/cargo/${encodeURIComponent(cargoReference)}/management-release/resubmit`,{method:"POST",body:{reason}});
 export const getGateReleaseQueue = (params = {}) => request(`/gate/release-queue${buildQuerySuffix(params)}`);
-export const getGateRecords = () => request("/gate/records");
+export const getGateRecords = (params={}) => request(`/gate/records${buildQuerySuffix(params)}`);
 export const getGateEligibility = (cargoReference) => request(`/gate/cargo/${encodeURIComponent(cargoReference)}/eligibility`);
+export const updateGatePresence = (cargoReference, payload) => request(`/gate/cargo/${encodeURIComponent(cargoReference)}/presence`, {
+  method: "POST",
+  body: payload
+});
 export const confirmGateOut = (cargoReference, payload) => request(`/gate/cargo/${encodeURIComponent(cargoReference)}/gate-out`, {
   method: "POST",
   body: payload

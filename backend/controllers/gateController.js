@@ -15,6 +15,12 @@ const {
 } = require("../services/financeService");
 const { evaluateEligibility, activeDispatch } = require("../services/releaseEligibilityService");
 const { executeTransition } = require("../services/cargoWorkflowEngine");
+const {
+  compareFpfg,
+  paginate,
+  queueState,
+  validatePresenceChange
+} = require("../services/gateQueueService");
 
 const cleanString = (value) => String(value ?? "").trim();
 
@@ -50,6 +56,7 @@ const gateCargoSelect = `
     c.release_type,
     c.management_release_status,
     c.management_release_waived_amount,
+    c.management_release_decided_at,
     c.dispatch_status,
     c.gate_out_status,
     c.location,
@@ -60,6 +67,13 @@ const gateCargoSelect = `
     c.charge_end_at,
     c.released_at,
     c.created_at,
+    c.fully_paid_at,
+    c.collection_status,
+    c.customer_presence_status,
+    c.customer_present_at,
+    c.presence_recorded_by,
+    c.collector_details,
+    c.collection_status_reason,
     dr.status AS dispatch_request_status,
     dr.reason AS dispatch_reason,
     dr.decision_notes AS dispatch_decision_notes,
@@ -78,6 +92,12 @@ const gateCargoSelect = `
 const toGateCargo = (row, eligibility = null) => ({
   cargo_reference: row.cargo_id,
   barcode: row.barcode,
+  fully_paid_at: row.fully_paid_at,
+  latest_fully_paid_at: row.latest_fully_paid_at || row.fully_paid_at || row.management_release_decided_at,
+  collection_status: row.collection_status,
+  presence_status: row.customer_presence_status,
+  customer_present_at: row.customer_present_at,
+  collector_details: row.collector_details || {},
   consignee_name: row.consignee_name,
   owner_information: row.company_name || row.consignee_name,
   cargo_type: row.cargo_type,
@@ -227,47 +247,104 @@ const getDashboard = async (req, res, next) => {
   }
 };
 
+const buildAuthoritativeGateQueue = async ({ executor = db, at = null } = {}) => {
+  const calculationTime = at || await getServerNow(executor);
+  const result = await executor.query(
+    `${gateCargoSelect}
+     WHERE c.is_deleted=FALSE AND c.gate_out_status='Not Released'
+     ORDER BY COALESCE(c.fully_paid_at,c.management_release_decided_at) ASC NULLS LAST,
+              c.created_at ASC,c.cargo_id ASC`
+  );
+  const rows = [];
+  for (const source of result.rows) {
+    let eligibility;
+    try {
+      eligibility = await buildEligibility({executor,cargo:{...source,id:source.cargo_record_id},at:calculationTime});
+    } catch (error) {
+      eligibility={eligible:false,outstanding_amount:'0.00',blocked_requirements:[{requirement:'release',message:error.message}]};
+    }
+    const current=(await executor.query(`SELECT financial_status,fully_paid_at,collection_status,
+      customer_presence_status,customer_present_at,presence_recorded_by,collector_details,
+      collection_status_reason,management_release_decided_at FROM cargo WHERE id=$1`,[source.cargo_record_id])).rows[0]||{};
+    const invoice=(await executor.query(`SELECT COALESCE(SUM(penalties),0) penalties,
+      COALESCE(SUM(outstanding_balance),0) outstanding FROM invoices
+      WHERE cargo_id=$1 AND status NOT IN ('Cancelled','Draft')`,[source.cargo_record_id])).rows[0]||{};
+    const latestPaid=current.fully_paid_at || (source.management_release_status==='APPROVED' ? current.management_release_decided_at : null);
+    const financialCleared=(source.management_release_status==='APPROVED' || Number(invoice.outstanding)===0) && Boolean(latestPaid);
+    const operationalBlocks=(eligibility.blocked_requirements||[]).filter(item=>item.requirement!=='payment');
+    if (!['Placed','Relocated'].includes(source.placement_status)) operationalBlocks.push({requirement:'warehouse_processing',message:'Required warehouse release processing is incomplete.'});
+    const operationallyEligible=operationalBlocks.length===0;
+    const present=current.customer_presence_status==='PRESENT_READY';
+    const row={...toGateCargo({...source,...current,latest_fully_paid_at:latestPaid},{...eligibility,eligible:operationallyEligible&&financialCleared,blocked_requirements:[...(eligibility.blocked_requirements||[]),...(!latestPaid?[{requirement:'payment',message:'A verified latest full-settlement timestamp is required.'}]:[])]}),
+      _cargo_record_id:source.cargo_record_id,latest_fully_paid_at:latestPaid,registration_time:source.created_at,
+      payment_status:financialCleared?'Fully Paid':current.financial_status,
+      penalty_status:Number(invoice.penalties)>0?(Number(invoice.outstanding)>0?'Unpaid':'Paid'):'None',
+      penalty_amount:String(invoice.penalties||'0.00'),outstanding_balance:String(invoice.outstanding||'0.00'),
+      financially_cleared:financialCleared,operationally_eligible:operationallyEligible,
+      customer_present:present,allowed_to_gate_out:false,queue_position:null,blocked_reason:null};
+    rows.push(row);
+  }
+  rows.sort(compareFpfg);
+  let eligiblePosition=0;
+  const presentEligible=[];
+  for (const row of rows) {
+    if(row.financially_cleared&&row.operationally_eligible) row.queue_position=++eligiblePosition;
+    if(row.financially_cleared&&row.operationally_eligible&&row.customer_present) presentEligible.push(row);
+  }
+  const firstPresent=presentEligible[0]||null;
+  for (const row of rows) {
+    row.allowed_to_gate_out=Boolean(firstPresent&&row.cargo_reference===firstPresent.cargo_reference);
+    row.queue_state=queueState({operationallyEligible:row.operationally_eligible,financiallyCleared:row.financially_cleared,present:row.customer_present,firstPresent:row.allowed_to_gate_out});
+    row.blocked_reason=row.allowed_to_gate_out?null:row.queue_state;
+    row.collection_status=!row.financially_cleared?'FINANCIALLY_BLOCKED':!row.operationally_eligible?'RELEASE_CONDITION_BLOCKED':row.customer_present?'PRESENT_READY':row.presence_status;
+    await executor.query('UPDATE cargo SET collection_status=$2 WHERE id=$1 AND collection_status IS DISTINCT FROM $2',[row._cargo_record_id,row.collection_status]);
+  }
+  return {rows,calculationTime,firstPresent};
+};
+
 const getReleaseQueue = async (req, res, next) => {
   try {
-    const values = [];
-    const clauses = ["c.is_deleted = FALSE", "c.gate_out_status = 'Not Released'"];
-    if (req.query.search) {
-      values.push(`%${req.query.search}%`);
-      clauses.push(`(
-        c.cargo_id ILIKE $${values.length}
-        OR c.barcode ILIKE $${values.length}
-        OR c.consignee_name ILIKE $${values.length}
-        OR c.company_name ILIKE $${values.length}
-      )`);
-    }
-    const result = await db.query(
-      `${gateCargoSelect}
-       WHERE ${clauses.join(" AND ")}
-       ORDER BY CASE WHEN dr.status = 'Approved' THEN 0 ELSE 1 END,
-                c.updated_at DESC,
-                c.id DESC
-       LIMIT 100`,
-      values
-    );
-    const rows = [];
-    for (const row of result.rows) {
-      const eligibility = await buildEligibility({
-        executor: db,
-        cargo: { ...row, id: row.cargo_record_id }
-      });
-      rows.push(toGateCargo(row, eligibility));
-    }
-    res.json({ success: true, count: rows.length, data: rows });
-  } catch (error) {
-    next(error);
-  }
+    const queue=await buildAuthoritativeGateQueue({executor:db});
+    const search=cleanString(req.query.search).toLowerCase();
+    const filtered=search?queue.rows.filter(row=>[row.cargo_reference,row.barcode,row.consignee_name,row.owner_information].some(value=>String(value||'').toLowerCase().includes(search))):queue.rows;
+    const page=paginate(filtered,req.query.page,req.query.page_size||req.query.limit);
+    const data=page.rows.map(({_cargo_record_id,registration_time,...row})=>row);
+    res.json({success:true,count:data.length,data,pagination:{page:page.page,page_size:page.page_size,total:page.total,total_pages:page.total_pages},current_allowed_cargo:queue.firstPresent?.cargo_reference||null,calculation_time:queue.calculationTime});
+  } catch (error) { next(error); }
+};
+
+const updateCustomerPresence = async (req,res,next) => {
+  try {
+    const data=await withTransaction(async client=>{
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('gate_fpfg_normal_release'))");
+      const cargo=await findCargoByPublicReference(client,req.params.cargoReference,{lock:true});
+      if(!cargo) throw buildError('Cargo record not found.',404);
+      if(cargo.gate_out_status!=='Not Released') throw buildError('Customer presence cannot change after Gate-Out.',409);
+      const newStatus=cleanString(req.body.status).toUpperCase();
+      const reason=cleanString(req.body.reason);
+      validatePresenceChange({oldStatus:cargo.customer_presence_status,newStatus,reason});
+      const collectorDetails={collector_name:cleanString(req.body.collector_name)||null,identity_type:cleanString(req.body.identity_type)||null,identity_number:cleanString(req.body.identity_number)||null,authorization_reference:cleanString(req.body.authorization_reference)||null};
+      const updated=(await client.query(`UPDATE cargo SET customer_presence_status=$1::varchar,
+        customer_present_at=CASE WHEN $1::varchar='PRESENT_READY'::varchar THEN clock_timestamp() ELSE NULL END,
+        presence_recorded_by=$2,collector_details=$3::jsonb,collection_status_reason=$4,
+        updated_at=CURRENT_TIMESTAMP WHERE id=$5 RETURNING *`,[newStatus,req.auth?.userId||null,JSON.stringify(collectorDetails),reason||null,cargo.id])).rows[0];
+      await client.query(`INSERT INTO cargo_collection_status_history
+        (cargo_id,cargo_reference,old_status,new_status,reason,collector_details,changed_by)
+        VALUES($1,$2,$3,$4,$5,$6::jsonb,$7)`,[cargo.id,cargo.cargo_id,cargo.customer_presence_status,newStatus,reason||null,JSON.stringify(collectorDetails),req.auth?.userId||null]);
+      await writeAuditLog({user_id:req.auth?.userId||null,action:newStatus==='PRESENT_READY'?'MARK_CUSTOMER_PRESENT':'CHANGE_CUSTOMER_PRESENCE',module:'Dispatch and Gate',description:`Changed customer presence for cargo ${cargo.cargo_id} from ${cargo.customer_presence_status} to ${newStatus}.`,metadata:{cargo_reference:cargo.cargo_id,before:{presence_status:cargo.customer_presence_status},after:{presence_status:newStatus},reason:reason||null,collector_details:collectorDetails}},client);
+      return {cargo_reference:cargo.cargo_id,presence_status:updated.customer_presence_status,customer_present_at:updated.customer_present_at,collector_details:updated.collector_details,reason:updated.collection_status_reason};
+    });
+    res.json({success:true,data});
+  } catch(error){next(error);}
 };
 
 const getEligibility = async (req, res, next) => {
   try {
     const cargo = await findCargoByPublicReference(db, req.params.cargoReference);
     if (!cargo) throw buildError("Cargo record not found.", 404);
-    const eligibility = await buildEligibility({ executor: db, cargo });
+    const queue=await buildAuthoritativeGateQueue({executor:db});
+    const queued=queue.rows.find(row=>row.cargo_reference===cargo.cargo_id);
+    const eligibility = queued?.release_eligibility || await buildEligibility({ executor: db, cargo });
     res.json({
       success: true,
       data: {
@@ -281,6 +358,14 @@ const getEligibility = async (req, res, next) => {
         supervisor_dispatch_approval: "Not required (automatic readiness workflow)",
         gate_out_status: cargo.gate_out_status,
         location: cargo.location,
+        latest_fully_paid_at:queued?.latest_fully_paid_at||cargo.fully_paid_at,
+        presence_status:queued?.presence_status||cargo.customer_presence_status,
+        customer_present_at:queued?.customer_present_at||cargo.customer_present_at,
+        queue_position:queued?.queue_position||null,
+        queue_state:queued?.queue_state||'Release Condition Blocked',
+        allowed_to_gate_out:queued?.allowed_to_gate_out||false,
+        outstanding_balance:queued?.outstanding_balance||eligibility.outstanding_amount,
+        penalty_status:queued?.penalty_status||'None',
         ...eligibility
       }
     });
@@ -318,9 +403,12 @@ const releaseBinIfNeeded = async (client, cargo) => {
 const confirmGateOut = async (req, res, next) => {
   let blockedReleaseNotification = null;
   let blockedManagementReleaseAttempt = null;
+  let blockedQueueAttempt = null;
+  let blockedFinancialAttempt = null;
 
   try {
     const data = await withTransaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('gate_fpfg_normal_release'))");
       const vehicleNumber = cleanString(req.body.vehicle_number);
       const driverName = cleanString(req.body.driver_name);
       const gateNotes = cleanString(req.body.gate_notes);
@@ -332,17 +420,42 @@ const confirmGateOut = async (req, res, next) => {
       if (["Released", "Emergency Released"].includes(cargo.gate_out_status)) {
         throw buildError("Cargo has already been released.", 409);
       }
+      if(cargo.customer_presence_status!=='PRESENT_READY'){
+        blockedQueueAttempt={cargo_reference:cargo.cargo_id,actorId:req.auth?.userId||null,action:'BLOCK_GATE_OUT_CUSTOMER_ABSENT',reason:'Customer or authorized collector must be marked present before Gate-Out.'};
+        throw buildError(blockedQueueAttempt.reason,409,null,'CUSTOMER_NOT_PRESENT');
+      }
       const releaseAt = await getServerNow(client);
       const dispatchRequest = await activeDispatch(client, cargo.id, true);
       const eligibility = await buildEligibility({ executor: client, cargo, at: releaseAt });
       let releaseType = cargo.management_release_status === "APPROVED" ? "Management" : "Normal";
       let emergencyRequest = null;
 
+      if (eligibility.eligible) {
+        const queue=await buildAuthoritativeGateQueue({executor:client,at:releaseAt});
+        const target=queue.rows.find(row=>row.cargo_reference===cargo.cargo_id);
+        if(!target?.customer_present) {
+          blockedQueueAttempt={cargo_reference:cargo.cargo_id,actorId:req.auth?.userId||null,action:'BLOCK_GATE_OUT_CUSTOMER_ABSENT',reason:'Customer or authorized collector must be marked present before Gate-Out.'};
+          throw buildError(blockedQueueAttempt.reason,409,null,'CUSTOMER_NOT_PRESENT');
+        }
+        if(!target.allowed_to_gate_out) {
+          blockedQueueAttempt={cargo_reference:cargo.cargo_id,actorId:req.auth?.userId||null,action:'BLOCK_FPFG_BYPASS',reason:'An earlier eligible cargo is currently present and must be processed first.',earlier_cargo_reference:queue.firstPresent?.cargo_reference||null};
+          throw buildError(blockedQueueAttempt.reason,409,{earlier_cargo_reference:blockedQueueAttempt.earlier_cargo_reference},'FPFG_ORDER_VIOLATION');
+        }
+        for(const skipped of queue.rows){
+          if(skipped.cargo_reference===target.cargo_reference) break;
+          if(skipped.allowed_to_gate_out) continue;
+          await writeAuditLog({user_id:req.auth?.userId||null,action:'LEGITIMATE_FPFG_SKIP',module:'Dispatch and Gate',description:`Skipped earlier FPFG cargo ${skipped.cargo_reference} while processing ${cargo.cargo_id} because it was not ready.`,metadata:{cargo_reference:skipped.cargo_reference,processed_cargo_reference:cargo.cargo_id,reason:skipped.queue_state,presence_status:skipped.presence_status,outstanding_balance:skipped.outstanding_balance}},client);
+        }
+        await client.query("UPDATE cargo SET collection_status='GATE_PROCESSING',updated_at=CURRENT_TIMESTAMP WHERE id=$1",[cargo.id]);
+      }
+
       if (!eligibility.eligible) {
         const managementBlock=eligibility.blocked_requirements.find((item)=>item.requirement==="management_release");
         const emergencyReference = cleanString(req.body.emergency_request_reference);
         if (!emergencyReference) {
           if (eligibility.blocked_requirements.some((item) => item.requirement === "payment")) {
+            const penalty=(await client.query("SELECT COALESCE(SUM(penalties),0) amount FROM invoices WHERE cargo_id=$1 AND status NOT IN ('Cancelled','Draft')",[cargo.id])).rows[0]?.amount||'0.00';
+            blockedFinancialAttempt={cargo_reference:cargo.cargo_id,actorId:req.auth?.userId||null,outstanding_amount:eligibility.outstanding_amount,penalty_amount:String(penalty),action:Number(penalty)>0?'BLOCK_GATE_OUT_UNPAID_PENALTY':'BLOCK_GATE_OUT_UNPAID_BALANCE'};
             blockedReleaseNotification = {
               cargo: { id: cargo.id, cargo_id: cargo.cargo_id },
               outstandingAmount: eligibility.outstanding_amount,
@@ -377,9 +490,10 @@ const confirmGateOut = async (req, res, next) => {
         `INSERT INTO gate_out_records (
            public_reference, cargo_id, dispatch_request_id, release_type,
            vehicle_number, driver_name, gate_notes, released_at, released_by,
-           outstanding_amount_snapshot, eligibility_snapshot,eligibility_policy_key,eligibility_policy_revision,emergency_request_id
+           outstanding_amount_snapshot, eligibility_snapshot,eligibility_policy_key,eligibility_policy_revision,emergency_request_id,
+           customer_present_at,collector_details
          )
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16::jsonb)
          RETURNING *`,
         [
           gateReference,
@@ -392,17 +506,19 @@ const confirmGateOut = async (req, res, next) => {
           releaseAt,
           req.auth?.userId || null,
           eligibility.outstanding_amount,
-          JSON.stringify(eligibility),eligibility.policy_key,eligibility.revision,emergencyRequest?.id||null
+          JSON.stringify(eligibility),eligibility.policy_key,eligibility.revision,emergencyRequest?.id||null,
+          cargo.customer_present_at||null,JSON.stringify(cargo.collector_details||{})
         ]
       );
       await client.query(
         `UPDATE cargo
          SET current_bin_id = NULL,
              location = 'Collected by Customer (Gate Out)',
-             charge_end_at = $1,
-             released_at = $1,
+             charge_end_at = $1::timestamptz AT TIME ZONE current_setting('TimeZone'),
+             released_at = $1::timestamptz AT TIME ZONE current_setting('TimeZone'),
              dispatch_status = $2::varchar,
              gate_out_status = $3::varchar,
+             collection_status = 'GATED_OUT',
              financial_status = CASE
                WHEN $4::numeric > 0 AND $3::varchar = 'Emergency Released'::varchar THEN 'Released With Balance'::varchar
                WHEN $4::numeric > 0 THEN financial_status
@@ -499,6 +615,12 @@ const confirmGateOut = async (req, res, next) => {
     });
     res.status(201).json({ success: true, data });
   } catch (error) {
+    if(blockedFinancialAttempt){
+      try{await writeAuditLog({user_id:blockedFinancialAttempt.actorId,action:blockedFinancialAttempt.action,module:'Dispatch and Gate',description:`Blocked Gate-Out for cargo ${blockedFinancialAttempt.cargo_reference} due to an outstanding financial balance.`,metadata:blockedFinancialAttempt},db)}catch(auditError){console.error('Failed to audit financially blocked Gate-Out:',auditError.message)}
+    }
+    if(blockedQueueAttempt){
+      try{await writeAuditLog({user_id:blockedQueueAttempt.actorId,action:blockedQueueAttempt.action,module:'Dispatch and Gate',description:`Blocked Gate-Out for cargo ${blockedQueueAttempt.cargo_reference}: ${blockedQueueAttempt.reason}`,metadata:{cargo_reference:blockedQueueAttempt.cargo_reference,reason:blockedQueueAttempt.reason,earlier_cargo_reference:blockedQueueAttempt.earlier_cargo_reference||null,reason_code:error.errorCode||error.code||null}},db)}catch(auditError){console.error('Failed to audit blocked FPFG Gate-Out:',auditError.message)}
+    }
     if(blockedManagementReleaseAttempt){
       try{await writeAuditLog({user_id:blockedManagementReleaseAttempt.actorId,action:"BLOCK_MANAGEMENT_RELEASE_GATE_OUT",module:"Dispatch and Gate",description:`Blocked Gate-Out for cargo ${blockedManagementReleaseAttempt.cargo.cargo_id}: ${blockedManagementReleaseAttempt.block.message}`,metadata:{cargo_reference:blockedManagementReleaseAttempt.cargo.cargo_id,reason_code:blockedManagementReleaseAttempt.block.reason_code,management_release_requirement:true}},db)}catch(auditError){console.error("Failed to audit blocked Management Release Gate-Out:",auditError.message)}
     }
@@ -515,6 +637,11 @@ const confirmGateOut = async (req, res, next) => {
 
 const getRecords = async (req, res, next) => {
   try {
+    const pageSize=[10,20,50,100].includes(Number(req.query.page_size))?Number(req.query.page_size):10;
+    const page=Math.max(Number(req.query.page)||1,1);
+    const total=Number((await db.query('SELECT COUNT(*)::int total FROM gate_out_records')).rows[0]?.total||0);
+    const totalPages=Math.max(1,Math.ceil(total/pageSize));
+    const currentPage=Math.min(page,totalPages);
     const result = await db.query(
       `SELECT
          gor.public_reference,
@@ -532,11 +659,12 @@ const getRecords = async (req, res, next) => {
        JOIN cargo c ON c.id = gor.cargo_id
        LEFT JOIN users officer ON officer.id = gor.released_by
        ORDER BY gor.released_at DESC, gor.id DESC
-       LIMIT 100`
+       LIMIT $1 OFFSET $2`,[pageSize,(currentPage-1)*pageSize]
     );
     res.json({
       success: true,
       count: result.rowCount,
+      pagination:{page:currentPage,page_size:pageSize,total,total_pages:totalPages},
       data: result.rows.map((row) => ({
         gate_out_reference: row.public_reference,
         cargo_reference: row.cargo_reference,
@@ -760,4 +888,5 @@ module.exports = {
   listEmergencyRequests,
   rejectEmergencyRequest,
   requestEmergencyRelease
+  ,updateCustomerPresence
 };

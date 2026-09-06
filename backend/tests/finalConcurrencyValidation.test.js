@@ -110,6 +110,7 @@ const financiallyClear = async (cargo, suffix, token) => {
   assert.equal(recorded.status, 201, JSON.stringify(recorded));
   const confirmed = await request("POST", `/finance/payments/${recorded.payload.data.payment_reference}/confirm`, token, {});
   assert.equal(confirmed.status, 200, JSON.stringify(confirmed));
+  await q("UPDATE cargo SET customer_presence_status='PRESENT_READY',customer_present_at=clock_timestamp() WHERE id=$1", [cargo.id]);
 };
 
 test("final validation closure executes real authenticated HTTP races and Gate rollback", { timeout: 120_000 }, async (t) => {
@@ -158,8 +159,8 @@ test("final validation closure executes real authenticated HTTP races and Gate r
 
     const tariff = (await q("INSERT INTO tariffs(public_reference,tariff_name,cargo_type,charging_unit,created_by) VALUES($1,$2,'Validation Goods','per_cargo_per_day',$3) RETURNING *", [`${PREFIX}-TRF`, `${PREFIX} Tariff`, users.finance_officer.id])).rows[0];
     ids.tariff = tariff.id;
-    const tariffVersion = (await q(`INSERT INTO tariff_versions(public_reference,tariff_id,version_number,cargo_type,charging_unit,daily_rate,currency,minimum_billable_days,effective_from,is_active,created_by,activated_by,activated_at,cargo_type_key,tariff_scope,configuration_status,approval_status,approved_by,approved_at)
-      VALUES($1,$2,1,'Validation Goods','per_cargo_per_day',100,'TZS',1,CURRENT_TIMESTAMP-INTERVAL '30 days',TRUE,$3,$3,CURRENT_TIMESTAMP,'validation_goods','cargo_type','ready','APPROVED',$3,CURRENT_TIMESTAMP) RETURNING *`,
+    const tariffVersion = (await q(`INSERT INTO tariff_versions(public_reference,tariff_id,version_number,cargo_type,charging_unit,daily_rate,currency,minimum_billable_days,late_collection_penalty_percent,effective_from,is_active,created_by,activated_by,activated_at,cargo_type_key,tariff_scope,configuration_status,approval_status,approved_by,approved_at)
+      VALUES($1,$2,1,'Validation Goods','per_cargo_per_day',100,'TZS',1,5,CURRENT_TIMESTAMP-INTERVAL '30 days',TRUE,$3,$3,CURRENT_TIMESTAMP,'validation_goods','cargo_type','ready','APPROVED',$3,CURRENT_TIMESTAMP) RETURNING *`,
     [`${PREFIX}-TRV`, tariff.id, users.finance_officer.id])).rows[0];
     ids.tariffVersion = tariffVersion.id;
 
@@ -230,7 +231,10 @@ test("final validation closure executes real authenticated HTTP races and Gate r
       const state = await scalar("SELECT count(*)::int invoice_count,coalesce(sum(total_amount),0)::text obligation FROM invoices WHERE cargo_id=$1 AND status<>'Cancelled'",[cargo.id]);
       const audits = await scalar("SELECT count(*)::int n FROM audit_logs WHERE metadata->>'cargo_reference'=$1 AND action IN ('GENERATE_DRAFT_INVOICE','REGENERATE_DRAFT_INVOICE')",[cargo.cargo_id]);
       invoiceFixture = { cargo, invoiceNumber:results.find((r)=>r.status===201)?.payload?.data?.invoice_number };
-      assert.equal(state.invoice_count,1); assert.equal(results.filter((r)=>r.status===201).length,1,`Concurrent duplicate invoice returned two successes: ${JSON.stringify(results)}`); assert.equal(results.filter((r)=>r.status===409).length,1,`Duplicate invoice loser did not return conflict: ${JSON.stringify(results)}`); assert.equal(audits.n,1);
+      assert.equal(state.invoice_count,1);
+      assert.equal(results.filter((r)=>r.status===201).length,2,`Concurrent idempotent invoice requests did not both resolve safely: ${JSON.stringify(results)}`);
+      assert.equal(new Set(results.map((r)=>r.payload?.data?.invoice_number)).size,1,`Concurrent invoice requests resolved to different invoices: ${JSON.stringify(results)}`);
+      assert.equal(audits.n,2);
       evidence.push({id:"C03",results,state,audits});
     });
 

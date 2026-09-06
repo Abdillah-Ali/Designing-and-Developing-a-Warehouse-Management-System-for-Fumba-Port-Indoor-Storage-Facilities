@@ -394,8 +394,8 @@ function InvoicesPage() {
                   render: (row) => (
                     <div className="flex gap-1">
                       <button type="button" onClick={() => openDetail(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">Details</button>
-                      <button type="button" disabled={!row.payment_url || row.status === "Cancelled"} onClick={() => copyLink(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-50">Copy link</button>
-                      <button type="button" disabled={row.status === "Cancelled" || resendingInvoice===row.invoice_number} onClick={() => resend(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-50">{resendingInvoice===row.invoice_number?"Resending…":"Resend email"}</button>
+                      <button type="button" disabled={!row.payment_url || row.status === "Cancelled" || row.status === "Draft"} onClick={() => copyLink(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-50">Copy link</button>
+                      <button type="button" disabled={!row.payment_url || row.status === "Cancelled" || row.status === "Draft" || resendingInvoice===row.invoice_number} onClick={() => resend(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-50">{resendingInvoice===row.invoice_number?"Sending…":"Send email"}</button>
                     </div>
                   )
                 }
@@ -500,9 +500,9 @@ function InvoiceDetailDialog({ detail, onClose }) {
               <DataTable rows={invoice.payment_history || []} emptyTitle="No payment attempts yet" columns={[
                 { key: "public_reference", label: "Attempt" },
                 { key: "amount", label: "Amount", render: (row) => formatMoney(row.amount, invoice.currency) },
-                { key: "status", label: "Status" },
-                { key: "gateway_status", label: "Gateway" },
-                { key: "confirmed_at", label: "Confirmed", render: (row) => formatDateTime(row.confirmed_at) }
+                { key: "status", label: "Status", render:row=>["Gateway Pending","PENDING","PROCESSING","NOT_INITIATED"].includes(row.status)?"Verifying with Flutterwave…":row.status },
+                { key: "gateway_status", label: "Gateway", render:row=>["PENDING","PROCESSING","NOT_INITIATED"].includes(row.gateway_status)?"Verifying…":row.gateway_status },
+                { key: "confirmed_at", label: "Completed", render: (row) => formatDateTime(row.gateway_status === "SUCCESSFUL" ? row.confirmed_at || row.verified_at : row.failed_at) }
               ]} />
             </SectionCard>
           </div>
@@ -561,6 +561,7 @@ function TariffsPage() {
     penalty_type: "none",
     penalty_rate: 0,
     fixed_penalty: 0,
+    late_collection_penalty_percent: "",
     effective_from: "",
     effective_to: "",
     notes: ""
@@ -644,6 +645,7 @@ function TariffsPage() {
             <SelectField label="Penalty Type" value={form.penalty_type} onChange={(value) => setForm((current) => ({ ...current, penalty_type: value }))} options={["none", "percentage", "fixed"]} />
             <FormInput label="Penalty Rate" type="number" value={form.penalty_rate} onChange={(value) => setForm((current) => ({ ...current, penalty_rate: value }))} />
             <FormInput label="Fixed Penalty" type="number" value={form.fixed_penalty} onChange={(value) => setForm((current) => ({ ...current, fixed_penalty: value }))} />
+            <FormInput label="Late Collection Penalty (%)" type="number" max="100" value={form.late_collection_penalty_percent} onChange={(value) => setForm((current) => ({ ...current, late_collection_penalty_percent: value }))} required />
             <FormInput label="Effective From" type="datetime-local" value={form.effective_from} onChange={(value) => setForm((current) => ({ ...current, effective_from: value }))} required />
             <FormInput label="Effective To" type="datetime-local" value={form.effective_to} onChange={(value) => setForm((current) => ({ ...current, effective_to: value }))} />
             <FormInput label="Notes" value={form.notes} onChange={(value) => setForm((current) => ({ ...current, notes: value }))} />
@@ -669,6 +671,7 @@ function TariffsPage() {
                 { key: "cargo_type", label: "Cargo Type" },
                 { key: "charging_unit", label: "Unit" },
                 { key: "daily_rate", label: "Daily Rate", render: (row) => formatMoney(row.daily_rate, row.currency) },
+                { key: "late_collection_penalty_percent", label: "Late Penalty", render: (row) => `${row.late_collection_penalty_percent}%` },
                 { key: "minimum_billable_days", label: "Min Days" },
                 { key: "effective_from", label: "Effective From", render: (row) => formatDateTime(row.effective_from) },
                 { key: "effective_to", label: "Effective To", render: (row) => formatDateTime(row.effective_to) },
@@ -707,6 +710,7 @@ function TariffEditDialog({ tariff, onClose, onSave }) {
         penalty_type: tariff.penalty_type || "none",
         penalty_rate: tariff.penalty_rate || 0,
         fixed_penalty: tariff.fixed_penalty || 0,
+        late_collection_penalty_percent: tariff.late_collection_penalty_percent ?? "",
         effective_from: tariff.effective_from ? String(tariff.effective_from).slice(0, 16) : "",
         effective_to: tariff.effective_to ? String(tariff.effective_to).slice(0, 16) : "",
         notes: tariff.notes || ""
@@ -751,6 +755,7 @@ function TariffEditDialog({ tariff, onClose, onSave }) {
           <FormInput label="Daily Rate" type="number" value={form.daily_rate || ""} onChange={(value) => setForm((current) => ({ ...current, daily_rate: value }))} required />
           <FormInput label="Minimum Days" type="number" value={form.minimum_billable_days || 1} onChange={(value) => setForm((current) => ({ ...current, minimum_billable_days: value }))} />
           <FormInput label="Grace Days" type="number" value={form.grace_period_days || 0} onChange={(value) => setForm((current) => ({ ...current, grace_period_days: value }))} />
+          <FormInput label="Late Collection Penalty (%)" type="number" max="100" value={form.late_collection_penalty_percent ?? ""} onChange={(value) => setForm((current) => ({ ...current, late_collection_penalty_percent: value }))} required />
           <FormInput label="Effective From" type="datetime-local" value={form.effective_from || ""} onChange={(value) => setForm((current) => ({ ...current, effective_from: value }))} required />
           <FormInput label="Effective To" type="datetime-local" value={form.effective_to || ""} onChange={(value) => setForm((current) => ({ ...current, effective_to: value }))} />
           <FormInput label="Notes" value={form.notes || ""} onChange={(value) => setForm((current) => ({ ...current, notes: value }))} />
@@ -764,10 +769,10 @@ function TariffEditDialog({ tariff, onClose, onSave }) {
   );
 }
 
-function FormInput({ label, value, onChange, type = "text", required = false }) {
+function FormInput({ label, value, onChange, type = "text", required = false, max }) {
   return (
     <FormField label={label}>
-      <input className={inputClass} type={type} value={value} required={required} min={type === "number" ? "0" : undefined} step={type === "number" ? "0.01" : undefined} onChange={(event) => onChange(event.target.value)} />
+      <input className={inputClass} type={type} value={value} required={required} min={type === "number" ? "0" : undefined} max={max} step={type === "number" ? "0.01" : undefined} onChange={(event) => onChange(event.target.value)} />
     </FormField>
   );
 }

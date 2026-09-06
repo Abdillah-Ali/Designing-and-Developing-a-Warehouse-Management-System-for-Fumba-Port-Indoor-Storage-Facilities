@@ -32,20 +32,30 @@ test("public inputs reject invalid token, zero amount, malformed contact, and at
   assert.throws(()=>payment.validateCustomerPaymentInput({attemptReference:"PAY-1"}),/attempt/);
 });
 
-test("missing customer email records SKIPPED without throwing",async()=>{
+test("missing customer email blocks payment request",async()=>{
   const executor={query:async(sql)=>{
-    if(sql.includes("FROM invoices i JOIN cargo"))return{rows:[{id:1,invoice_reference:"INV-1",payment_reference:"PAY-1",payment_public_token:"a".repeat(64),invoice_total:"10",amount_paid:"0",outstanding_balance:"10",currency:"TZS",cargo_reference:"CRG-1",recipient:null}],rowCount:1};
+    if(sql.includes("FROM invoices i JOIN cargo"))return{rows:[{id:1,invoice_reference:"INV-1",payment_reference:"PAY-1",payment_public_token:"a".repeat(64),invoice_total:"10",amount_paid:"0",outstanding_balance:"10",currency:"TZS",cargo_reference:"CRG-1",recipient:null,invoice_status:"Issued",registration_status:"Approved"}],rowCount:1};
     if(sql.includes("INSERT INTO payment_email_deliveries"))return{rows:[{id:2,delivery_status:"SKIPPED"}],rowCount:1};
     return{rows:[{}],rowCount:1};
   }};
-  assert.equal((await email.queuePaymentLinkEmail({invoiceId:1,executor})).delivery.delivery_status,"SKIPPED");
+  await assert.rejects(()=>email.queuePaymentLinkEmail({invoiceId:1,executor}),/valid customer email/);
+});
+
+test("Draft and Supervisor-unapproved invoices cannot expose payment requests",async()=>{
+  const previous=process.env.PUBLIC_PAYMENT_BASE_URL;process.env.PUBLIC_PAYMENT_BASE_URL="https://payments.example.test";
+  const executorFor=row=>({query:async sql=>sql.includes("FROM invoices i JOIN cargo")?{rows:[row],rowCount:1}:{rows:[],rowCount:0}});
+  const base={id:1,invoice_reference:"INV-1",payment_reference:"PAY-1",payment_public_token:"a".repeat(64),total_amount:"10",amount_paid:"0",outstanding_balance:"10",currency:"TZS",cargo_reference:"CRG-1",recipient:"customer@example.test"};
+  await assert.rejects(()=>email.loadDeliveryData({invoiceId:1,executor:executorFor({...base,invoice_status:"Draft",registration_status:"Approved"})}),error=>error.errorCode==="DRAFT_INVOICE_PAYMENT_BLOCKED");
+  await assert.rejects(()=>email.loadDeliveryData({invoiceId:1,executor:executorFor({...base,invoice_status:"Issued",registration_status:"Pending"})}),error=>error.errorCode==="SUPERVISOR_APPROVAL_REQUIRED");
+  assert.equal((await email.loadDeliveryData({invoiceId:1,executor:executorFor({...base,invoice_status:"Issued",registration_status:"Approved"})})).invoice_reference,"INV-1");
+  process.env.PUBLIC_PAYMENT_BASE_URL=previous||"";
 });
 
 test("SMTP failure is persisted as retryable and does not expose credentials",async()=>{
   const old={provider:process.env.EMAIL_PROVIDER,from:process.env.EMAIL_FROM,host:process.env.SMTP_HOST,user:process.env.SMTP_USER,pass:process.env.SMTP_PASSWORD};
   Object.assign(process.env,{EMAIL_PROVIDER:"smtp",EMAIL_FROM:"wms@example.test",SMTP_HOST:"smtp.example.test",SMTP_USER:"wms",SMTP_PASSWORD:"secret-app-password",PUBLIC_PAYMENT_BASE_URL:"http://localhost:3000"});
   const queries=[];const executor={query:async(sql,params=[])=>{queries.push({sql,params});
-    if(sql.includes("FROM invoices i JOIN cargo"))return{rows:[{id:1,invoice_reference:"INV-1",payment_reference:"PAY-1",payment_public_token:"a".repeat(64),invoice_total:"10",amount_paid:"0",outstanding_balance:"10",currency:"TZS",cargo_reference:"CRG-1",recipient:"customer@example.test"}],rowCount:1};
+    if(sql.includes("FROM invoices i JOIN cargo"))return{rows:[{id:1,invoice_reference:"INV-1",payment_reference:"PAY-1",payment_public_token:"a".repeat(64),invoice_total:"10",amount_paid:"0",outstanding_balance:"10",currency:"TZS",cargo_reference:"CRG-1",recipient:"customer@example.test",invoice_status:"Issued",registration_status:"Approved"}],rowCount:1};
     if(sql.includes("SELECT * FROM payment_email_deliveries"))return{rows:[{id:2,delivery_status:"FAILED"}],rowCount:1};
     if(sql.includes("UPDATE payment_email_deliveries SET delivery_status='FAILED'"))return{rows:[{id:2,delivery_status:"FAILED",attempt_count:2}],rowCount:1};
     return{rows:[{}],rowCount:1};}};
@@ -53,6 +63,20 @@ test("SMTP failure is persisted as retryable and does not expose credentials",as
   assert.equal(result.delivery_status,"FAILED");assert.equal(result.attempt_count,2);
   assert.doesNotMatch(JSON.stringify(queries),/secret-app-password/);
   Object.assign(process.env,{EMAIL_PROVIDER:old.provider||"",EMAIL_FROM:old.from||"",SMTP_HOST:old.host||"",SMTP_USER:old.user||"",SMTP_PASSWORD:old.pass||""});
+});
+
+test("eligible payment email is sent with one auditable delivery update",async()=>{
+  const old={provider:process.env.EMAIL_PROVIDER,from:process.env.EMAIL_FROM,host:process.env.SMTP_HOST,user:process.env.SMTP_USER,pass:process.env.SMTP_PASSWORD,base:process.env.PUBLIC_PAYMENT_BASE_URL};
+  Object.assign(process.env,{EMAIL_PROVIDER:"smtp",EMAIL_FROM:"port@example.test",SMTP_HOST:"smtp.example.test",SMTP_USER:"wms",SMTP_PASSWORD:"secret",PUBLIC_PAYMENT_BASE_URL:"https://payments.example.test"});
+  let sentMail;const executor={query:async(sql)=>{
+    if(sql.includes("FROM invoices i JOIN cargo"))return{rows:[{id:1,invoice_reference:"INV-1",payment_reference:"PAY-1",payment_public_token:"a".repeat(64),total_amount:"10",amount_paid:"0",outstanding_balance:"10",currency:"TZS",cargo_reference:"CRG-1",recipient:"customer@example.test",invoice_status:"Issued",registration_status:"Approved"}],rowCount:1};
+    if(sql.includes("SELECT * FROM payment_email_deliveries"))return{rows:[{id:2,delivery_status:"PENDING",last_attempt_at:null}],rowCount:1};
+    if(sql.includes("UPDATE payment_email_deliveries SET delivery_status='SENT'"))return{rows:[{id:2,delivery_status:"SENT",attempt_count:1}],rowCount:1};
+    return{rows:[{}],rowCount:1};
+  }};
+  const result=await email.sendPaymentLinkEmail({invoiceId:1,executor,actorId:7,transportFactory:()=>({sendMail:async message=>{sentMail=message;}})});
+  assert.equal(result.delivery_status,"SENT");assert.equal(sentMail.to,"customer@example.test");assert.match(sentMail.text,/INV-1/);
+  Object.assign(process.env,{EMAIL_PROVIDER:old.provider||"",EMAIL_FROM:old.from||"",SMTP_HOST:old.host||"",SMTP_USER:old.user||"",SMTP_PASSWORD:old.pass||"",PUBLIC_PAYMENT_BASE_URL:old.base||""});
 });
 
 test("public route is login-free and rate limited",()=>{

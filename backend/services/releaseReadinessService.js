@@ -13,9 +13,14 @@ const evaluate = (cargo) => {
 };
 
 const recalculateReleaseReadiness = async ({ cargoId, executor = db, actorId = null, trigger = "SYSTEM" }) => {
+  if(executor===db){const client=await db.pool.connect();try{await client.query('BEGIN');const result=await recalculateReleaseReadiness({cargoId,executor:client,actorId,trigger});await client.query('COMMIT');return result;}catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}}
   const result = await executor.query("SELECT * FROM cargo WHERE id=$1 AND is_deleted=FALSE LIMIT 1 FOR UPDATE", [cargoId]);
   const cargo = result.rows[0];
   if (!cargo) return null;
+  if(cargo.gate_out_status==='Not Released') {
+    const snapshot=await require('./financeService').getCargoFinancialSnapshot({cargoId:cargo.id,executor});
+    cargo.financial_status=snapshot.cargo.financial_status;
+  }
   const previous = cargo.release_readiness_status || "BLOCKED";
   const readiness = evaluate(cargo);
   await executor.query(
@@ -34,9 +39,11 @@ const recalculateReleaseReadiness = async ({ cargoId, executor = db, actorId = n
 };
 
 const listReadyCargo = async ({ executor = db, warehouseId = null }) => {
+  const candidates=await executor.query("SELECT id FROM cargo WHERE is_deleted=FALSE AND gate_out_status='Not Released'");
+  for(const row of candidates.rows) await recalculateReleaseReadiness({cargoId:row.id,executor});
   const values=[]; const where=["c.is_deleted=FALSE", "c.gate_out_status='Not Released'", "c.release_readiness_status='READY_FOR_RELEASE'"];
   if (warehouseId) { values.push(warehouseId); where.push(`c.warehouse_id=$${values.length}`); }
-  return (await executor.query(`SELECT c.cargo_id AS cargo_reference,c.consignee_name,c.location AS current_bin,c.customs_status,c.financial_status,c.management_release_status,c.release_readiness_status,c.ready_for_release_at,c.release_readiness_blockers,i.public_invoice_number AS invoice_reference,i.payment_reference,i.payment_status FROM cargo c LEFT JOIN LATERAL (SELECT * FROM invoices x WHERE x.cargo_id=c.id AND x.status<>'Cancelled' ORDER BY x.created_at DESC LIMIT 1) i ON TRUE WHERE ${where.join(" AND ")} ORDER BY c.ready_for_release_at`,values)).rows;
+  return (await executor.query(`SELECT c.cargo_id AS cargo_reference,c.consignee_name,c.location AS current_bin,c.customs_status,c.financial_status,c.management_release_status,c.release_readiness_status,c.ready_for_release_at,c.release_readiness_blockers,i.public_invoice_number AS invoice_reference,i.payment_reference,i.payment_status FROM cargo c LEFT JOIN LATERAL (SELECT * FROM invoices x WHERE x.cargo_id=c.id AND x.status<>'Cancelled' ORDER BY x.created_at DESC LIMIT 1) i ON TRUE WHERE ${where.join(" AND ")} ORDER BY c.fully_paid_at ASC NULLS LAST,c.created_at ASC,c.cargo_id ASC`,values)).rows;
 };
 
 module.exports = { evaluate, recalculateReleaseReadiness, listReadyCargo };

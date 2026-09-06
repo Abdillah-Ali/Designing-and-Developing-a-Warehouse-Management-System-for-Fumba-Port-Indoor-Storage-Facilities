@@ -5,6 +5,7 @@ const email = require("../services/emailService");
 const { evaluate } = require("../services/releaseReadinessService");
 
 test("complete customer payment workflow lifecycle, scenarios, and invariants", async () => {
+  process.env.PUBLIC_PAYMENT_BASE_URL ||= "https://payments.example.test";
   // Mock DB state simulating invoice, cargo, payments, and webhooks
   let invoiceRow = {
     id: 101,
@@ -50,7 +51,7 @@ test("complete customer payment workflow lifecycle, scenarios, and invariants", 
       }
 
       if (queryStr.includes("SELECT i.payment_public_token") || queryStr.includes("FROM invoices i JOIN cargo c")) {
-        return { rows: [{ ...invoiceRow, invoice_reference: invoiceRow.public_invoice_number, recipient: "customer@example.com" }], rowCount: 1 };
+        return { rows: [{ ...invoiceRow, invoice_reference: invoiceRow.public_invoice_number, recipient: "customer@example.com", registration_status:"Approved", invoice_status:invoiceRow.status }], rowCount: 1 };
       }
 
       if (queryStr.includes("SELECT i.*, c.cargo_id AS cargo_reference") || queryStr.includes("SELECT i.*,c.cargo_id AS cargo_reference FROM invoices i") || queryStr.includes("public_invoice_number")) {
@@ -216,7 +217,7 @@ test("complete customer payment workflow lifecycle, scenarios, and invariants", 
     invoiceNumber: summary.invoice_reference,
     token,
     amount: "100000.00",
-    customer: { email: "customer@example.com", phone: "0712345678", network: "airtel" },
+    customer: { email: "customer@example.com", phone: "0682345678", network: "airtel" },
     executor,
     fetchImpl: mockFetchSuccess
   });

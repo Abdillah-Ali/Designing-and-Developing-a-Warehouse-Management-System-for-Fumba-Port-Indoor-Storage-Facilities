@@ -66,7 +66,7 @@ test("live valid default tariff restores readiness without leaving fixture data"
     // Keep those origins inside the temporary default period; rollback restores
     // every operational timestamp after the assertion.
     await client.query("UPDATE cargo SET charge_start_at=$1 WHERE is_deleted=FALSE AND charge_end_at IS NULL", [fixtureStart]);
-    await createTariffVersion({payload:{tariff_name:"Phase 11B transactional readiness fixture",cargo_type_key:"default",charging_unit:"per_cargo_per_day",daily_rate:"1.00",currency:"TZS",minimum_billable_days:1,effective_from:fixtureStart.toISOString(),is_active:true},auth:{userId:actor?.id},executor:client});
+    await createTariffVersion({payload:{tariff_name:"Phase 11B transactional readiness fixture",cargo_type_key:"default",charging_unit:"per_cargo_per_day",daily_rate:"1.00",currency:"TZS",minimum_billable_days:1,late_collection_penalty_percent:5,effective_from:fixtureStart.toISOString(),is_active:true},auth:{userId:actor?.id},executor:client});
     const result=await validateFinanceConfiguration(client);
     assert.equal(result.ready,true);
     assert.equal(result.usable_tariffs,1);

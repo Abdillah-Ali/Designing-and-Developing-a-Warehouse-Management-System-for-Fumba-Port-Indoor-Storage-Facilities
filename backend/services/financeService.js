@@ -136,13 +136,17 @@ const generatePublicReference = async (prefix, executor = db, tableName, columnN
 };
 
 const getServerNow = async (executor = db) => {
-  const result = await executor.query("SELECT CURRENT_TIMESTAMP AS now");
+  const result = await executor.query("SELECT clock_timestamp() AS now");
   return result.rows[0]?.now || new Date();
 };
 
 const findCargoByPublicReference = async (executor, reference, { lock = false } = {}) => {
   const result = await executor.query(
-    `SELECT *
+    `SELECT *,
+       charge_start_at AT TIME ZONE current_setting('TimeZone') AS charge_start_at,
+       charge_end_at AT TIME ZONE current_setting('TimeZone') AS charge_end_at,
+       released_at AT TIME ZONE current_setting('TimeZone') AS released_at,
+       created_at AT TIME ZONE current_setting('TimeZone') AS created_at
      FROM cargo
      WHERE (cargo_id = $1 OR barcode = $1 OR reference_number = $1)
        AND is_deleted = FALSE
@@ -154,6 +158,7 @@ const findCargoByPublicReference = async (executor, reference, { lock = false } 
 };
 
 const findInvoiceByNumber = async (executor, invoiceNumber, { lock = false } = {}) => {
+  if(lock) await executor.query("SELECT id FROM cargo WHERE id=(SELECT cargo_id FROM invoices WHERE public_invoice_number=$1) FOR UPDATE",[cleanString(invoiceNumber)]);
   const result = await executor.query(
     `SELECT i.*, c.cargo_id AS cargo_reference, c.barcode AS cargo_barcode, c.consignee_name,
             c.company_name, c.cargo_type, c.cargo_description, c.registration_status, c.customs_status,
@@ -224,6 +229,7 @@ const tariffToPublic = (row) => ({
   grace_period_days: row.grace_period_days,
   penalty_type: row.penalty_type,
   penalty_rate: row.penalty_rate,
+  late_collection_penalty_percent: row.late_collection_penalty_percent,
   fixed_penalty: row.fixed_penalty,
   effective_from: row.effective_from,
   effective_to: row.effective_to,
@@ -274,11 +280,13 @@ const getApplicableTariff = async (cargo, asOf, executor = db) => {
 
 const getTariffSegments = async ({ cargo, periodStart, periodEnd, executor = db }) => {
   const result = await executor.query(
-    `SELECT t.public_reference AS tariff_reference, t.tariff_name, tv.*
+    `SELECT t.public_reference AS tariff_reference, t.tariff_name, tv.*,
+       tv.effective_from AT TIME ZONE current_setting('TimeZone') AS effective_from,
+       tv.effective_to AT TIME ZONE current_setting('TimeZone') AS effective_to
      FROM tariff_versions tv JOIN tariffs t ON t.id=tv.tariff_id
      WHERE tv.is_active=TRUE AND tv.configuration_status='ready' AND tv.approval_status='APPROVED'
        AND (tv.cargo_type_key=$1 OR tv.tariff_scope='default')
-       AND tv.effective_from < $3 AND COALESCE(tv.effective_to,'infinity'::timestamp) > $2
+       AND (tv.effective_from AT TIME ZONE current_setting('TimeZone')) < $3::timestamptz AND (COALESCE(tv.effective_to,'infinity'::timestamp) AT TIME ZONE current_setting('TimeZone')) > $2::timestamptz
      ORDER BY tv.effective_from, CASE WHEN tv.cargo_type_key=$1 THEN 0 ELSE 1 END`,
     [cargo.cargo_type_key, periodStart, periodEnd]
   );
@@ -327,11 +335,11 @@ const calculateStorageCharge = ({
   adjustmentsCents = 0n
 }) => {
   const chargeStartAt = normalizeTimestamp(cargo.charge_start_at || cargo.created_at);
-  const effectiveEnd = normalizeTimestamp(cargo.charge_end_at || cargo.released_at || chargeEndAt, new Date());
+  const effectiveEnd = normalizeTimestamp(cargo.storage_fully_paid_at || cargo.charge_end_at || cargo.released_at || chargeEndAt, new Date());
   const billableDays = calculateBillableDays({
     chargeStartAt,
     chargeEndAt: effectiveEnd,
-    minimumBillableDays: tariff.minimum_billable_days
+    minimumBillableDays: tariff.minimum_billable_days ?? tariff.min_days
   });
   const quantity = getCargoQuantityForUnit(cargo, tariff.charging_unit);
   const baseCents = multiplyRateByUnitsAndDays({
@@ -339,18 +347,9 @@ const calculateStorageCharge = ({
     units: quantity.units,
     billableDays
   });
-  const penaltyDays = Math.max(0, billableDays - (Number(tariff.grace_period_days) || 0));
-  let penaltyCents = 0n;
-
-  if (penaltyDays > 0 && tariff.penalty_type === "percentage") {
-    penaltyCents = percentageOfCents(baseCents, tariff.penalty_rate);
-  } else if (penaltyDays > 0 && tariff.penalty_type === "fixed") {
-    penaltyCents = multiplyRateByUnitsAndDays({
-      dailyRate: tariff.fixed_penalty,
-      units: "1",
-      billableDays: penaltyDays
-    });
-  }
+  // This helper calculates normal storage only. Verified-payment collection
+  // penalties are calculated centrally by getCargoFinancialSnapshot.
+  const penaltyCents = 0n;
 
   const totalCents = [baseCents, penaltyCents, BigInt(adjustmentsCents || 0)]
     .reduce((sum, value) => sum + value, 0n);
@@ -394,10 +393,47 @@ const getConfirmedPaidCentsForCargo = async (cargoId, executor = db) => {
   return centsFromAmount(result.rows[0]?.paid || 0);
 };
 
+// Called under invoice/cargo locks. Compare cumulative obligations with all
+// invoices so repeated reads and scheduler runs cannot bill the same day twice.
+const synchronizeAccruedInvoice = async ({cargo,charge,executor}) => {
+  const rows = (await executor.query("SELECT * FROM invoices WHERE cargo_id=$1 AND status NOT IN ('Cancelled','Draft') ORDER BY id",[cargo.id])).rows;
+  if (!rows.length) return;
+  const invoice=rows[rows.length-1];
+  let changed=false;
+  for (const [field,type,target] of [['base_charge','storage',charge.base_charge_cents],['penalties','penalty',charge.penalties_cents],['adjustments','adjustment',charge.adjustments_cents]]) {
+    const billed=rows.reduce((sum,row)=>sum+centsFromAmount(row[field]),0n);
+    const delta=target-billed;
+    if(delta<=0n) continue;
+    changed=true;
+    await executor.query(`UPDATE invoices SET ${field}=${field}+$2::numeric,total_amount=total_amount+$2::numeric,outstanding_balance=outstanding_balance+$2::numeric,updated_at=clock_timestamp() WHERE id=$1`,[invoice.id,amountFromCents(delta)]);
+    await executor.query(`INSERT INTO invoice_line_items(invoice_id,line_type,description,quantity,unit_rate,amount,metadata)
+      VALUES($1,$2,$3,1,$4,$4,$5::jsonb)`,[invoice.id,type,type==='penalty'?`Late collection penalty (${charge.late_collection_penalty_percent}% tariff uplift)`:type==='adjustment'?'Approved charge adjustment':'Additional daily storage',amountFromCents(delta),JSON.stringify({cumulative_amount:amountFromCents(target),fully_paid_at:cargo.fully_paid_at,late_collection_penalty_percent:charge.late_collection_penalty_percent})]);
+  }
+  await executor.query(`UPDATE invoices SET
+    billable_days=GREATEST(billable_days,$2),
+    billing_period_end=GREATEST(billing_period_end,$3::timestamptz AT TIME ZONE current_setting('TimeZone')),
+    calculation_snapshot=calculation_snapshot || $4::jsonb WHERE id=$1`,
+    [invoice.id,charge.billable_days,charge.charge_end_at,JSON.stringify({billable_days:charge.billable_days,storage_fully_paid_at:cargo.storage_fully_paid_at,fully_paid_at:cargo.fully_paid_at,penalties:charge.penalties,total_amount:charge.total_amount})]);
+  for (const row of rows) {
+    await refreshInvoicePaymentStatus({invoiceId:row.id,executor});
+  }
+  if(changed) await writeAuditLog({user_id:null,action:'ACCRUE_CARGO_CHARGES',module:'Billing and Payment',description:`Updated daily charges for ${cargo.cargo_id}.`,metadata:{system_actor:true,cargo_reference:cargo.cargo_id,total_amount:charge.total_amount,penalties:charge.penalties}},executor);
+};
+
 const getCargoFinancialSnapshot = async ({ cargoId, at = null, executor = db }) => {
-  const cargoResult = await executor.query("SELECT * FROM cargo WHERE id = $1 LIMIT 1", [cargoId]);
+  if (executor === db) {
+    const client = await db.pool.connect();
+    try { await client.query('BEGIN'); const result = await getCargoFinancialSnapshot({cargoId,at,executor:client}); await client.query('COMMIT'); return result; }
+    catch(error) { await client.query('ROLLBACK'); throw error; }
+    finally { client.release(); }
+  }
+  const cargoResult = await executor.query(`SELECT *,charge_start_at AT TIME ZONE current_setting('TimeZone') AS charge_start_at,
+    charge_end_at AT TIME ZONE current_setting('TimeZone') AS charge_end_at,
+    released_at AT TIME ZONE current_setting('TimeZone') AS released_at
+    FROM cargo WHERE id = $1 LIMIT 1 FOR UPDATE`, [cargoId]);
   const cargo = cargoResult.rows[0];
   if (!cargo) throw buildError("Cargo record not found.", 404);
+  await executor.query("SELECT id FROM invoices WHERE cargo_id=$1 AND status<>'Cancelled' ORDER BY id FOR UPDATE",[cargoId]);
 
   const calculationTime = at || await getServerNow(executor);
   if (cargo.management_release_status === "APPROVED") {
@@ -410,16 +446,40 @@ const getCargoFinancialSnapshot = async ({ cargoId, at = null, executor = db }) 
       management_release_status:"APPROVED",charge_treatment:"WAIVED_BY_MANAGEMENT_RELEASE",historical_accrued_amount:waived,waived_amount:waived
     };
   }
-  const adjustmentsCents = await getApprovedAdjustmentsCents({
-    cargoId: cargo.id,
-    periodStart: cargo.charge_start_at,
-    periodEnd: cargo.charge_end_at || calculationTime,
-    executor
+  const payments = await executor.query(`SELECT p.id, p.billing_verified_at AS paid_at, p.amount
+    FROM payments p JOIN invoices i ON i.id=p.invoice_id
+    WHERE i.cargo_id=$1 AND i.status<>'Cancelled' AND
+    ((p.gateway_provider='flutterwave' AND p.gateway_status='SUCCESSFUL' AND p.reconciliation_status='MATCHED')
+      OR (p.gateway_provider IS NULL AND p.status='Confirmed'))
+    ORDER BY p.billing_verified_at,p.id`, [cargo.id]);
+  const { calculateCollectionBilling } = require('./collectionBilling');
+  const billing = await calculateCollectionBilling({
+    payments: payments.rows.map(p => ({...p, cents:centsFromAmount(p.amount)})),
+    at: calculationTime, releasedAt:cargo.released_at || cargo.charge_end_at,
+    storageAt: async (end) => {
+      const start = new Date(cargo.charge_start_at || cargo.created_at);
+      const boundary = new Date(Math.max(start.getTime()+1, new Date(end).getTime()));
+      const adjustmentsCents = await getApprovedAdjustmentsCents({cargoId:cargo.id,periodStart:start,periodEnd:boundary,executor});
+      const storage = await calculateSegmentedStorageCharge({cargo,periodStart:start,periodEnd:boundary,adjustmentsCents,executor});
+      const last = storage.segments[storage.segments.length-1];
+      storage.daily_cents = multiplyRateByUnitsAndDays({dailyRate:last.tariff.daily_rate,units:last.quantity_used,billableDays:1});
+      storage.late_collection_penalty_percent = last.tariff.late_collection_penalty_percent;
+      return storage;
+    }
   });
-  const charge = await calculateSegmentedStorageCharge({ cargo, periodStart:cargo.charge_start_at, periodEnd:cargo.charge_end_at || calculationTime, adjustmentsCents, executor });
-  const paidCents = await getConfirmedPaidCentsForCargo(cargo.id, executor);
+  const charge = {...billing.storage, penalties_cents:billing.penalties, penalties:amountFromCents(billing.penalties),total_cents:billing.total,total_amount:amountFromCents(billing.total)};
+  const paidCents = billing.paid;
+  const latestFullyPaidAt=billing.outstanding===0n?billing.fullyPaidAt:null;
+  await executor.query(`UPDATE cargo SET storage_fully_paid_at=$2,fully_paid_at=$3 WHERE id=$1`,[cargo.id,billing.firstPaidAt,latestFullyPaidAt]);
+  cargo.storage_fully_paid_at=billing.firstPaidAt;
+  cargo.fully_paid_at=latestFullyPaidAt;
+  await synchronizeAccruedInvoice({cargo,charge,executor});
+  const invoiceBalance=(await executor.query("SELECT COALESCE(SUM(outstanding_balance),0) balance FROM invoices WHERE cargo_id=$1 AND status NOT IN ('Cancelled','Draft')",[cargo.id])).rows[0]?.balance || 0;
+  const outstandingCents=billing.outstanding>centsFromAmount(invoiceBalance)?billing.outstanding:centsFromAmount(invoiceBalance);
+  const currentStatus=outstandingCents===0n?'Fully Paid':paidCents>0n?'Partially Paid':'Outstanding';
+  await executor.query(`UPDATE cargo SET financial_status=$2 WHERE id=$1 AND gate_out_status='Not Released'`,[cargo.id,currentStatus]);
+  cargo.financial_status=currentStatus;
   const managementReleased = cargo.management_release_status === "APPROVED";
-  const outstandingCents = managementReleased ? 0n : (charge.total_cents > paidCents ? charge.total_cents - paidCents : 0n);
 
   return {
     cargo,
@@ -614,19 +674,12 @@ const listCargoCharges = async ({ filters = {}, executor = db }) => {
     let tariffError = "";
 
     try {
-      tariff = await getApplicableTariff(row, row.charge_start_at, executor);
-      const adjustmentsCents = await getApprovedAdjustmentsCents({
-        cargoId: row.cargo_record_id,
-        periodStart: row.charge_start_at,
-        periodEnd: row.charge_end_at || now,
-        executor
-      });
-      charge = calculateStorageCharge({
-        cargo: row,
-        tariff,
-        chargeEndAt: row.charge_end_at || now,
-        adjustmentsCents
-      });
+      const snapshot = await getCargoFinancialSnapshot({cargoId:row.cargo_record_id,at:now,executor});
+      tariff = snapshot.tariff;
+      charge = snapshot.charge;
+      row.paid_amount = snapshot.amount_paid;
+      row.financial_status = snapshot.cargo.financial_status;
+      row.invoiced_amount=(await executor.query("SELECT COALESCE(SUM(total_amount),0) amount FROM invoices WHERE cargo_id=$1 AND status<>'Cancelled'",[row.cargo_record_id])).rows[0]?.amount || 0;
       const paidCents = centsFromAmount(row.paid_amount || 0);
       const outstandingCents = row.management_release_status === "APPROVED" ? 0n : (charge.total_cents > paidCents ? charge.total_cents - paidCents : 0n);
       billingStatus = outstandingCents === 0n ? "Fully Paid" : row.financial_status;
@@ -660,9 +713,9 @@ const listCargoCharges = async ({ filters = {}, executor = db }) => {
       charge_end_at: row.charge_end_at,
       current_calculation_date: row.charge_end_at || now,
       billable_days: charge?.billable_days || 0,
-      applied_tariff: charge?.tariff_name || null,
-      applied_tariff_rate: charge?.daily_rate || null,
-      charging_unit: charge?.charging_unit || null,
+      applied_tariff: tariff?.tariff_name || null,
+      applied_tariff_rate: tariff?.daily_rate || null,
+      charging_unit: tariff?.charging_unit || null,
       base_storage_charge: charge?.base_charge || "0.00",
       penalties: charge?.penalties || "0.00",
       adjustments: charge?.adjustments || "0.00",
@@ -691,7 +744,8 @@ const listCargoCharges = async ({ filters = {}, executor = db }) => {
 };
 
 const getFinanceDashboard = async ({ filters = {}, executor = db }) => {
-  const [invoiceCounts, totals, recentPayments, charges] = await Promise.all([
+  const charges = await listCargoCharges({ filters: { limit: 100 }, executor });
+  const [invoiceCounts, totals, recentPayments] = await Promise.all([
     executor.query(
       `SELECT status, COUNT(*)::int AS count
        FROM invoices
@@ -720,8 +774,7 @@ const getFinanceDashboard = async ({ filters = {}, executor = db }) => {
        WHERE p.status = 'Confirmed'
        ORDER BY p.confirmed_at DESC, p.id DESC
        LIMIT 8`
-    ),
-    listCargoCharges({ filters: { limit: 100 }, executor })
+    )
   ]);
 
   const invoiceMetric = Object.fromEntries(invoiceCounts.rows.map((row) => [row.status, row.count]));
@@ -875,12 +928,14 @@ const readTariffPayload = (payload) => {
 
   const dailyRateCents = centsFromAmount(payload.daily_rate);
   const penaltyRate = parseDecimalToScale(payload.penalty_rate || 0, DECIMAL_SCALE);
+  const latePenaltyPercent = parseDecimalToScale(payload.late_collection_penalty_percent, DECIMAL_SCALE);
   const fixedPenaltyCents = centsFromAmount(payload.fixed_penalty || 0);
   if (dailyRateCents < 0n || penaltyRate < 0n || fixedPenaltyCents < 0n) {
     throw buildError("Tariff rates and penalties cannot be negative.", 400);
   }
+  if(payload.late_collection_penalty_percent===undefined||payload.late_collection_penalty_percent===null||cleanString(payload.late_collection_penalty_percent)===""||latePenaltyPercent<0n||latePenaltyPercent>100n*DECIMAL_SCALE) throw buildError("Late-collection penalty percentage must be between 0 and 100.",400,null,"INVALID_LATE_PENALTY_PERCENT");
 
-  const minimumBillableDays = Math.max(Number(payload.minimum_billable_days) || 1, 1);
+  const minimumBillableDays = Math.max(Number((payload.minimum_billable_days ?? payload.min_days)) || 1, 1);
   const gracePeriodDays = Math.max(Number(payload.grace_period_days) || 0, 0);
   const penaltyType = ["none", "percentage", "fixed"].includes(payload.penalty_type)
     ? payload.penalty_type
@@ -898,6 +953,7 @@ const readTariffPayload = (payload) => {
     gracePeriodDays,
     penaltyType,
     penaltyRate: decimalStringFromScaled(penaltyRate, DECIMAL_SCALE),
+    latePenaltyPercent: decimalStringFromScaled(latePenaltyPercent, DECIMAL_SCALE),
     fixedPenalty: amountFromCents(fixedPenaltyCents),
     effectiveFrom,
     effectiveTo,
@@ -966,11 +1022,11 @@ const createTariffVersion = async ({ payload, auth, executor = db }) => {
     `INSERT INTO tariff_versions (
        public_reference, tariff_id, version_number, cargo_type, charging_unit, cargo_type_key, tariff_scope, calculator_key, configuration_status,
        daily_rate, currency, minimum_billable_days, grace_period_days,
-       penalty_type, penalty_rate, fixed_penalty, effective_from, effective_to,
+       penalty_type, penalty_rate, fixed_penalty, late_collection_penalty_percent, effective_from, effective_to,
        is_active, notes, created_by, activated_by, activated_at, approval_status, supporting_notes, minimum_charge
      )
-     VALUES ($1,$2,$3,$4,$5,$18,$19,'storage_started_day','ready',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::integer,
-             NULL,NULL,'DRAFT',$20,$21)
+     VALUES ($1,$2,$3,$4,$5,$19,$20,'storage_started_day','ready',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::integer,
+             NULL,NULL,'DRAFT',$21,$22)
      RETURNING *`,
     [
       versionRef,
@@ -985,6 +1041,7 @@ const createTariffVersion = async ({ payload, auth, executor = db }) => {
       data.penaltyType,
       data.penaltyRate,
       data.fixedPenalty,
+      data.latePenaltyPercent,
       data.effectiveFrom,
       data.effectiveTo,
       data.isActive,
@@ -1052,6 +1109,7 @@ const updateTariffVersion = async ({ tariffVersionReference, payload, auth, exec
     grace_period_days: payload.grace_period_days ?? existing.grace_period_days,
     penalty_type: payload.penalty_type ?? existing.penalty_type,
     penalty_rate: payload.penalty_rate ?? existing.penalty_rate,
+    late_collection_penalty_percent: payload.late_collection_penalty_percent ?? existing.late_collection_penalty_percent,
     fixed_penalty: payload.fixed_penalty ?? existing.fixed_penalty,
     effective_from: payload.effective_from ?? existing.effective_from,
     effective_to: Object.prototype.hasOwnProperty.call(payload, "effective_to") ? payload.effective_to : existing.effective_to,
@@ -1111,15 +1169,16 @@ const updateTariffVersion = async ({ tariffVersionReference, payload, auth, exec
          penalty_type = $7,
          penalty_rate = $8,
          fixed_penalty = $9,
-         effective_from = $10,
-         effective_to = $11,
-         notes = $12,
-         cargo_type_key = $14,
-         tariff_scope = $15,
+         late_collection_penalty_percent = $10,
+         effective_from = $11,
+         effective_to = $12,
+         notes = $13,
+         cargo_type_key = $15,
+         tariff_scope = $16,
          calculator_key = 'storage_started_day',
          configuration_status = 'ready',
          updated_at = CURRENT_TIMESTAMP
-     WHERE id = $13
+     WHERE id = $14
      RETURNING *`,
     [
       data.cargoType,
@@ -1131,6 +1190,7 @@ const updateTariffVersion = async ({ tariffVersionReference, payload, auth, exec
       data.penaltyType,
       data.penaltyRate,
       data.fixedPenalty,
+      data.latePenaltyPercent,
       data.effectiveFrom,
       data.effectiveTo,
       data.notes || null,
@@ -1233,7 +1293,7 @@ const buildInvoicePublicPayload = async (invoice, executor = db) => {
   );
   const payments = await executor.query(
     `SELECT public_reference, attempt_reference, amount, amount_received, status, gateway_status,
-            payment_date, confirmed_at, bank_name, bank_reference
+            reconciliation_status, failure_reason, verified_at,failed_at,payment_date, confirmed_at, bank_name, bank_reference
      FROM payments WHERE invoice_id=$1 ORDER BY created_at ASC,id ASC`,
     [invoice.id]
   );
@@ -1250,6 +1310,7 @@ const buildInvoicePublicPayload = async (invoice, executor = db) => {
     invoice_number: invoice.public_invoice_number,
     status: invoice.status,
     payment_status: invoice.payment_status,
+    fully_paid_at: invoice.fully_paid_at,
     payment_reference: invoice.payment_reference || null,
     cargo_approval_status: invoice.registration_status,
     customs_status: invoice.customs_status,
@@ -1298,8 +1359,13 @@ const createOrRegenerateDraftInvoice = async ({ payload, auth, executor = db }) 
   if (!cargo) throw buildError("Cargo record not found.", 404);
   if (cargo.management_release_status === "APPROVED") throw buildError("A payable invoice cannot be generated for Management Release cargo.",409,null,"MANAGEMENT_RELEASE_NO_CHARGES");
 
+  const current = await executor.query("SELECT public_invoice_number FROM invoices WHERE cargo_id=$1 AND status NOT IN ('Cancelled','Draft') ORDER BY id DESC LIMIT 1",[cargo.id]);
+  if(current.rows.length) {
+    await getCargoFinancialSnapshot({cargoId:cargo.id,executor});
+    return buildInvoicePublicPayload(await findInvoiceByNumber(executor,current.rows[0].public_invoice_number),executor);
+  }
   const now = await getServerNow(executor);
-  const requestedEnd = normalizeTimestamp(payload.billing_period_end);
+  const requestedEnd = null; // Billing boundaries are backend-owned.
   const releaseEnd = cargo.charge_end_at || cargo.released_at;
   const requestedBillingEnd = requestedEnd || releaseEnd || now;
   const chargeStart = normalizeTimestamp(cargo.charge_start_at || cargo.created_at);
@@ -1431,10 +1497,10 @@ const createOrRegenerateDraftInvoice = async ({ payload, auth, executor = db }) 
     invoiceResult = await executor.query(
       `UPDATE invoices
        SET tariff_version_id = $1,
-           billing_period_start = $2,
-           billing_period_end = $3,
-           charge_start_at = $4,
-           charge_end_at = $5,
+           billing_period_start = $2::timestamptz AT TIME ZONE current_setting('TimeZone'),
+           billing_period_end = $3::timestamptz AT TIME ZONE current_setting('TimeZone'),
+           charge_start_at = $4::timestamptz AT TIME ZONE current_setting('TimeZone'),
+           charge_end_at = $5::timestamptz AT TIME ZONE current_setting('TimeZone'),
            billable_days = $6,
            currency = $7,
            base_charge = $8,
@@ -1461,7 +1527,7 @@ const createOrRegenerateDraftInvoice = async ({ payload, auth, executor = db }) 
          currency, base_charge, penalties, adjustments, total_amount,
          outstanding_balance, tariff_snapshot, calculation_snapshot, generated_by
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17)
+       VALUES ($1,$2,$3,$4::timestamptz AT TIME ZONE current_setting('TimeZone'),$5::timestamptz AT TIME ZONE current_setting('TimeZone'),$6::timestamptz AT TIME ZONE current_setting('TimeZone'),$7::timestamptz AT TIME ZONE current_setting('TimeZone'),$8,$9,$10,$11,$12,$13,$14,$15::jsonb,$16::jsonb,$17)
        RETURNING *`,
       invoiceValues
     );
@@ -1610,6 +1676,8 @@ const refreshInvoicePaymentStatus = async ({ invoiceId, executor = db }) => {
          payment_status = $2,
          amount_paid = $3,
          outstanding_balance = $4,
+         fully_paid_at = CASE WHEN $2::varchar='Paid'::varchar THEN (SELECT MAX(billing_verified_at) FROM payments WHERE invoice_id=$5 AND
+             ((gateway_provider='flutterwave' AND gateway_status='SUCCESSFUL' AND reconciliation_status='MATCHED') OR (gateway_provider IS NULL AND status='Confirmed'))) ELSE NULL END,
          updated_at = CURRENT_TIMESTAMP
      WHERE id = $5
      RETURNING *`,
@@ -1696,6 +1764,7 @@ const recordPayment = async ({ payload, auth, executor = db }) => {
 };
 
 const confirmPayment = async ({ paymentReference, auth, executor=db }) => {
+  await executor.query("SELECT id FROM cargo WHERE id=(SELECT i.cargo_id FROM invoices i JOIN payments p ON p.invoice_id=i.id WHERE p.public_reference=$1) FOR UPDATE",[cleanString(paymentReference)]);
   const result=await executor.query(`SELECT p.*,i.public_invoice_number,i.cargo_id,i.status AS invoice_status,i.outstanding_balance,c.cargo_id AS cargo_reference FROM payments p JOIN invoices i ON i.id=p.invoice_id JOIN cargo c ON c.id=i.cargo_id WHERE p.public_reference=$1 FOR UPDATE OF p,i`,[cleanString(paymentReference)]);
   if (!result.rowCount) throw buildError("Payment not found.",404);
   const payment=result.rows[0];
@@ -1703,13 +1772,15 @@ const confirmPayment = async ({ paymentReference, auth, executor=db }) => {
   if (payment.status!=='Pending Confirmation') throw buildError("Only pending payments can be confirmed.",409);
   if (centsFromAmount(payment.amount)>centsFromAmount(payment.outstanding_balance)) throw buildError("Payment exceeds the current outstanding balance.",409);
   const confirmed=await executor.query(`UPDATE payments SET status='Confirmed',confirmed_by=$1,confirmed_at=CURRENT_TIMESTAMP WHERE id=$2 AND status='Pending Confirmation' RETURNING *`,[auth?.userId||null,payment.id]);
-  const invoice=await refreshInvoicePaymentStatus({invoiceId:payment.invoice_id,executor});
   const cargo=await updateCargoFinancialStatus({cargoId:payment.cargo_id,executor});
+  const invoice=await refreshInvoicePaymentStatus({invoiceId:payment.invoice_id,executor});
   await writeAuditLog({user_id:auth?.userId||null,action:'CONFIRM_PAYMENT',module:'Billing and Payment',description:`Confirmed payment ${payment.public_reference} for invoice ${payment.public_invoice_number}.`,metadata:{entity_reference:payment.public_reference,invoice_number:payment.public_invoice_number,cargo_reference:payment.cargo_reference,recorded_by:payment.recorded_by,confirmed_by:auth?.userId||null,amount:amountFromCents(centsFromAmount(payment.amount)),after:{invoice_status:invoice.status,outstanding_balance:invoice.outstanding_balance,cargo_financial_status:cargo.financial_status}}},executor);
   return {payment_reference:payment.public_reference,invoice_number:payment.public_invoice_number,cargo_reference:payment.cargo_reference,amount:amountFromCents(centsFromAmount(payment.amount)),status:'Confirmed',confirmed_at:confirmed.rows[0].confirmed_at,invoice_status:invoice.status,payment_status:invoice.payment_status,cargo_financial_status:cargo.financial_status};
 };
 
 const listInvoices = async ({ filters = {}, executor = db }) => {
+  const active=await executor.query("SELECT DISTINCT c.id FROM cargo c JOIN invoices i ON i.cargo_id=c.id WHERE c.is_deleted=FALSE AND c.gate_out_status='Not Released' AND i.status NOT IN ('Cancelled','Draft') ORDER BY c.id");
+  for(const row of active.rows) await getCargoFinancialSnapshot({cargoId:row.id,executor});
   const values = [];
   const clauses = [];
   if (filters.status) {
@@ -1737,7 +1808,7 @@ const listInvoices = async ({ filters = {}, executor = db }) => {
     values
   );
   const result = await executor.query(
-    `SELECT i.*, c.cargo_id AS cargo_reference, c.cargo_type, c.consignee_name, c.company_name,c.email AS customer_email,
+    `SELECT i.*, c.cargo_id AS cargo_reference, c.cargo_type, c.consignee_name, c.company_name,c.email AS customer_email,c.registration_status,
        COALESCE((SELECT COUNT(*) FROM payments p WHERE p.invoice_id=i.id),0)::int AS installment_count,
        ped.delivery_status AS email_delivery_status,ped.sent_at AS email_last_sent_at,ped.last_error AS email_last_error
      FROM invoices i
@@ -1757,8 +1828,8 @@ const listInvoices = async ({ filters = {}, executor = db }) => {
       owner_information: row.company_name || row.consignee_name,
       customer_email:row.customer_email,
       master_payment_reference:row.payment_reference,
-      payment_url:buildPaymentUrl(row.payment_public_token),
-      payment_link_status:row.payment_public_token?"Available":"Unavailable",
+      payment_url:row.status!=="Draft"&&row.registration_status==="Approved"?buildPaymentUrl(row.payment_public_token):null,
+      payment_link_status:row.status!=="Draft"&&row.registration_status==="Approved"&&row.payment_public_token?"Available":"Blocked",
       email_delivery_status:row.email_delivery_status||"NOT_QUEUED",
       email_last_sent_at:row.email_last_sent_at,
       email_last_error:row.email_last_error,
@@ -1782,8 +1853,11 @@ const listInvoices = async ({ filters = {}, executor = db }) => {
 };
 
 const getInvoiceDetails = async ({ invoiceNumber, executor = db }) => {
-  const invoice = await findInvoiceByNumber(executor, invoiceNumber);
+  let invoice = await findInvoiceByNumber(executor, invoiceNumber);
   if (!invoice) throw buildError("Invoice not found.", 404);
+  await require('./paymentService').reconcileInvoicePendingPayments({invoiceId:invoice.id,executor,waitForTerminalMs:5000});
+  await getCargoFinancialSnapshot({cargoId:invoice.cargo_id,executor});
+  invoice = await findInvoiceByNumber(executor, invoiceNumber);
   return buildInvoicePublicPayload(invoice, executor);
 };
 
@@ -1882,5 +1956,6 @@ module.exports = {
   setTariffVersionActiveState,
   updateCargoFinancialStatus,
   updateTariffVersion,
-  refreshInvoicePaymentStatus
+  refreshInvoicePaymentStatus,
+  readTariffPayload
 };

@@ -26,7 +26,7 @@ const storageStartedDay = Object.freeze({
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
       throw buildError("A valid billable tariff period is required.", 409);
     }
-    const billableDays = Math.max(Number(tariff.minimum_billable_days) || 1, Math.ceil((end - start) / DAY_MS));
+    const billableDays = Math.max(Number(tariff.minimum_billable_days ?? tariff.min_days) || 1, Math.ceil((end - start) / DAY_MS));
     let units = "1";
     let unitLabel = "cargo";
     if (tariff.charging_unit === "per_kilogram_per_day") { units = String(cargo.weight); unitLabel = "kg"; }

@@ -7,8 +7,8 @@ describe("Finance payment monitoring and email management", () => {
     const source = fs.readFileSync(path.join(process.cwd(), "src", "pages", "FinancePortal.jsx"), "utf8");
     expect(source).toContain("resendPaymentEmail");
     expect(source).toContain("Copy link");
-    expect(source).toContain("Resend email");
-    expect(source).toContain("Resending payment email…");
+    expect(source).toContain("Send email");
+    expect(source).toContain("Sending…");
     expect(source).toContain("Payment email sent.");
     expect(source).toContain("setTimeout(() => setResendNotice(null), 2000)");
     expect(source).toContain("master_payment_reference");

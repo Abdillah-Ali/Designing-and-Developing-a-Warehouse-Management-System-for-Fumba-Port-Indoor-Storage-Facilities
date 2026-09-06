@@ -38,6 +38,7 @@ import {
   getGateReleaseQueue,
   logout,
   requestEmergencyRelease
+  ,updateGatePresence
 } from "@/services/api";
 
 const inputClass = "h-9 w-full rounded border border-input bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring";
@@ -58,7 +59,7 @@ function formatMoney(value) {
 }
 
 function useLoad(loader, key = "") {
-  const [state, setState] = useState({ data: null, rows: [], loading: true, error: "" });
+  const [state, setState] = useState({ data: null, rows: [], pagination: null, loading: true, error: "" });
   const loaderRef = useRef(loader);
 
   useEffect(() => {
@@ -69,9 +70,9 @@ function useLoad(loader, key = "") {
     setState((current) => ({ ...current, loading: true, error: "" }));
     try {
       const response = await loaderRef.current();
-      setState({ data: response.data || null, rows: response.data || [], loading: false, error: "" });
+      setState({ data: response.data || null, rows: response.data || [], pagination: response.pagination || null, loading: false, error: "" });
     } catch (error) {
-      setState({ data: null, rows: [], loading: false, error: getErrorMessage(error) });
+      setState({ data: null, rows: [], pagination: null, loading: false, error: getErrorMessage(error) });
     }
   }, []);
 
@@ -151,10 +152,13 @@ function DashboardPage() {
 
 function ReleaseQueuePage() {
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const [message, setMessage] = useState("");
   const [releaseCargo, setReleaseCargo] = useState(null);
   const [emergencyCargo, setEmergencyCargo] = useState(null);
-  const data = useLoad(() => getGateReleaseQueue({ search }), `release-${search}`);
+  const [presenceCargo, setPresenceCargo] = useState(null);
+  const data = useLoad(() => getGateReleaseQueue({ search, page, page_size: pageSize }), `release-${search}-${page}-${pageSize}`);
 
   return (
     <>
@@ -175,22 +179,23 @@ function ReleaseQueuePage() {
               rows={data.rows || []}
               emptyTitle="No cargo in release queue"
               columns={[
+                { key: "queue_position", label: "FPFG", render: (row) => row.queue_position || "—" },
                 { key: "cargo_reference", label: "Cargo", className: "font-mono font-semibold" },
-                { key: "barcode", label: "Barcode", className: "font-mono" },
+                { key: "latest_fully_paid_at", label: "Latest Settlement", render: (row) => formatDateTime(row.latest_fully_paid_at) },
                 { key: "owner_information", label: "Owner" },
-                { key: "location", label: "Location", render: (row) => row.location || "Not placed" },
+                { key: "presence_status", label: "Presence", render: (row) => <div className="space-y-1"><StatusBadge tone={row.customer_present ? "success" : "muted"}>{row.presence_status}</StatusBadge><div>{formatDateTime(row.customer_present_at)}</div></div> },
                 { key: "customs_status", label: "Customs", render: (row) => <StatusBadge tone={statusTone(row.customs_status)}>{row.customs_status}</StatusBadge> },
-                { key: "financial_status", label: "Finance", render: (row) => <StatusBadge tone={statusTone(row.financial_status)}>{row.financial_status}</StatusBadge> },
-                { key: "management_release_status", label: "Release Path", render: (row) => row.management_release_status !== "NOT_REQUIRED" ? <StatusBadge tone={row.management_release_status === "APPROVED" ? "success" : "warning"}>Management — {row.management_release_status}</StatusBadge> : <StatusBadge tone="info">Normal Release</StatusBadge> },
-                { key: "dispatch_request_status", label: "Dispatch", render: (row) => <StatusBadge tone={statusTone(row.dispatch_request_status)}>{row.dispatch_request_status}</StatusBadge> },
-                { key: "eligibility", label: "Eligibility", render: (row) => row.release_eligibility?.eligible ? <StatusBadge tone="success">Ready</StatusBadge> : <StatusBadge tone="destructive">Blocked</StatusBadge> },
-                { key: "outstanding", label: "Outstanding", render: (row) => formatMoney(row.release_eligibility?.outstanding_amount) },
+                { key: "payment_status", label: "Payment", render: (row) => <div className="space-y-1"><StatusBadge tone={row.financially_cleared ? "success" : "destructive"}>{row.payment_status}</StatusBadge><div>Penalty: {row.penalty_status}</div><div>{formatMoney(row.outstanding_balance)}</div></div> },
+                { key: "queue_state", label: "Gate Status", render: (row) => <div className="space-y-1"><StatusBadge tone={row.allowed_to_gate_out ? "success" : row.financially_cleared ? "warning" : "destructive"}>{row.queue_state}</StatusBadge>{row.blocked_reason && <div>{row.blocked_reason}</div>}</div> },
                 {
                   key: "actions",
                   label: "Actions",
                   render: (row) => (
                     <div className="flex flex-wrap gap-1">
-                      <button type="button" disabled={!row.release_eligibility?.eligible} onClick={() => setReleaseCargo(row)} className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground disabled:cursor-not-allowed disabled:opacity-40">
+                      <button type="button" onClick={() => setPresenceCargo(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">
+                        Presence
+                      </button>
+                      <button type="button" disabled={!row.allowed_to_gate_out} onClick={() => setReleaseCargo(row)} className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground disabled:cursor-not-allowed disabled:opacity-40">
                         Gate Out
                       </button>
                       {!row.release_eligibility?.eligible && !row.release_eligibility?.blocked_requirements?.some((item) => item.requirement === "management_release") && (
@@ -202,6 +207,12 @@ function ReleaseQueuePage() {
                   )
                 }
               ]}
+              page={data.pagination?.page || page}
+              pageSize={data.pagination?.page_size || pageSize}
+              total={data.pagination?.total || 0}
+              onPageChange={setPage}
+              onPageSizeChange={setPageSize}
+              itemLabel="cargo"
             />
           </SectionCard>
         </div>
@@ -215,6 +226,7 @@ function ReleaseQueuePage() {
           await data.refresh();
         }}
       />
+      <PresenceDialog cargo={presenceCargo} onClose={() => setPresenceCargo(null)} onSaved={async (text) => { setMessage(text); setPresenceCargo(null); await data.refresh(); }} />
       <EmergencyRequestDialog
         cargo={emergencyCargo}
         onClose={() => setEmergencyCargo(null)}
@@ -224,6 +236,39 @@ function ReleaseQueuePage() {
         }}
       />
     </>
+  );
+}
+
+function PresenceDialog({ cargo, onClose, onSaved }) {
+  const [form, setForm] = useState({ status: "PRESENT_READY", collector_name: "", identity_type: "", identity_number: "", authorization_reference: "", reason: "" });
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    if (cargo) setForm({ status: cargo.customer_present ? "TEMPORARILY_UNAVAILABLE" : "PRESENT_READY", collector_name: cargo.collector_details?.collector_name || "", identity_type: cargo.collector_details?.identity_type || "", identity_number: cargo.collector_details?.identity_number || "", authorization_reference: cargo.collector_details?.authorization_reference || "", reason: "" });
+  }, [cargo]);
+  if (!cargo) return null;
+  const submit = async event => {
+    event.preventDefault(); setError(""); setSaving(true);
+    try { await updateGatePresence(cargo.cargo_reference, form); onSaved(`Customer presence updated for ${cargo.cargo_reference}.`); }
+    catch (submitError) { setError(getErrorMessage(submitError)); }
+    finally { setSaving(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+      <form onSubmit={submit} className="w-full max-w-lg rounded-md border border-border bg-card p-4 shadow-xl">
+        <div className="flex items-center justify-between"><div><div className="text-sm font-semibold">Customer Presence</div><div className="text-xs text-muted-foreground">{cargo.cargo_reference}</div></div><button type="button" onClick={onClose} className="rounded border border-border px-2 py-1 text-xs">Close</button></div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <label className="text-xs font-semibold">Status<select className={`${inputClass} mt-1`} value={form.status} onChange={event => setForm(current => ({...current,status:event.target.value}))}><option value="PRESENT_READY">Present and ready</option><option value="WAITING_FOR_CUSTOMER">Not present</option><option value="TEMPORARILY_UNAVAILABLE">Temporarily unavailable</option></select></label>
+          <label className="text-xs font-semibold">Collector name<input className={`${inputClass} mt-1`} value={form.collector_name} onChange={event => setForm(current => ({...current,collector_name:event.target.value}))} /></label>
+          <label className="text-xs font-semibold">Identity type<input className={`${inputClass} mt-1`} value={form.identity_type} onChange={event => setForm(current => ({...current,identity_type:event.target.value}))} /></label>
+          <label className="text-xs font-semibold">Identity number<input className={`${inputClass} mt-1`} value={form.identity_number} onChange={event => setForm(current => ({...current,identity_number:event.target.value}))} /></label>
+          <label className="text-xs font-semibold sm:col-span-2">Authorization reference<input className={`${inputClass} mt-1`} value={form.authorization_reference} onChange={event => setForm(current => ({...current,authorization_reference:event.target.value}))} /></label>
+          <label className="text-xs font-semibold sm:col-span-2">Reason{form.status !== "PRESENT_READY" && cargo.customer_present ? " (required)" : ""}<textarea className="mt-1 min-h-20 w-full rounded border border-input bg-background p-2 text-xs" value={form.reason} onChange={event => setForm(current => ({...current,reason:event.target.value}))} placeholder="Explain presence changes or temporary unavailability" /></label>
+        </div>
+        {error && <div className="mt-3 rounded border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">{error}</div>}
+        <div className="mt-4 flex justify-end"><button disabled={saving} className="rounded bg-info px-3 py-2 text-xs font-semibold text-info-foreground disabled:opacity-50">{saving ? "Saving…" : "Save presence"}</button></div>
+      </form>
+    </div>
   );
 }
 
@@ -377,7 +422,9 @@ function EmergencyRequestDialog({ cargo, onClose, onSaved }) {
 }
 
 function GateRecordsPage() {
-  const records = useLoad(() => getGateRecords(), "gate-records");
+  const [page,setPage]=useState(1);
+  const [pageSize,setPageSize]=useState(10);
+  const records = useLoad(() => getGateRecords({page,page_size:pageSize}), `gate-records-${page}-${pageSize}`);
   return (
     <>
       <PageHeader eyebrow="Gate" title="Gate-Out Records" description="Immutable gate-out history with public cargo and gate references." />
@@ -388,6 +435,11 @@ function GateRecordsPage() {
             error={records.error}
             rows={records.rows || []}
             emptyTitle="No gate-out records"
+            page={records.pagination?.page||page}
+            pageSize={records.pagination?.page_size||pageSize}
+            total={records.pagination?.total||0}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
             columns={[
               { key: "gate_out_reference", label: "Gate Ref", className: "font-mono font-semibold" },
               { key: "cargo_reference", label: "Cargo", className: "font-mono" },

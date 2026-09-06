@@ -271,6 +271,12 @@ const applySchema = async () => {
     await applySqlMigration(client, "039_payment_email_delivery.sql", await fs.readFile(paymentEmailDeliveryMigrationPath, "utf8"));
     await applySqlMigration(client, "040_public_payment_token_invariants.sql", await fs.readFile(publicPaymentTokenInvariantsMigrationPath, "utf8"));
     await applySqlMigration(client, "041_draft_invoice_payment_token_constraint.sql", await fs.readFile(draftInvoicePaymentTokenConstraintMigrationPath, "utf8"));
+    await applySqlMigration(client, "043_collection_billing.sql", await fs.readFile(path.join(__dirname, "migrations", "20260906_collection_billing.sql"), "utf8"));
+    await applySqlMigration(client, "044_billing_timestamp_precision.sql", await fs.readFile(path.join(__dirname, "migrations", "20260906_billing_timestamp_precision.sql"), "utf8"));
+    await applySqlMigration(client, "045_gate_fpfg_presence.sql", await fs.readFile(path.join(__dirname, "migrations", "20260906_gate_fpfg_presence.sql"), "utf8"));
+    await applySqlMigration(client, "046_gate_presence_state_split.sql", await fs.readFile(path.join(__dirname, "migrations", "20260906_gate_presence_state_split.sql"), "utf8"));
+    await applySqlMigration(client, "047_payment_settlement_timestamp.sql", await fs.readFile(path.join(__dirname, "migrations", "20260906_payment_settlement_timestamp.sql"), "utf8"));
+    await applySqlMigration(client, "048_configurable_late_penalty.sql", await fs.readFile(path.join(__dirname, "migrations", "20260906_configurable_late_penalty.sql"), "utf8"));
     await client.query(
       `INSERT INTO role_permissions (role_id, permission_key)
        SELECT r.id, p.permission_key

@@ -9,6 +9,7 @@ const {
   listEmergencyRequests,
   rejectEmergencyRequest,
   requestEmergencyRelease
+  ,updateCustomerPresence
 } = require("../controllers/gateController");
 const { requirePermission } = require("../middleware/authMiddleware");
 
@@ -18,6 +19,7 @@ router.get("/dashboard", requirePermission("gate.dashboard.view"), getDashboard)
 router.get("/release-queue", requirePermission("gate.release_queue.view"), getReleaseQueue);
 router.get("/records", requirePermission("gate.history.view"), getRecords);
 router.get("/cargo/:cargoReference/eligibility", requirePermission("gate.release.validate"), getEligibility);
+router.post("/cargo/:cargoReference/presence", requirePermission("gate.gate_out.confirm"), updateCustomerPresence);
 router.post("/cargo/:cargoReference/gate-out", requirePermission("gate.gate_out.confirm"), confirmGateOut);
 router.get("/emergency-requests", requirePermission("gate.history.view"), listEmergencyRequests);
 router.post("/emergency-requests", requirePermission("gate.emergency_release.request"), requestEmergencyRelease);

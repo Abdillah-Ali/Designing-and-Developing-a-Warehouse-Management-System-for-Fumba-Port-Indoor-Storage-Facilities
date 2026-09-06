@@ -5,9 +5,11 @@ const path=require("node:path");
 const payment=require("../services/paymentService");
 const { evaluate }=require("../services/releaseReadinessService");
 
-test("payment summary sums only verified matched installments and calculates the balance",async()=>{
+test("payment summary sums only verified matched installments and calculates the balance",async(t)=>{
+  t.mock.method(require('../services/financeService'),'getCargoFinancialSnapshot',async()=>({}));
   const executor={query:async(sql)=>{
-    if(sql.includes("FROM invoices i")) return {rows:[{id:1,public_invoice_number:"INV-1",payment_reference:"PAY-1",total_amount:"500000.00",currency:"TZS",status:"Partially Paid",payment_status:"Partially Paid",cargo_reference:"CRG-1"}],rowCount:1};
+    if(sql.includes("FROM invoices i")) return {rows:[{id:1,public_invoice_number:"INV-1",payment_reference:"PAY-1",total_amount:"500000.00",currency:"TZS",status:"Issued",payment_status:"Partially Paid",cargo_reference:"CRG-1",registration_status:"Approved"}],rowCount:1};
+    if(sql.includes('SELECT total_amount,status,payment_status')) return {rows:[{}],rowCount:1};
     assert.match(sql,/gateway_status='SUCCESSFUL'.*reconciliation_status='MATCHED'/s);
     return {rows:[{paid:"250000.00",installment_count:4}],rowCount:1};
   }};
@@ -18,8 +20,9 @@ test("payment summary sums only verified matched installments and calculates the
   assert.equal(result.installment_count,4);
 });
 
-test("final combined verified total maps to Fully Paid",async()=>{
-  const executor={query:async(sql)=>sql.includes("FROM invoices i")?{rows:[{id:1,public_invoice_number:"INV-1",payment_reference:"PAY-1",total_amount:"500000.00",currency:"TZS",cargo_reference:"CRG-1"}],rowCount:1}:{rows:[{paid:"500000.00",installment_count:3}],rowCount:1}};
+test("final combined verified total maps to Fully Paid",async(t)=>{
+  t.mock.method(require('../services/financeService'),'getCargoFinancialSnapshot',async()=>({}));
+  const executor={query:async(sql)=>sql.includes("FROM invoices i")?{rows:[{id:1,public_invoice_number:"INV-1",payment_reference:"PAY-1",total_amount:"500000.00",currency:"TZS",status:"Issued",cargo_reference:"CRG-1",registration_status:"Approved"}],rowCount:1}:{rows:[{paid:"500000.00",installment_count:3}],rowCount:1}};
   assert.equal((await payment.getPaymentSummary({paymentReference:"PAY-1",executor})).financial_status,"Fully Paid");
 });
 
