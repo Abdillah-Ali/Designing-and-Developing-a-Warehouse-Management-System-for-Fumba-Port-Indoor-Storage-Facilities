@@ -4,6 +4,7 @@ import { Navigate, NavLink, Route, Routes, useNavigate } from "react-router-dom"
 import { HeaderActions } from "@/components/wms/HeaderActions";
 import { NotificationsPage } from "@/components/wms/NotificationsPage";
 import { AccountProfilePage } from "@/components/wms/ProfilePage";
+import { CollapsibleSidebar } from "@/components/wms/CollapsibleSidebar";
 import { DataTable, ErrorState, OperationalStatCard, PageHeader, SectionCard } from "@/components/wms/OperationalUi";
 import { approveManagementRelease, getCargo, getCargoById, getManagementDashboard, getManagementReleaseRequests, rejectManagementRelease, logout, getManagementTariffApprovals, approveManagementTariff, rejectManagementTariff } from "@/services/api";
 import { ManagementReports } from "@/components/wms/ManagementReports";
@@ -82,14 +83,14 @@ function CargoOversight() {
 
 function TariffApprovals(){const [refresh,setRefresh]=useState(0);const state=useData(useCallback(()=>getManagementTariffApprovals({status:"PENDING_APPROVAL",refresh}),[refresh]));const act=async(row,approve)=>{const reason=approve?"":window.prompt("Rejection reason (required)","");if(!approve&&!reason?.trim())return;if(approve)await approveManagementTariff(row.public_reference);else await rejectManagementTariff(row.public_reference,reason);setRefresh(v=>v+1)};return <><PageHeader eyebrow="Management" title="Tariff Approval Requests" description="Compare proposed rates and independently approve or reject Finance submissions."/><div className="flex-1 overflow-auto p-4"><SectionCard title="Pending tariff versions"><DataTable loading={state.loading} error={state.error} rows={state.data||[]} emptyTitle="No pending tariffs" columns={[{key:"public_reference",label:"Tariff Version"},{key:"tariff_name",label:"Name"},{key:"cargo_type",label:"Cargo Type"},{key:"charging_unit",label:"Basis"},{key:"currency",label:"Currency"},{key:"daily_rate",label:"Proposed Rate"},{key:"late_collection_penalty_percent",label:"Late Penalty",render:r=>`${r.late_collection_penalty_percent}%`},{key:"existing_approved_rate",label:"Existing Rate"},{key:"minimum_charge",label:"Minimum"},{key:"effective_from",label:"Effective"},{key:"submitted_by_name",label:"Submitted By"},{key:"supporting_notes",label:"Notes"},{key:"actions",label:"Decision",render:r=><div className="flex gap-2"><button onClick={()=>act(r,true)} className="rounded bg-success px-2 py-1 text-xs text-success-foreground">Approve</button><button onClick={()=>act(r,false)} className="rounded bg-destructive px-2 py-1 text-xs text-destructive-foreground">Reject</button></div>}]}/></SectionCard></div></>}
 
-export default function ManagementPortal() {
+function ManagementSidebar() {
   const navigate = useNavigate();
+  return <CollapsibleSidebar navigation={navigation} basePath="/management" role="Management" consoleName="Executive Console" onExit={async () => { await logout(); navigate("/"); }} />;
+}
+
+export default function ManagementPortal() {
   return <div className="flex h-screen bg-background">
-    <aside className="flex w-64 flex-col border-r bg-sidebar text-sidebar-foreground">
-      <div className="border-b p-4"><div className="text-xs uppercase opacity-60">Management</div><div className="font-semibold">Executive Console</div></div>
-      <nav className="flex-1 py-2">{navigation.map((item) => <NavLink key={item.to} to={item.to} end={item.to === "/management"} className="flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-sidebar-accent"><item.icon className="h-4 w-4" />{item.label}</NavLink>)}</nav>
-      <button className="m-3 flex items-center justify-center gap-2 rounded border p-2 text-xs" onClick={async()=>{await logout();navigate("/");}}><LogOut className="h-4 w-4"/>Exit</button>
-    </aside>
+    <ManagementSidebar />
     <div className="flex min-w-0 flex-1 flex-col"><header className="flex h-14 items-center justify-between bg-header px-5 text-header-foreground"><span className="font-semibold">Fumba Port WMS</span><HeaderActions /></header>
       <Routes><Route index element={<Dashboard/>}/><Route path="dashboard" element={<Dashboard/>}/><Route path="cargo" element={<CargoOversight/>}/><Route path="reports" element={<Reports/>}/><Route path="release-requests" element={<ReleaseRequests/>}/><Route path="tariff-approvals" element={<TariffApprovals/>}/><Route path="notifications" element={<NotificationsPage/>}/><Route path="profile" element={<AccountProfilePage/>}/><Route path="*" element={<Navigate to="/management" replace/>}/></Routes>
     </div>

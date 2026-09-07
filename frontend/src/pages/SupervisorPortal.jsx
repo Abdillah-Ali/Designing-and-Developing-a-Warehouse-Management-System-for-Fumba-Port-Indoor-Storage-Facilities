@@ -39,6 +39,7 @@ import { HeaderActions } from "@/components/wms/HeaderActions";
 import { RoleReports } from "@/components/wms/RoleReports";
 import { NotificationsPage } from "@/components/wms/NotificationsPage";
 import { AccountProfilePage } from "@/components/wms/ProfilePage";
+import { CollapsibleSidebar } from "@/components/wms/CollapsibleSidebar";
 import { cn } from "@/lib/utils";
 import {
   formatCount,
@@ -84,7 +85,7 @@ const navigation = [
       { label: "My Review History", icon: Activity, to: "/supervisor/cargo/review-history" },
       { label: "Cargo Records", icon: ClipboardList, to: "/supervisor/cargo/records" },
       { label: "Placement Activity", icon: ScanLine, to: "/supervisor/cargo/placement-monitoring" },
-      { label: "Exception Handling", icon: AlertTriangle, to: "/supervisor/cargo/exceptions" }
+      { label: "Placement Override Requests", icon: AlertTriangle, to: "/supervisor/cargo/exceptions" }
     ]
   },
   {
@@ -140,66 +141,7 @@ const normalizeCargoRefParam = (value) => {
 
 function SupervisorSidebar() {
   const navigate = useNavigate();
-  return (
-    <aside className="flex h-full w-64 shrink-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
-      <div className="border-b border-sidebar-border px-4 py-4">
-        <div className="text-[10px] uppercase tracking-widest text-sidebar-foreground/60">Warehouse Supervisor</div>
-        <div className="mt-1 text-sm font-semibold">Supervision Console</div>
-      </div>
-      <nav className="flex-1 overflow-auto py-2">
-        {navigation.map((item) => (
-          <div key={item.label} className={item.children ? "py-1" : ""}>
-            {item.children ? (
-              <>
-                <div className="flex items-center gap-3 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-sidebar-foreground/60">
-                  <item.icon className="h-3.5 w-3.5" />
-                  {item.label}
-                </div>
-                {item.children.map((child) => (
-                  <NavLink
-                    key={child.to}
-                    to={child.to}
-                    className={({ isActive }) => cn(
-                      "relative flex items-center gap-3 px-4 py-2 pl-8 text-xs hover:bg-sidebar-accent",
-                      isActive && "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-                    )}
-                  >
-                    <child.icon className="h-3.5 w-3.5" />
-                    {child.label}
-                  </NavLink>
-                ))}
-              </>
-            ) : (
-              <NavLink
-                to={item.to}
-                end={item.to === "/supervisor"}
-                className={({ isActive }) => cn(
-                  "flex items-center gap-3 px-4 py-2.5 text-sm hover:bg-sidebar-accent",
-                  isActive && "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-                )}
-              >
-                <item.icon className="h-4 w-4" />
-                {item.label}
-              </NavLink>
-            )}
-          </div>
-        ))}
-      </nav>
-      <div className="border-t border-sidebar-border p-3">
-        <button
-          type="button"
-          onClick={async () => {
-            await logout();
-            navigate("/");
-          }}
-          className="flex w-full items-center justify-center gap-2 rounded border border-sidebar-border bg-sidebar-accent px-3 py-2 text-xs font-semibold"
-        >
-          <LogOut className="h-3.5 w-3.5" />
-          Exit
-        </button>
-      </div>
-    </aside>
-  );
+  return <CollapsibleSidebar navigation={navigation} basePath="/supervisor" role="Warehouse Supervisor" consoleName="Supervision Console" onExit={async () => { await logout(); navigate("/"); }} />;
 }
 
 function SupervisorLayout({ children }) {
@@ -394,7 +336,7 @@ function ApprovalsPage({ exceptionsOnly = false }) {
     <>
       <PageHeader
         eyebrow="Cargo Supervision"
-        title={exceptionsOnly ? "Exception Handling" : "Pending Cargo Approvals"}
+        title={exceptionsOnly ? "Placement Override Requests" : "Pending Cargo Approvals"}
         description={exceptionsOnly ? "Review requested placement overrides and recorded validation failures." : "Review registration accuracy and compliance independently from warehouse placement activity."}
       />
       <div className="flex-1 overflow-auto p-4">

@@ -20,6 +20,7 @@ import { HeaderActions } from "@/components/wms/HeaderActions";
 import { RoleReports } from "@/components/wms/RoleReports";
 import { NotificationsPage } from "@/components/wms/NotificationsPage";
 import { AccountProfilePage } from "@/components/wms/ProfilePage";
+import { CollapsibleSidebar } from "@/components/wms/CollapsibleSidebar";
 import {
   DataTable,
   ErrorState,
@@ -83,28 +84,7 @@ function useLoad(loader, key = "") {
 
 function CustomsSidebar() {
   const navigate = useNavigate();
-  return (
-    <aside className="flex h-full w-64 shrink-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
-      <div className="border-b border-sidebar-border px-4 py-4">
-        <div className="text-[10px] uppercase tracking-widest text-sidebar-foreground/60">Customs Officer</div>
-        <div className="mt-1 text-sm font-semibold">Inspection Console</div>
-      </div>
-      <nav className="flex-1 overflow-auto py-2">
-        {navigation.map((item) => (
-          <NavLink key={item.to} to={item.to} end={item.to === "/customs"} className={({ isActive }) => cn("flex items-center gap-3 px-4 py-2.5 text-sm transition hover:bg-sidebar-accent", isActive && "bg-sidebar-accent font-medium text-sidebar-accent-foreground")}>
-            <item.icon className="h-4 w-4" />
-            {item.label}
-          </NavLink>
-        ))}
-      </nav>
-      <div className="border-t border-sidebar-border p-3">
-        <button type="button" onClick={async () => { await logout(); navigate("/"); }} className="flex w-full items-center justify-center gap-2 rounded border border-sidebar-border bg-sidebar-accent px-3 py-2 text-xs font-semibold">
-          <LogOut className="h-3.5 w-3.5" />
-          Exit
-        </button>
-      </div>
-    </aside>
-  );
+  return <CollapsibleSidebar navigation={navigation} basePath="/customs" role="Customs Officer" consoleName="Inspection Console" onExit={async () => { await logout(); navigate("/"); }} />;
 }
 
 function CustomsLayout({ children }) {

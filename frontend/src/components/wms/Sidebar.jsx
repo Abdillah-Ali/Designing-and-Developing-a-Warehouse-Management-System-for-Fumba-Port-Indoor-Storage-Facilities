@@ -19,6 +19,7 @@ import {
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
 import { logout } from "@/services/api";
+import { CollapsibleSidebar } from "./CollapsibleSidebar";
 
 const staffBasePath = "/staff";
 
@@ -120,35 +121,7 @@ function NavItem({ item, nested = false }) {
 
 function WmsSidebar() {
   const navigate = useNavigate();
-
-  return (
-    <aside className="sticky top-0 h-full w-64 shrink-0 overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground flex flex-col">
-      <div className="border-b border-sidebar-border px-4 py-4">
-        <div className="text-[10px] uppercase tracking-widest text-sidebar-foreground/60">Warehouse Staff</div>
-        <div className="mt-1 text-sm font-semibold">Operational Console</div>
-      </div>
-      <nav className="flex-1 overflow-auto py-2">
-        {navigation.map((item) => (
-          <NavItem key={item.label} item={item} />
-        ))}
-      </nav>
-      <div className="border-t border-sidebar-border p-3">
-        <button
-          type="button"
-          onClick={async () => {
-            await logout();
-            navigate("/");
-          }}
-          className="flex w-full items-center justify-center gap-2 rounded-md border border-sidebar-border bg-sidebar-accent px-3 py-2 text-xs font-semibold text-sidebar-accent-foreground transition hover:bg-sidebar-accent/80"
-          aria-label="Exit warehouse staff console"
-        >
-          <LogOut className="h-3.5 w-3.5" />
-          Exit
-        </button>
-        <div className="mt-3 px-1 text-[11px] text-sidebar-foreground/60">Fumba Port WMS</div>
-      </div>
-    </aside>
-  );
+  return <CollapsibleSidebar navigation={navigation} basePath={staffBasePath} role="Warehouse Staff" consoleName="Operational Console" footerNote="Fumba Port WMS" onExit={async () => { await logout(); navigate("/"); }} />;
 }
 
 export { WmsSidebar };

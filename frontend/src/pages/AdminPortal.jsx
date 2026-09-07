@@ -69,6 +69,7 @@ import { HeaderActions } from "@/components/wms/HeaderActions";
 import { RoleReports } from "@/components/wms/RoleReports";
 import { NotificationsPage } from "@/components/wms/NotificationsPage";
 import { AccountProfilePage } from "@/components/wms/ProfilePage";
+import { CollapsibleSidebar } from "@/components/wms/CollapsibleSidebar";
 import { cn } from "@/lib/utils";
 import { getStoredAuthUserId } from "@/lib/portal-access";
 import {
@@ -522,46 +523,7 @@ function AdminNavItem({ item, nested = false, openSection, setOpenSection }) {
 
 function AdminSidebar() {
   const navigate = useNavigate();
-  const location = useLocation();
-  const [openSection, setOpenSection] = useState(() => getActiveSectionLabel(location));
-
-  useEffect(() => {
-    setOpenSection(getActiveSectionLabel(location));
-  }, [location]);
-
-  return (
-    <aside className="sticky top-0 flex h-full w-64 shrink-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground">
-      <div className="border-b border-sidebar-border px-3 py-3">
-        <div className="text-[10px] uppercase tracking-widest text-sidebar-foreground/60">System Administrator</div>
-        <div className="mt-1 text-sm font-semibold">WMS Control Console</div>
-      </div>
-      <nav className="min-h-0 flex-1 space-y-1 overflow-hidden px-2 py-2">
-        {adminNavigation.map((item) => (
-          <AdminNavItem
-            key={item.label}
-            item={item}
-            openSection={openSection}
-            setOpenSection={setOpenSection}
-          />
-        ))}
-      </nav>
-      <div className="border-t border-sidebar-border p-2.5">
-        <button
-          type="button"
-          onClick={async () => {
-            await logout();
-            navigate("/");
-          }}
-          className="flex w-full items-center justify-center gap-2 rounded-md border border-sidebar-border bg-sidebar-accent px-3 py-2 text-xs font-semibold text-sidebar-accent-foreground transition hover:bg-sidebar-accent/80"
-          aria-label="Exit system administrator console"
-        >
-          <LogOut className="h-3.5 w-3.5" />
-          Exit
-        </button>
-        <div className="mt-2 px-1 text-[10px] text-sidebar-foreground/60">Fumba Port WMS</div>
-      </div>
-    </aside>
-  );
+  return <CollapsibleSidebar navigation={adminNavigation} basePath="/admin" role="System Administrator" consoleName="WMS Control Console" footerNote="Fumba Port WMS" onExit={async () => { await logout(); navigate("/"); }} />;
 }
 
 function AdminHeader() {
