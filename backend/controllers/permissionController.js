@@ -8,6 +8,7 @@ const {
   loadRolePermissions
 } = require("../services/permissionService");
 const { readEscalationSettings } = require("../services/notificationScheduler");
+const { isRolePermissionAllowed } = require("../config/rolePermissionPolicy");
 
 const sendRows = (res, result) => res.json({
   success: true,
@@ -108,19 +109,23 @@ const updateAdminRolePermissions = async (req, res, next) => {
     if (unknown.length > 0) {
       throw buildError(`Unknown permission keys: ${unknown.join(", ")}`, 400);
     }
+    const unsupported = requestedKeys.filter((key) => !isRolePermissionAllowed(role.role_key, key));
+    if (unsupported.length) {
+      throw buildError(`Permissions outside ${role.role_name}'s duties: ${unsupported.join(", ")}`, 409, undefined, "RBAC_ROLE_PERMISSION_UNSUPPORTED");
+    }
 
     const existingResult = await client.query(
       "SELECT permission_key FROM role_permissions WHERE role_id = $1",
       [role.id]
     );
     const existingKeys = existingResult.rows.map((row) => row.permission_key);
-    const protectedExisting = existingKeys.filter((key) => permissionMap.get(key)?.system_protected);
+    const protectedExisting = existingKeys.filter((key) => permissionMap.get(key)?.system_protected && isRolePermissionAllowed(role.role_key, key));
     const finalKeys = Array.from(new Set([...requestedKeys, ...protectedExisting]));
 
     if (role.role_key === "scanner" && finalKeys.length > 0) {
       throw buildError("Scanner identity permissions cannot be changed through portal RBAC.", 409, undefined, "RBAC_SCANNER_BOUNDARY_PROTECTED");
     }
-    if (role.role_key === "management" && finalKeys.some((key) => !key.endsWith(".view") && !["notifications.manage","management_release.decide"].includes(key))) {
+    if (role.role_key === "management" && finalKeys.some((key) => !key.endsWith(".view") && !["notifications.manage","management_release.decide","management.tariffs.decide"].includes(key))) {
       throw buildError("Management must remain read-only.", 409, undefined, "RBAC_MANAGEMENT_READ_ONLY");
     }
     if (role.role_key === "system_administrator" && !finalKeys.includes("system.permissions.manage")) {

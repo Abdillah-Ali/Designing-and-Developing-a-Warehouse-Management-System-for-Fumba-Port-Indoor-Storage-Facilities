@@ -21,6 +21,7 @@ const NOTE_REQUIRED_STATUSES = new Set(["Documents Required", "On Hold", "Reject
 const cleanString = (value) => String(value ?? "").trim();
 
 const { logEvent } = require("../utils/logger");
+const { getCargoDocumentContent } = require("./cargoController");
 
 const runCustomsWrite = (executor, sql, params) => {
   logEvent("info", { operation: "customs_write", result: "attempted" });
@@ -152,6 +153,7 @@ const listCargo = async (req, res, next, fixedStatus = "") => {
   try {
     const values = [];
     const clauses = ["c.is_deleted = FALSE"];
+    if (req.query.eligible_only === "true") clauses.push("c.registration_status = 'Approved'");
     const status = fixedStatus || req.query.status;
     if (status) {
       values.push(status);
@@ -200,8 +202,33 @@ const listCargo = async (req, res, next, fixedStatus = "") => {
   }
 };
 
-const getQueue = (req, res, next) => listCargo(req, res, next);
-const getRecords = (req, res, next) => listCargo(req, res, next);
+const getQueue = (req, res, next) => {
+  req.query.status = "Pending Inspection";
+  req.query.eligible_only = "true";
+  return listCargo(req, res, next);
+};
+const getRecords = async (req, res, next) => {
+  try {
+    const values = [];
+    const clauses = ["c.is_deleted=FALSE"];
+    if (req.query.search) {
+      values.push(`%${req.query.search}%`);
+      clauses.push(`(c.cargo_id ILIKE $${values.length} OR c.barcode ILIKE $${values.length} OR c.consignee_name ILIKE $${values.length} OR c.delivery_note_number ILIKE $${values.length})`);
+    }
+    const result = await db.query(
+      `SELECT c.cargo_id AS cargo_reference,c.barcode,COALESCE(c.company_name,c.consignee_name) AS owner_information,
+              c.cargo_type,c.customs_status,c.customs_status_key,c.location,c.created_at AS registration_date,
+              cr.public_reference AS inspection_reference,cr.status AS inspection_status,cr.inspection_started_at,
+              cr.inspection_completed_at,cr.inspection_type,cr.inspection_result,cr.document_verification,
+              cr.inspection_notes,COALESCE(u.full_name,u.username) AS inspector_name
+       FROM customs_records cr JOIN cargo c ON c.id=cr.cargo_id
+       LEFT JOIN users u ON u.id=cr.officer_id
+       WHERE ${clauses.join(" AND ")}
+       ORDER BY COALESCE(cr.updated_at,cr.created_at) DESC,cr.id DESC`, values
+    );
+    res.json({ success:true, count:result.rowCount, data:result.rows });
+  } catch (error) { next(error); }
+};
 const getCleared = (req, res, next) => listCargo(req, res, next, "Cleared");
 const getHolds = (req, res, next) => listCargo(req, res, next, "On Hold");
 
@@ -216,6 +243,12 @@ const getCargo = async (req, res, next) => {
     );
     if (result.rowCount === 0) throw buildError("Cargo record not found.", 404);
     const data=toCustomsCargo(result.rows[0]);
+    const documents = await db.query(
+      `SELECT id, file_name, file_type, file_size, uploaded_at
+       FROM cargo_documents WHERE cargo_id=$1 ORDER BY uploaded_at DESC, id DESC`,
+      [result.rows[0].cargo_record_id]
+    );
+    data.documents = documents.rows;
     data.customs_state_key=result.rows[0].customs_status_key;
     data.allowed_actions=await getAllowedCustomsActions({cargo:result.rows[0],actor:req.auth});
     res.json({ success: true, data });
@@ -373,12 +406,29 @@ const updateStatus = async (req, res, next) => {
     const result=await withTransaction(async(client)=>{const changed=await transitionCustoms({cargoReference:req.params.cargoReference,transitionKey,actor:req.auth,input:{notes:req.body.notes,documents_requested:req.body.documents_requested,confirmed:req.body.confirmed===true||req.body.confirm===true,expected_state_key:req.body.expected_state_key},executor:client});
       const { recalculateReleaseReadiness }=require("../services/releaseReadinessService");
       if(changed.cargo.customs_status==='Rejected') { const { cancelRegistrationInvoice }=require("../services/paymentService"); await cancelRegistrationInvoice({cargoReference:changed.cargo.cargo_id,reason:"Cargo rejected by Customs.",executor:client}); }
+      await client.query(
+        `UPDATE customs_records SET
+          inspection_type=COALESCE($1,inspection_type),
+          document_verification=COALESCE($2,document_verification),
+          inspection_result=COALESCE($3,inspection_result),
+          hold_reason=CASE WHEN $4='place_on_hold' THEN $5 ELSE hold_reason END,
+          hold_released_at=CASE WHEN $4='release_hold' THEN CURRENT_TIMESTAMP ELSE hold_released_at END,
+          hold_released_by=CASE WHEN $4='release_hold' THEN $6 ELSE hold_released_by END,
+          hold_release_reason=CASE WHEN $4='release_hold' THEN $5 ELSE hold_release_reason END
+         WHERE cargo_id=$7`,
+        [cleanString(req.body.inspection_type)||null, cleanString(req.body.document_verification)||null,
+          cleanString(req.body.inspection_result)||null, transitionKey, cleanString(req.body.notes)||null,
+          req.auth?.userId||null, changed.cargo.id]
+      );
       await recalculateReleaseReadiness({cargoId:changed.cargo.id,executor:client,actorId:req.auth?.userId,trigger:"CUSTOMS_STATUS_CHANGED"}); return changed;});
     res.json({success:true,data:{...toCustomsCargo({...result.cargo,latest_invoice_status:null,latest_payment_status:null,outstanding_balance:'0.00'}),customs_state_key:result.policy.to_state_key}});
   } catch (error) {
     handleCustomsUpdateError(error, next);
   }
 };
+
+// Customs may read registration evidence without receiving the wider cargo module.
+const getDocumentContent = (req, res, next) => getCargoDocumentContent(req, res, next);
 
 module.exports = {
   getCargo,
@@ -388,6 +438,7 @@ module.exports = {
   getHolds,
   getQueue,
   getRecords,
+  getDocumentContent,
   startInspection,
   updateStatus
 };

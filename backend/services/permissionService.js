@@ -1,4 +1,5 @@
 const db = require("../config/db");
+const { isRolePermissionAllowed } = require("../config/rolePermissionPolicy");
 
 const cache = new Map();
 
@@ -15,13 +16,16 @@ const loadRolePermissions = async (roleId, executor = db) => {
   if (!Number.isInteger(numericRoleId) || numericRoleId <= 0) return [];
 
   const result = await executor.query(
-    `SELECT rp.permission_key
+    `SELECT rp.permission_key, r.role_key
      FROM role_permissions rp
+     JOIN roles r ON r.id = rp.role_id
      WHERE rp.role_id = $1
      ORDER BY rp.permission_key`,
     [numericRoleId]
   );
-  const permissions = result.rows.map((row) => row.permission_key);
+  const permissions = result.rows
+    .filter((row) => isRolePermissionAllowed(row.role_key, row.permission_key))
+    .map((row) => row.permission_key);
   cache.set(numericRoleId, { permissions });
   return permissions;
 };
@@ -40,7 +44,7 @@ const listPermissions = async (executor = db) => {
 };
 
 const getRolePermissions = async (roleReference, executor = db) => {
-  return executor.query(
+  const result = await executor.query(
     `SELECT
        r.id,
        r.public_reference,
@@ -59,6 +63,15 @@ const getRolePermissions = async (roleReference, executor = db) => {
      GROUP BY r.id`,
     [roleReference]
   );
+  if (result.rowCount) {
+    const catalog = await listPermissions(executor);
+    for (const role of result.rows) {
+      role.assignable_permission_keys = catalog.rows
+        .filter((permission) => isRolePermissionAllowed(role.role_key, permission.permission_key))
+        .map((permission) => permission.permission_key);
+    }
+  }
+  return result;
 };
 
 module.exports = {

@@ -55,6 +55,7 @@ describe("portal access", () => {
     expect(isPathAllowedForRole(PORTAL_ROLES.WAREHOUSE_STAFF, "/staff/cargo/registration")).toBe(true);
     expect(isPathAllowedForRole(PORTAL_ROLES.WAREHOUSE_STAFF, "/staff/cargo/registration-reviews")).toBe(true);
     expect(isPathAllowedForRole(PORTAL_ROLES.WAREHOUSE_STAFF, "/staff/cargo/placement-queue")).toBe(true);
+    expect(isPathAllowedForRole(PORTAL_ROLES.WAREHOUSE_STAFF, "/staff/cargo/registered")).toBe(true);
     expect(isPathAllowedForRole(PORTAL_ROLES.WAREHOUSE_STAFF, "/admin/cargo/registration")).toBe(false);
     expect(isPathAllowedForRole(PORTAL_ROLES.WAREHOUSE_STAFF, "/admin/system/users")).toBe(false);
 

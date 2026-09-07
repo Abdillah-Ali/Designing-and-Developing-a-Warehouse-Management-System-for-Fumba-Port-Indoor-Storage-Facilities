@@ -14,6 +14,7 @@ test("protected routes resolve to stable permission keys and unknown routes fail
   assert.equal(getRoutePermission("POST", "/payments/invoices/INV-2026-TEST/payment-email/resend"), "finance.payments.initiate");
   assert.equal(getRoutePermission("POST", "/customs/cargo/CARGO-1/status"), "customs.clearance.update");
   assert.equal(getRoutePermission("POST", "/gate/cargo/CARGO-1/gate-out"), "gate.gate_out.confirm");
+  assert.equal(getRoutePermission("GET", "/customs/cargo/CARGO-1/documents/42/content"), "customs.cargo.view");
   assert.equal(getRoutePermission("POST", "/unknown-operation"), null);
   assert.equal(new Set(referencedPermissions).size, referencedPermissions.length);
 });
@@ -31,7 +32,7 @@ test("permission middleware authorizes current permissions rather than role labe
 
 test("permission changes are visible on the next load for an active role", async () => {
   let assigned = ["cargo.register"];
-  const executor = { async query() { return { rows: assigned.map((permission_key) => ({ permission_key })) }; } };
+  const executor = { async query() { return { rows: assigned.map((permission_key) => ({ permission_key, role_key: "warehouse_staff" })) }; } };
   assert.equal(hasPermission({ permissions: await loadRolePermissions(2, executor) }, "cargo.register"), true);
   assigned = [];
   assert.equal(hasPermission({ permissions: await loadRolePermissions(2, executor) }, "cargo.register"), false);

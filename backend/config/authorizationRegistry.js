@@ -41,6 +41,7 @@ const AUTHORIZATION_ROUTES = Object.freeze([
   route(["GET", "POST"], /^\/finance\/payments$/, "finance.payments.record"), route(["POST"], /^\/finance\/payments\/[^/]+\/confirm$/, "finance.payments.confirm"), route(["GET"], /^\/finance\/reports$/, "finance.reports.view"),
   route(["GET"], /^\/customs\/dashboard$/, "customs.dashboard.view"), route(["GET"], /^\/customs\/(?:queue|records|cleared|holds)$/, "customs.cargo.view"),
   route(["GET"], /^\/customs\/cargo\/[^/]+$/, "customs.cargo.view"), route(["GET"], /^\/customs\/cargo\/[^/]+\/history$/, "customs.history.view"),
+  route(["GET"], /^\/customs\/cargo\/[^/]+\/documents\/[^/]+\/content$/, "customs.cargo.view"),
   route(["POST"], /^\/customs\/cargo\/[^/]+\/start$/, "customs.inspections.create"), route(["POST"], /^\/customs\/cargo\/[^/]+\/status$/, "customs.clearance.update"),
   route(["GET"], /^\/gate\/dashboard$/, "gate.dashboard.view"), route(["GET"], /^\/gate\/release-queue$/, "gate.release_queue.view"),
   route(["GET"], /^\/gate\/records$/, "gate.history.view"), route(["GET"], /^\/gate\/cargo\/[^/]+\/eligibility$/, "gate.release.validate"),

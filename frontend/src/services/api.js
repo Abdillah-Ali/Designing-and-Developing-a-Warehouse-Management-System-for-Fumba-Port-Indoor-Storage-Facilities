@@ -786,6 +786,7 @@ export const getCustomsCleared = (params = {}) => request(`/customs/cleared${bui
 export const getCustomsHolds = (params = {}) => request(`/customs/holds${buildQuerySuffix(params)}`);
 export const getCustomsCargo = (cargoReference) => request(`/customs/cargo/${encodeURIComponent(cargoReference)}`);
 export const getCustomsHistory = (cargoReference) => request(`/customs/cargo/${encodeURIComponent(cargoReference)}/history`);
+export const getCustomsDocumentContent = (cargoReference, documentId) => request(`/customs/cargo/${encodeURIComponent(cargoReference)}/documents/${encodeURIComponent(documentId)}/content`);
 export const startCustomsInspection = (cargoReference, payload = {}) => request(`/customs/cargo/${encodeURIComponent(cargoReference)}/start`, {
   method: "POST",
   body: payload

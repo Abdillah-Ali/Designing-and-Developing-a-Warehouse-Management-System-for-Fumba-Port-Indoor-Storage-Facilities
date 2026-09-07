@@ -1,3 +1,4 @@
+import { RolePermissionTable } from "@/components/wms/RolePermissionTable";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
@@ -1771,6 +1772,8 @@ function RolesPermissionsPage() {
   const roleRows = roles.rows;
   const [selectedRole, setSelectedRole] = useState("");
   const [assigned, setAssigned] = useState([]);
+  const [allowedKeys, setAllowedKeys] = useState([]);
+  const [loadedRole, setLoadedRole] = useState("");
   const [loadingAssigned, setLoadingAssigned] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -1788,7 +1791,11 @@ function RolesPermissionsPage() {
     setError("");
     getAdminRolePermissions(selectedRole)
       .then((response) => {
-        if (!cancelled) setAssigned(response.data?.permission_keys || []);
+        if (!cancelled) {
+          setAssigned(response.data?.permission_keys || []);
+          setAllowedKeys(response.data?.assignable_permission_keys || []);
+          setLoadedRole(selectedRole);
+        }
       })
       .catch((loadError) => {
         if (!cancelled) setError(getErrorMessage(loadError));
@@ -1802,6 +1809,7 @@ function RolesPermissionsPage() {
   }, [selectedRole]);
 
   const togglePermission = (permissionKey) => {
+    if (loadedRole !== selectedRole || saving || !allowedKeys.includes(permissionKey)) return;
     setAssigned((current) => (
       current.includes(permissionKey)
         ? current.filter((key) => key !== permissionKey)
@@ -1810,10 +1818,13 @@ function RolesPermissionsPage() {
   };
 
   const savePermissions = async () => {
+    if (loadedRole !== selectedRole || loadingAssigned || saving) return;
     setSaving(true);
     setError("");
     try {
-      await updateAdminRolePermissions(selectedRole, assigned);
+      const response = await updateAdminRolePermissions(selectedRole, assigned.filter((key) => allowedKeys.includes(key)));
+      setAssigned(response.data?.permission_keys || []);
+      setAllowedKeys(response.data?.assignable_permission_keys || []);
       toast.success("Role permissions updated.");
     } catch (saveError) {
       setError(getErrorMessage(saveError));
@@ -1829,7 +1840,7 @@ function RolesPermissionsPage() {
       <PageHeader
         eyebrow="System Management"
         title="Roles & Permissions"
-        description="Database-backed role permissions for WMS modules and operational actions."
+        description="Enable or disable permissions within each role's supported duties. Permissions do not add new duties or pages to a role."
       />
       <div className="flex-1 overflow-auto p-4">
         <div className="grid gap-3 xl:grid-cols-[280px_1fr]">
@@ -1844,6 +1855,7 @@ function RolesPermissionsPage() {
                   <button
                     type="button"
                     key={role.public_reference || role.role_name}
+                    disabled={saving}
                     onClick={() => setSelectedRole(role.public_reference)}
                     className={cn(
                       "w-full rounded border border-border bg-muted/20 px-3 py-2 text-left text-xs",
@@ -1860,33 +1872,20 @@ function RolesPermissionsPage() {
           </SectionCard>
           <SectionCard title={`Permissions for ${selectedRoleName}`} icon={KeyRound}>
             {error && <div className="mb-3"><ErrorState message={error} /></div>}
-            <DataTable
-              loading={permissions.loading || loadingAssigned}
-              error={permissions.error}
-              rows={permissions.rows}
-              emptyTitle="No permissions configured"
-              columns={[
-                { key: "module", label: "Module", className: "font-semibold" },
-                { key: "permission_key", label: "Permission", className: "font-mono" },
-                { key: "description", label: "Description" },
-                { key: "system_protected", label: "Protected", render: (row) => row.system_protected ? <StatusBadge tone="warning">Protected</StatusBadge> : <StatusBadge tone="muted">Configurable</StatusBadge> },
-                {
-                  key: "assigned",
-                  label: "Assigned",
-                  render: (row) => (
-                    <input
-                      type="checkbox"
-                      checked={assigned.includes(row.permission_key)}
-                      disabled={row.system_protected && assigned.includes(row.permission_key)}
-                      onChange={() => togglePermission(row.permission_key)}
-                      aria-label={`Toggle ${row.permission_key}`}
-                    />
-                  )
-                }
-              ]}
+            {loadedRole === selectedRole && assigned.some((key) => !allowedKeys.includes(key)) && (
+              <p className="mb-3 text-sm text-warning">Previously assigned permissions outside this role's duties are inactive and will be removed when you save.</p>
+            )}
+            <RolePermissionTable
+              permissions={permissions.rows}
+              allowedKeys={loadedRole === selectedRole ? allowedKeys : []}
+              assigned={assigned}
+              loading={permissions.loading || loadingAssigned || loadedRole !== selectedRole}
+              error={permissions.error || error}
+              disabled={saving}
+              onToggle={togglePermission}
             />
             <div className="mt-3 flex justify-end">
-              <ToolbarButton icon={saving ? Loader2 : Save} onClick={savePermissions} disabled={!selectedRole || saving}>
+              <ToolbarButton icon={saving ? Loader2 : Save} onClick={savePermissions} disabled={!selectedRole || saving || loadingAssigned || loadedRole !== selectedRole || permissions.loading || Boolean(permissions.error)}>
                 {saving ? "Saving..." : "Save Permissions"}
               </ToolbarButton>
             </div>

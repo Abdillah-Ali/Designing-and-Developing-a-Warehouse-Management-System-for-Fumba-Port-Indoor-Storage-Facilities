@@ -14,7 +14,11 @@ const getDashboard = async (_req, res, next) => {
         (SELECT COUNT(*)::int FROM cargo WHERE is_deleted = FALSE AND placement_status IN ('Placed','Relocated')) AS stored_cargo,
         (SELECT COUNT(*)::int FROM cargo WHERE is_deleted = FALSE AND gate_out_status = 'Released') AS released_cargo,
         (SELECT COALESCE(SUM(outstanding_balance),0)::numeric FROM invoices WHERE status <> 'Cancelled') AS outstanding_balance,
-        (SELECT COUNT(*)::int FROM cargo WHERE is_deleted = FALSE AND customs_status = 'On Hold') AS customs_holds`
+        (SELECT COUNT(*)::int FROM cargo WHERE is_deleted = FALSE AND customs_status = 'On Hold') AS customs_holds,
+        (SELECT COUNT(*)::int FROM cargo WHERE is_deleted = FALSE AND customs_status IN ('Pending Inspection','Inspection In Progress','Documents Required','On Hold')) AS customs_backlog,
+        (SELECT COUNT(*)::int FROM bins WHERE active = TRUE AND (status = 'Full' OR current_weight >= max_weight OR current_volume >= max_volume)) AS bins_at_capacity,
+        (SELECT COUNT(*)::int FROM invoices WHERE status <> 'Cancelled' AND outstanding_balance > 0) AS outstanding_invoices,
+        (SELECT COUNT(*)::int FROM cargo WHERE is_deleted = FALSE AND release_readiness_status = 'BLOCKED') AS blocked_releases`
     );
     res.json({ success: true, data: { metrics: result.rows[0] } });
   } catch (error) {

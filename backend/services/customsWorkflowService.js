@@ -2,7 +2,7 @@ const db=require('../config/db');
 const {executeTransition}=require('./cargoWorkflowEngine');
 const {buildError}=require('../utils/apiError');
 
-const STATUS_ACTIONS=Object.freeze({'Inspection In Progress':'start_inspection','Documents Required':'request_documents','On Hold':'place_on_hold','Cleared':'clear_customs','Rejected':'reject_customs'});
+const STATUS_ACTIONS=Object.freeze({'Inspection In Progress':'start_inspection','Documents Required':'request_documents','On Hold':'place_on_hold','Release Hold':'release_hold','Cleared':'clear_customs','Rejected':'reject_customs'});
 const transitionCustoms=async({cargoReference,transitionKey,actor,input={},executor})=>{
   const cargo=(await executor.query(`SELECT * FROM cargo WHERE (cargo_id=$1 OR barcode=$1 OR reference_number=$1) AND is_deleted=FALSE LIMIT 1 FOR UPDATE`,[cargoReference])).rows[0];
   if(!cargo) throw buildError('Cargo record not found.',404);

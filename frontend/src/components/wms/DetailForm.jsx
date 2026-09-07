@@ -6,7 +6,6 @@ import {
   FileText,
   FileWarning,
   History,
-  ListChecks,
   MapPin,
   PackageCheck,
   Printer,
@@ -39,6 +38,7 @@ import {
 import { BarcodeLabel, printBarcodeLabel } from "./BarcodeLabel";
 import { CollapsibleCard } from "./CollapsibleCard";
 import { EnterpriseModal } from "./EnterpriseModal";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const allowedFileTypes = new Set([
   "application/pdf",
@@ -343,20 +343,6 @@ function getRemainingCapacity(bin, field) {
   return Number.isFinite(remaining) ? remaining : null;
 }
 
-function checkMessage(validation, keys, fallback) {
-  const keyList = Array.isArray(keys) ? keys : [keys];
-  return keyList
-    .map((key) => validation?.checks?.[key]?.message)
-    .filter(Boolean)
-    .join(" ") || fallback;
-}
-
-function checkPassed(validation, keys, fallback = false) {
-  const keyList = Array.isArray(keys) ? keys : [keys];
-  if (!validation?.checks) return fallback;
-  return keyList.every((key) => validation.checks[key]?.passed !== false);
-}
-
 function cargoFieldConditionMatches(rule, values) {
   const controllingField = rule?.controlling_field_key || rule?.field;
   if (!controllingField) return true;
@@ -370,11 +356,11 @@ function cargoFieldConditionMatches(rule, values) {
 
 function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) {
   const [activeTab, setActiveTab] = useState(initialTab);
+  const [placementStep, setPlacementStep] = useState("cargo");
   const [formData, setFormData] = useState(initialCargoForm);
   const [registrationFields, setRegistrationFields] = useState([]);
   const [registrationFormLoading, setRegistrationFormLoading] = useState(true);
   const [registrationFormError, setRegistrationFormError] = useState("");
-  const [profileUser, setProfileUser] = useState(null);
   const [cargoRecords, setCargoRecords] = useState([]);
   const [barcodeModalCargo, setBarcodeModalCargo] = useState(null);
   const [cargoLoading, setCargoLoading] = useState(false);
@@ -410,8 +396,6 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
   const [placementSaving, setPlacementSaving] = useState(false);
   const [placementError, setPlacementError] = useState("");
   const [placementConfirmed, setPlacementConfirmed] = useState(false);
-  const [placementTime, setPlacementTime] = useState("");
-  const [placementActor, setPlacementActor] = useState("");
   const [placementNotice, setPlacementNotice] = useState(false);
   const [recommendation, setRecommendation] = useState(null);
   const [recommendationLoading, setRecommendationLoading] = useState(false);
@@ -427,8 +411,6 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
   const [trackingDetailLoading, setTrackingDetailLoading] = useState(false);
   const [trackingDetailError, setTrackingDetailError] = useState("");
   const [selectedTrackingCargoId, setSelectedTrackingCargoId] = useState("");
-  const [lastScanTime, setLastScanTime] = useState("");
-  const [scanEvents, setScanEvents] = useState([]);
   const [overrideSaving, setOverrideSaving] = useState(false);
   const [overrideNotice, setOverrideNotice] = useState("");
   const fileInput = useRef(null);
@@ -448,8 +430,6 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     const timer = window.setTimeout(() => cargoScanRef.current?.focus(), 0);
     return () => window.clearTimeout(timer);
   }, [initialCargoBarcode]);
-
-  const receivedAt = formatDateTime(formData.received_datetime);
 
   const refreshCargoRecords = async () => {
     setCargoLoading(true);
@@ -499,7 +479,6 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
       .then((response) => {
         const user = response.data?.user;
         if (!user) return;
-        setProfileUser(user);
         setFormData((current) => ({
           ...current,
           received_by: user.full_name || user.username || current.received_by
@@ -509,34 +488,9 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
   }, []);
 
   useEffect(() => {
-    const value = cargoBarcode.trim();
     setRecommendation(null);
-    setRecommendationError("");
-    if (!value) return undefined;
-    const timer = window.setTimeout(() => {
-      const scannedAt = new Date().toISOString();
-      setLastScanTime(scannedAt);
-      setScanEvents((current) => {
-        if (current.some((event) => event.type === "Cargo" && event.value === value)) return current;
-        return [...current, { type: "Cargo", value, scannedAt }].slice(-10);
-      });
-    }, 180);
-    return () => window.clearTimeout(timer);
+    setRecommendationError("" );
   }, [cargoBarcode]);
-
-  useEffect(() => {
-    const value = binBarcode.trim();
-    if (!value) return undefined;
-    const timer = window.setTimeout(() => {
-      const scannedAt = new Date().toISOString();
-      setLastScanTime(scannedAt);
-      setScanEvents((current) => {
-        if (current.some((event) => event.type === "Bin" && event.value === value)) return current;
-        return [...current, { type: "Bin", value, scannedAt }].slice(-10);
-      });
-    }, 180);
-    return () => window.clearTimeout(timer);
-  }, [binBarcode]);
 
   useEffect(() => {
     if (!selectedZone && zones.length > 0) {
@@ -762,14 +716,6 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     };
   }, [binBarcode, cargoBarcode, placementValidation, validationError, validationLoading]);
 
-  const selectedZoneRecord = useMemo(
-    () => zones.find((zone) => getRecordId(zone, "zone_id") === selectedZone) || null,
-    [selectedZone, zones]
-  );
-  const selectedRackRecord = useMemo(
-    () => racks.find((rack) => getRecordId(rack, "rack_id") === selectedRack) || null,
-    [racks, selectedRack]
-  );
   const selectedLevelRecord = useMemo(
     () => levels.find((level) => getRecordId(level, "level_id") === selectedLevel) || null,
     [levels, selectedLevel]
@@ -841,14 +787,6 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
       setBinBarcode(selectedBarcode);
     }
   }, [binBarcode, selectedBinRecord]);
-
-  const scannedBin = placementValidation?.bin || null;
-  const activeBin = selectedBinRecord || scannedBin;
-  const activeBinRemainingWeight = getRemainingCapacity(activeBin, "weight");
-  const activeBinRemainingVolume = getRemainingCapacity(activeBin, "volume");
-  const currentPlacementSession = cargoBarcode.trim() || binBarcode.trim()
-    ? "Placement scan fields active"
-    : "No active placement session";
 
   useEffect(() => {
     if (activeTab !== 2) return undefined;
@@ -960,43 +898,6 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     }
   };
 
-  const validationCards = [
-    {
-      title: "Supervisor Approval",
-      passed: checkPassed(validation, "cargoPlacementStatus", validation.approved),
-      body: checkMessage(validation, "cargoPlacementStatus", "Cargo must be approved by a Warehouse Supervisor before placement.")
-    },
-    {
-      title: "Cargo Compatibility",
-      passed: checkPassed(validation, "cargoCompatibility", validation.approved),
-      body: checkMessage(validation, "cargoCompatibility", validation.detail)
-    },
-    {
-      title: "Capacity Validation",
-      passed: checkPassed(validation, ["weightCapacity", "volumeCapacity"], validation.approved),
-      body: checkMessage(validation, ["weightCapacity", "volumeCapacity"], "Weight and volume capacity will be checked before placement.")
-    },
-    {
-      title: "Bin Availability",
-      passed: checkPassed(validation, ["blockedBin", "reservedBin"], validation.approved),
-      body: checkMessage(validation, ["blockedBin", "reservedBin"], "Blocked and reserved bin rules will be checked before placement.")
-    }
-  ];
-
-  const scannerStatus = validationLoading
-    ? "Validation Running"
-    : placementValidation?.approved
-      ? "Validation Passed"
-      : placementValidation
-        ? "Validation Failed"
-        : binBarcode.trim()
-          ? "Bin Scanned"
-          : cargoBarcode.trim()
-            ? "Waiting for Bin Scan"
-            : focusedScan === "cargo"
-              ? "Waiting for Cargo Scan"
-              : "Ready";
-
   const handleCargoFieldChange = (field, value) => {
     setDuplicateWarning(null);
     setSaveNotice(false);
@@ -1026,7 +927,6 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     setPlacementSaving(false);
     setPlacementConfirmed(false);
     setPlacementNotice(false);
-    setPlacementTime("");
   };
 
   const handleZoneSelect = (value) => {
@@ -1052,7 +952,6 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     setPlacementSaving(false);
     setPlacementConfirmed(false);
     setPlacementNotice(false);
-    setPlacementTime("");
   };
 
   const addFiles = (list) => {
@@ -1214,8 +1113,6 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
 
       setPlacementConfirmed(true);
       setPlacementNotice(true);
-      setPlacementTime(formatDateTime(result.movement?.created_at || result.cargo?.updated_at));
-      setPlacementActor(result.movement?.moved_by || "Authenticated Warehouse Staff");
       await refreshCargoRecords();
     } catch (error) {
       setPlacementError(getErrorMessage(error));
@@ -1255,9 +1152,6 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     setSelectedBin("");
     setPlacementConfirmed(false);
     setPlacementNotice(false);
-    setPlacementTime("");
-    setScanEvents([]);
-    setLastScanTime("");
     setOverrideNotice("");
     requestAnimationFrame(() => cargoScanRef.current?.focus());
   };
@@ -1266,6 +1160,8 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     const sections = [];
     const byKey = new Map();
     for (const field of registrationFields) {
+      if (field.field_classification === "system_managed" || field.field_type === "system"
+        || ["received_by", "received_datetime", "receiving_warehouse", "system_identifiers", "registration_workflow"].includes(field.field_key)) continue;
       if (field.conditional_rules?.length && !field.conditional_rules.some((rule) => cargoFieldConditionMatches(rule, formData))) continue;
       const sectionKey = field.section_key || "cargo";
       if (!byKey.has(sectionKey)) {
@@ -1282,8 +1178,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     consignee: { title: "Consignee / Owner Information", icon: ClipboardList },
     cargo: { title: "Cargo Information", icon: Truck },
     receiving: { title: "Inspection & Receiving", icon: PackageCheck },
-    documents: { title: "Supporting Documents", icon: FileText },
-    system: { title: "System Information", icon: Warehouse }
+    documents: { title: "Supporting Documents", icon: FileText }
   };
 
   const renderConfiguredField = (field) => {
@@ -1342,24 +1237,6 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
             </ul>
           )}
         </div>
-      );
-    }
-
-    if (field.field_type === "system" || field.field_key === "received_datetime") {
-      const systemValues = {
-        received_by: formData.received_by,
-        received_datetime: receivedAt,
-        receiving_warehouse: profileUser?.warehouse_name
-          ? `${profileUser.warehouse_code ? `${profileUser.warehouse_code} - ` : ""}${profileUser.warehouse_name}`
-          : "Assigned warehouse",
-        system_identifiers: "Generated automatically after registration",
-        registration_workflow: "Pending Review · Unplaced until supervisor approval"
-      };
-      return (
-        <Field key={field.field_key} label={label}>
-          <Input value={systemValues[field.field_key] || "System managed"} readOnly />
-          {commonHelp}
-        </Field>
       );
     }
 
@@ -1504,25 +1381,14 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
               </div>
             )}
 
-            <CollapsibleCard title={<SectionTitle icon={ScanLine}>Placement Scanning</SectionTitle>} defaultOpen>
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                <div className="rounded-md border border-border bg-muted/20 p-3">
-                  <div className="text-[11px] font-semibold text-muted-foreground">Last Scan Time</div>
-                  <div className="mt-2 text-xs font-semibold">{lastScanTime ? formatDateTime(lastScanTime) : "No scan received"}</div>
-                </div>
-                <div className="rounded-md border border-border bg-muted/20 p-3 md:col-span-2">
-                  <div className="text-[11px] font-semibold text-muted-foreground">Current Placement Work</div>
-                  <div className="mt-2 text-xs font-semibold">{currentPlacementSession}</div>
-                  <div className="mt-1 text-[11px] text-muted-foreground">Scanner Status: {scannerStatus}</div>
-                </div>
-                <div className="rounded-md border border-border bg-muted/20 p-3">
-                  <div className="text-[11px] font-semibold text-muted-foreground">Queued Scans</div>
-                  <div className="mt-2 text-xs font-semibold">{scanEvents.length} scan{scanEvents.length === 1 ? "" : "s"} recorded</div>
-                </div>
-              </div>
-            </CollapsibleCard>
+            <Tabs value={placementStep} onValueChange={setPlacementStep} className="min-w-0">
+              <TabsList aria-label="Placement steps" className="h-auto w-full justify-start gap-1 overflow-x-auto rounded-md p-1">
+                <TabsTrigger value="cargo" className="shrink-0">1. Cargo Barcode Input</TabsTrigger>
+                <TabsTrigger value="bin" className="shrink-0">2. Storage Bin Barcode Input</TabsTrigger>
+                <TabsTrigger value="storage" className="shrink-0">3. Warehouse Storage Navigator</TabsTrigger>
+              </TabsList>
 
-            <CollapsibleCard title={<SectionTitle icon={ScanLine}>Cargo Barcode Input</SectionTitle>} defaultOpen>
+            <TabsContent value="cargo" className="mt-3">
               <ScanInputPanel
                 title="Cargo Scan Field"
                 helper="Focused input for external hardware scanners."
@@ -1533,42 +1399,6 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
                 active={focusedScan === "cargo"}
                 onFocus={() => setFocusedScan("cargo")}
               >
-                <div className="mt-3 rounded-md border border-border bg-card p-3">
-                  {cargoBarcode.trim() ? (
-                    scannedCargo ? (
-                      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                        <Field label="Cargo Reference">
-                          <Input value={scannedCargo.cargo_id || cargoBarcode.trim().toUpperCase()} readOnly />
-                        </Field>
-                        <Field label="Cargo Type">
-                          <Input value={scannedCargo.cargo_type || "Not recorded"} readOnly />
-                        </Field>
-                        <Field label="Weight">
-                          <Input value={formatMeasure(scannedCargo.weight, "kg")} readOnly />
-                        </Field>
-                        <Field label="Volume">
-                          <Input value={formatMeasure(scannedCargo.volume, "m³")} readOnly />
-                        </Field>
-                        <Field label="Hazard Class">
-                          <Input value={scannedCargo.hazard_class || "N/A"} readOnly />
-                        </Field>
-                        <div className="space-y-1.5">
-                          <span className="block text-[11px] font-semibold text-foreground/80">Current Status</span>
-                          <div className="flex flex-wrap gap-2 pt-1">
-                            <StatusBadge tone={statusTone(cargoOperationalStatus(scannedCargo))}>{cargoOperationalStatus(scannedCargo)}</StatusBadge>
-                            <StatusBadge tone={statusTone(scannedCargo.placement_status)}>
-                              {scannedCargo.placement_status || "Unplaced"}
-                            </StatusBadge>
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="text-xs text-muted-foreground">No registered cargo record is loaded for this barcode yet.</div>
-                    )
-                  ) : (
-                    <div className="text-xs text-muted-foreground">No cargo barcode entered yet.</div>
-                  )}
-                </div>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <button
                     type="button"
@@ -1590,9 +1420,9 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
                   </div>
                 )}
               </ScanInputPanel>
-            </CollapsibleCard>
+            </TabsContent>
 
-            <CollapsibleCard title={<SectionTitle icon={Warehouse}>Storage Bin Barcode Input</SectionTitle>} defaultOpen>
+            <TabsContent value="bin" className="mt-3">
               <ScanInputPanel
                 title="Bin Scan Field"
                 helper="Scan the physical storage bin barcode after cargo reaches the rack."
@@ -1603,31 +1433,10 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
                 active={focusedScan === "bin"}
                 onFocus={() => setFocusedScan("bin")}
               >
-                <div className="mt-3 rounded-md border border-border bg-card p-3">
-                  {activeBin ? (
-                    <ReadonlyGrid
-                      columns="md:grid-cols-2 xl:grid-cols-4"
-                      items={[
-                        { label: "Zone", value: formatZoneLabel(activeBin, formatZoneLabel(selectedZoneRecord)) },
-                        { label: "Rack", value: getRackCode(activeBin) || getRackCode(selectedRackRecord) },
-                        { label: "Level", value: getLevelCode(activeBin) || getLevelCode(selectedLevelRecord) },
-                        { label: "Bin", value: getBinBarcode(activeBin) },
-                        { label: "Bin Status", value: getBinStatus(activeBin) },
-                        { label: "Remaining Weight Capacity", value: formatMeasure(activeBinRemainingWeight, "kg") },
-                        { label: "Remaining Volume Capacity", value: formatMeasure(activeBinRemainingVolume, "m³") },
-                        { label: "Reserved For", value: activeBin.reserved_for_cargo_type || "None" }
-                      ]}
-                    />
-                  ) : binBarcode.trim() ? (
-                    <div className="text-xs text-muted-foreground">Bin details will appear after placement rules finish.</div>
-                  ) : (
-                    <div className="text-xs text-muted-foreground">No bin barcode entered yet.</div>
-                  )}
-                </div>
               </ScanInputPanel>
-            </CollapsibleCard>
+            </TabsContent>
 
-            <CollapsibleCard title={<SectionTitle icon={Warehouse}>Warehouse Storage Navigator</SectionTitle>} defaultOpen>
+            <TabsContent value="storage" className="mt-3">
               <div className="space-y-3">
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                   <Field label="Zone">
@@ -1679,21 +1488,6 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
                   </div>
                 )}
 
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-                  {[
-                    { label: "Zone", value: formatZoneLabel(selectedZoneRecord, "Select zone") },
-                    { label: "Rack", value: getRackCode(selectedRackRecord) || "Select rack" },
-                    { label: "Level", value: getLevelCode(selectedLevelRecord) || "Select level" },
-                    { label: "Bin", value: getBinBarcode(activeBin) || "Select bin" },
-                    { label: "Available Capacity", value: activeBin ? `${formatMeasure(activeBinRemainingWeight, "kg")} / ${formatMeasure(activeBinRemainingVolume, "m³")}` : "Select bin" }
-                  ].map((item) => (
-                    <div key={item.label} className="rounded-md border border-border bg-muted/20 p-3">
-                      <div className="text-[11px] font-semibold text-muted-foreground">{item.label}</div>
-                      <div className="mt-1 min-h-5 truncate text-xs font-semibold">{item.value}</div>
-                    </div>
-                  ))}
-                </div>
-
                 <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
                   {bins.length > 0 ? (
                     bins.map((bin) => {
@@ -1732,87 +1526,28 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
                   )}
                 </div>
               </div>
-            </CollapsibleCard>
+            </TabsContent>
+            </Tabs>
 
-            <CollapsibleCard title={<SectionTitle icon={Warehouse}>Warehouse Storage Structure</SectionTitle>}>
-              <div className="overflow-auto rounded border border-border">
-                <table className="w-full min-w-[620px] text-xs">
-                  <thead className="bg-panel-header text-panel-header-foreground">
-                    <tr>
-                      <th className="px-2 py-2 text-left font-semibold">Zone Code</th>
-                      <th className="px-2 py-2 text-left font-semibold">Zone Name</th>
-                      <th className="px-2 py-2 text-left font-semibold">Racks</th>
-                      <th className="px-2 py-2 text-left font-semibold">Levels</th>
-                      <th className="px-2 py-2 text-left font-semibold">Bins</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {zones.length > 0 ? (
-                      zones.map((zone) => (
-                        <tr key={getRecordId(zone, "zone_id")} className="border-t border-border">
-                          <td className="px-2 py-2 font-mono font-semibold">{getZoneCode(zone)}</td>
-                          <td className="px-2 py-2">{getZoneName(zone)}</td>
-                          <td className="px-2 py-2 text-muted-foreground">{zone.rack_total || zone.rack_count} racks</td>
-                          <td className="px-2 py-2 text-muted-foreground">{zone.level_count} levels per rack</td>
-                          <td className="px-2 py-2 text-muted-foreground">{zone.bin_total || 0} bins</td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr className="border-t border-border">
-                        <td colSpan={5} className="px-2 py-3 text-muted-foreground">
-                          {zonesError || "No storage hierarchy records loaded yet."}
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </CollapsibleCard>
-
-            <CollapsibleCard title={<SectionTitle icon={ListChecks}>Automatic Placement Validation</SectionTitle>} defaultOpen>
-              <div className="grid gap-3 lg:grid-cols-3">
-                {validationCards.map((card) => (
-                  <div
-                    key={card.title}
-                    className={cn(
-                      "rounded-md border p-3",
-                      card.passed ? "border-success/35 bg-success/10" : "border-warning/35 bg-warning/10"
-                    )}
-                  >
-                    <div className="mb-1 flex items-center gap-2 text-xs font-semibold">
-                      {card.passed ? <CheckCircle2 className="h-4 w-4 text-success" /> : <AlertTriangle className="h-4 w-4 text-warning" />}
-                      {card.title}
-                    </div>
-                    <div className="text-[11px] text-muted-foreground">{card.body}</div>
-                  </div>
-                ))}
-              </div>
+            {cargoBarcode.trim() && binBarcode.trim() && (
               <div
+                role={validationError || (placementValidation && !placementValidation.approved) ? "alert" : "status"}
                 className={cn(
-                  "mt-3 flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-semibold",
-                  validation.approved ? "border-success/40 bg-success/10 text-success" : "border-destructive/40 bg-destructive/10 text-destructive"
+                  "rounded-md border px-3 py-2 text-xs font-semibold",
+                  validationLoading || (!placementValidation && !validationError)
+                    ? "border-border bg-muted/20 text-muted-foreground"
+                    : validation.approved
+                      ? "border-success/40 bg-success/10 text-success"
+                      : "border-destructive/40 bg-destructive/10 text-destructive"
                 )}
               >
-                {validation.approved ? <CheckCircle2 className="h-4 w-4" /> : <FileWarning className="h-4 w-4" />}
-                {validation.reason}: {validation.detail}
+                {validationLoading || (!placementValidation && !validationError)
+                  ? "Checking placement..."
+                  : `${validation.reason}: ${validation.detail}`}
               </div>
-            </CollapsibleCard>
+            )}
 
-            <CollapsibleCard title={<SectionTitle icon={MapPin}>Placement Summary</SectionTitle>} defaultOpen>
-              <ReadonlyGrid
-                columns="md:grid-cols-2 xl:grid-cols-4"
-                items={[
-                  { label: "Selected Zone", value: formatZoneLabel(activeBin, formatZoneLabel(selectedZoneRecord)) },
-                  { label: "Selected Rack", value: getRackCode(activeBin) || getRackCode(selectedRackRecord) || "Awaiting selection" },
-                  { label: "Selected Level", value: getLevelCode(activeBin) || getLevelCode(selectedLevelRecord) || "Awaiting selection" },
-                  { label: "Selected Bin", value: getBinBarcode(activeBin) || "Awaiting selection" },
-                  { label: "Bin Status", value: activeBin ? getBinStatus(activeBin) : "Awaiting selection" },
-                  { label: "Remaining Capacity", value: activeBin ? `${formatMeasure(activeBinRemainingWeight, "kg")} / ${formatMeasure(activeBinRemainingVolume, "m³")}` : "Awaiting selection" },
-                  { label: "Placement Time", value: placementTime || "Pending confirmation" },
-                  { label: "Placed / Moved By", value: placementActor || "Pending confirmation" }
-                ]}
-              />
-            </CollapsibleCard>
+
           </div>
         )}
 

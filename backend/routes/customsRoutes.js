@@ -3,6 +3,7 @@ const {
   getCargo,
   getCleared,
   getDashboard,
+  getDocumentContent,
   getHistory,
   getHolds,
   getQueue,
@@ -21,6 +22,7 @@ router.get("/cleared", requirePermission("customs.cargo.view"), getCleared);
 router.get("/holds", requirePermission("customs.cargo.view"), getHolds);
 router.get("/cargo/:cargoReference", requirePermission("customs.cargo.view"), getCargo);
 router.get("/cargo/:cargoReference/history", requirePermission("customs.history.view"), getHistory);
+router.get("/cargo/:id/documents/:documentId/content", requirePermission("customs.cargo.view"), getDocumentContent);
 router.post("/cargo/:cargoReference/start", requirePermission("customs.inspections.create"), startInspection);
 router.post("/cargo/:cargoReference/status", requirePermission("customs.clearance.update"), updateStatus);
 

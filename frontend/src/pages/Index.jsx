@@ -20,6 +20,7 @@ import { RoleReports } from "@/components/wms/RoleReports";
 import { BarcodeLabel, printBarcodeLabel } from "@/components/wms/BarcodeLabel";
 import { CargoCorrectionModal } from "@/components/wms/CargoCorrectionModal";
 import { DetailForm } from "@/components/wms/DetailForm";
+import { RegisteredCargoPage } from "@/components/wms/RegisteredCargoPage";
 import { EnterpriseModal } from "@/components/wms/EnterpriseModal";
 import { PlacementSessionModal } from "@/components/wms/PlacementSessionModal";
 import { ManualPlacementModal } from "@/components/wms/ManualPlacementModal";
@@ -1643,6 +1644,7 @@ const Index = () => {
           element={<CargoRegistrationWorkspace />}
         />
         <Route path="cargo/registration-reviews" element={<Navigate to="/staff/cargo/registration?tab=reviews" replace />} />
+        <Route path="cargo/registered" element={<RegisteredCargoPage />} />
         <Route path="cargo/placement-queue" element={<Navigate to="/staff/cargo/registration?tab=placement" replace />} />
         <Route path="cargo/placement-history" element={<StaffPlacementActivityPage />} />
         <Route

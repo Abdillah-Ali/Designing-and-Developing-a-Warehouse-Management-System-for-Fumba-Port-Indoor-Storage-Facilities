@@ -35,6 +35,7 @@ import {
   getCustomsCleared,
   getCustomsCargo,
   getCustomsDashboard,
+  getCustomsDocumentContent,
   getCustomsHistory,
   getCustomsHolds,
   getCustomsQueue,
@@ -49,7 +50,7 @@ const inputClass = "h-9 w-full rounded border border-input bg-background px-2 te
 const navigation = [
   { label: "Dashboard", icon: LayoutDashboard, to: "/customs" },
   { label: "Inspection Queue", icon: PackageSearch, to: "/customs/inspection-queue" },
-  { label: "Customs Records", icon: ClipboardList, to: "/customs/records" },
+  { label: "Inspections", icon: ClipboardList, to: "/customs/records" },
   { label: "Cleared Cargo", icon: CheckCircle2, to: "/customs/cleared" },
   { label: "Cargo on Hold", icon: AlertTriangle, to: "/customs/holds" },
   { label: "Reports", icon: BarChart3, to: "/customs/reports" },
@@ -130,7 +131,15 @@ function DashboardPage() {
   );
 }
 
-function CustomsTable({ rows, loading, error, onAction, onHistory, onDetails }) {
+function CustomsTable({ rows, loading, error, onAction, onHistory, onDetails, mode }) {
+  const actionLabel = (row) => {
+    if (mode === "queue") return "Start Inspection";
+    if (mode === "holds") return "Release Hold";
+    if (mode === "cleared") return "Clearance Details";
+    if (row.customs_status === "Inspection In Progress") return "Record Result";
+    if (row.customs_status === "On Hold") return "Release Hold";
+    return "View Inspection";
+  };
   return (
     <DataTable
       loading={loading}
@@ -142,10 +151,15 @@ function CustomsTable({ rows, loading, error, onAction, onHistory, onDetails }) 
         { key: "barcode", label: "Barcode", className: "font-mono" },
         { key: "owner_information", label: "Owner" },
         { key: "cargo_type", label: "Type" },
-        { key: "approval_status", label: "Approval", render: (row) => <StatusBadge tone={statusTone(row.approval_status)}>{row.approval_status}</StatusBadge> },
-        { key: "placement_status", label: "Placement", render: (row) => <StatusBadge tone={statusTone(row.placement_status)}>{row.placement_status}</StatusBadge> },
+        ...(mode === "records" ? [
+          { key: "inspection_started_at", label: "Inspection Date", render: (row) => formatDateTime(row.inspection_started_at || row.registration_date) },
+          { key: "inspector_name", label: "Inspector", render: (row) => row.inspector_name || "—" },
+          { key: "inspection_result", label: "Result", render: (row) => row.inspection_result || "In Progress" }
+        ] : [
+          { key: "approval_status", label: "Approval", render: (row) => <StatusBadge tone={statusTone(row.approval_status)}>{row.approval_status}</StatusBadge> },
+          { key: "placement_status", label: "Placement", render: (row) => <StatusBadge tone={statusTone(row.placement_status)}>{row.placement_status}</StatusBadge> }
+        ]),
         { key: "customs_status", label: "Customs", render: (row) => <StatusBadge tone={statusTone(row.customs_status)}>{row.customs_status}</StatusBadge> },
-        { key: "financial_status", label: "Finance", render: (row) => <StatusBadge tone={statusTone(row.financial_status)}>{row.financial_status}</StatusBadge> },
         { key: "registration_date", label: "Registered", render: (row) => formatDateTime(row.registration_date) },
         ...(onAction || onHistory || onDetails ? [{
           key: "actions",
@@ -153,7 +167,7 @@ function CustomsTable({ rows, loading, error, onAction, onHistory, onDetails }) 
           render: (row) => (
             <div className="flex flex-wrap gap-1">
               {onDetails && <button type="button" onClick={() => onDetails(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">Details</button>}
-              {onAction && <button type="button" onClick={() => onAction(row)} className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground">Update</button>}
+              {onAction && mode !== "cleared" && <button type="button" onClick={() => onAction(row)} className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground">{actionLabel(row)}</button>}
               {onHistory && <button type="button" onClick={() => onHistory(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">History</button>}
             </div>
           )
@@ -178,7 +192,7 @@ function CustomsListPage({ mode }) {
   const data = useLoad(loader, `${mode}-${search}`);
   const titles = {
     queue: "Inspection Queue",
-    records: "Customs Records",
+    records: "Inspections",
     cleared: "Cleared Cargo",
     holds: "Cargo on Hold"
   };
@@ -205,7 +219,7 @@ function CustomsListPage({ mode }) {
 
   return (
     <>
-      <PageHeader eyebrow="Customs" title={titles[mode]} description="Search by public cargo reference, barcode, delivery note, or consignee. Financial information is read-only." />
+      <PageHeader eyebrow="Customs" title={titles[mode]} description={mode === "queue" ? "Approved cargo waiting for its first Customs inspection." : mode === "records" ? "Permanent register of inspection activity and results." : "Search by public cargo reference, barcode, delivery note, consignee, and customs status."} />
       <div className="flex-1 overflow-auto p-4">
         <SectionCard title="Search" icon={PackageSearch}>
           <div className="flex gap-2">
@@ -219,28 +233,9 @@ function CustomsListPage({ mode }) {
         {message && <div className="mt-3 rounded border border-info/30 bg-info/10 px-3 py-2 text-xs font-semibold text-info">{message}</div>}
         <div className="mt-3">
           <SectionCard title={titles[mode]} icon={ClipboardList}>
-            <CustomsTable rows={data.rows || []} loading={data.loading} error={data.error} onAction={setSelected} onHistory={loadHistory} onDetails={loadDetails} />
+            <CustomsTable rows={data.rows || []} loading={data.loading} error={data.error} onAction={setSelected} onHistory={loadHistory} onDetails={loadDetails} mode={mode} />
           </SectionCard>
         </div>
-        {history.cargo && (
-          <div className="mt-3">
-            <SectionCard title={`Customs History: ${history.cargo.cargo_reference}`} icon={History}>
-              <DataTable
-                error={history.error}
-                rows={history.rows}
-                emptyTitle="No customs history recorded"
-                columns={[
-                  { key: "public_reference", label: "History Ref", className: "font-mono font-semibold" },
-                  { key: "changed_at", label: "Time", render: (row) => formatDateTime(row.changed_at) },
-                  { key: "previous_status", label: "Previous", render: (row) => row.previous_status || "Initial" },
-                  { key: "new_status", label: "New", render: (row) => <StatusBadge tone={statusTone(row.new_status)}>{row.new_status}</StatusBadge> },
-                  { key: "changed_by_name", label: "Officer", render: (row) => row.changed_by_name || row.changed_by_reference || "Customs Officer" },
-                  { key: "notes", label: "Notes", render: (row) => row.notes || "No notes" }
-                ]}
-              />
-            </SectionCard>
-          </div>
-        )}
       </div>
       <CustomsActionDialog
         cargo={selected}
@@ -252,13 +247,48 @@ function CustomsListPage({ mode }) {
         }}
       />
       <CustomsDetailDialog detail={detail} onClose={() => setDetail({ cargo: null, data: null, loading: false, error: "" })} />
+      <CustomsHistoryDialog history={history} onClose={() => setHistory({ cargo: null, rows: [], error: "" })} />
     </>
   );
 }
 
+function CustomsHistoryDialog({ history, onClose }) {
+  if (!history.cargo) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-label={`Customs History: ${history.cargo.cargo_reference}`}>
+      <div className="flex max-h-[85vh] w-full max-w-5xl flex-col rounded-md border border-border bg-card shadow-xl">
+        <div className="flex items-start justify-between gap-3 border-b border-border p-4">
+          <div><div className="text-sm font-semibold">Customs History</div><div className="mt-1 font-mono text-xs text-muted-foreground">{history.cargo.cargo_reference}</div></div>
+          <button type="button" onClick={onClose} className="rounded border border-border px-2 py-1 text-xs font-semibold">Close</button>
+        </div>
+        <div className="overflow-auto p-4"><DataTable error={history.error} rows={history.rows} emptyTitle="No customs history recorded" columns={[
+          { key: "public_reference", label: "History Ref", className: "font-mono font-semibold" },
+          { key: "changed_at", label: "Time", render: (row) => formatDateTime(row.changed_at) },
+          { key: "previous_status", label: "Previous", render: (row) => row.previous_status || "Initial" },
+          { key: "new_status", label: "New", render: (row) => <StatusBadge tone={statusTone(row.new_status)}>{row.new_status}</StatusBadge> },
+          { key: "changed_by_name", label: "Officer", render: (row) => row.changed_by_name || row.changed_by_reference || "Customs Officer" },
+          { key: "notes", label: "Notes", render: (row) => row.notes || "No notes" }
+        ]} /></div>
+      </div>
+    </div>
+  );
+}
+
 function CustomsDetailDialog({ detail, onClose }) {
+  const [documentError, setDocumentError] = useState("");
   if (!detail.cargo) return null;
   const cargo = detail.data || detail.cargo;
+  const openDocument = async (document) => {
+    setDocumentError("");
+    try {
+      const response = await getCustomsDocumentContent(cargo.cargo_reference, document.id);
+      const content = response.data;
+      const url = `data:${content.file_type || "application/octet-stream"};base64,${content.content_base64}`;
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      setDocumentError(getErrorMessage(error));
+    }
+  };
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
       <div className="w-full max-w-2xl rounded-md border border-border bg-card p-4 shadow-xl">
@@ -279,14 +309,12 @@ function CustomsDetailDialog({ detail, onClose }) {
             <DetailItem label="Description" value={cargo.cargo_description || "No description"} />
             <DetailItem label="Customs Status" value={cargo.customs_status} />
             <DetailItem label="Placement Status" value={cargo.placement_status} />
-            <DetailItem label="Invoice Status" value={cargo.invoice_status} />
-            <DetailItem label="Payment Status" value={cargo.payment_status} />
-            <DetailItem label="Outstanding Balance" value={cargo.outstanding_balance} />
             <DetailItem label="Location" value={cargo.location || "Not placed"} />
             <DetailItem label="Registered" value={formatDateTime(cargo.registration_date)} />
             <DetailItem label="Updated" value={formatDateTime(cargo.updated_at)} />
           </div>
         )}
+        {!detail.loading && !detail.error && <div className="mt-4 rounded border border-border bg-background/50 p-3"><div className="text-xs font-semibold">Registration Documents</div>{cargo.documents?.length ? <ul className="mt-2 space-y-2 text-xs">{cargo.documents.map((document) => <li key={document.id} className="flex items-center justify-between gap-3"><span className="break-all">{document.file_name}</span><button type="button" onClick={() => openDocument(document)} className="shrink-0 rounded border px-2 py-1 font-semibold">Open</button></li>)}</ul> : <p className="mt-1 text-xs text-muted-foreground">No documents were attached to this registration.</p>}{documentError && <div className="mt-2"><ErrorState message={documentError} /></div>}</div>}
       </div>
     </div>
   );
@@ -307,12 +335,19 @@ function CustomsActionDialog({ cargo, onClose, onSaved }) {
   const [error, setError] = useState("");
   useEffect(() => {
     if (cargo) {
-      setForm({ status: cargo.customs_status === "Pending Inspection" ? "Inspection In Progress" : cargo.customs_status, notes: "", documents_requested: "" });
+      const initialStatus = cargo.customs_status === "On Hold" ? "Release Hold" : cargo.customs_status === "Pending Inspection" ? "Inspection In Progress" : "Documents Required";
+      setForm({ status: initialStatus, notes: "", documents_requested: "", inspection_type: "", document_verification: "", inspection_result: "" });
       setError("");
     }
   }, [cargo]);
 
   if (!cargo) return null;
+  const statusOptions = cargo.customs_status === "Pending Inspection"
+    ? ["Inspection In Progress"]
+    : cargo.customs_status === "On Hold"
+      ? ["Release Hold"]
+      : cargo.customs_status === "Cleared" ? [] : ["Documents Required", "On Hold", "Cleared", "Rejected"];
+  const reasonRequired = ["Documents Required", "On Hold", "Release Hold", "Rejected"].includes(form.status);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -321,7 +356,7 @@ function CustomsActionDialog({ cargo, onClose, onSaved }) {
       if (cargo.customs_status === "Pending Inspection" && form.status === "Inspection In Progress") {
         await startCustomsInspection(cargo.cargo_reference, { notes: form.notes, expected_state_key: cargo.customs_state_key || stateKeys[cargo.customs_status] });
       } else {
-        const transitionKeys = { "Inspection In Progress": "start_inspection", "Documents Required": "request_documents", "On Hold": "place_on_hold", Cleared: "clear_customs", Rejected: "reject_customs" };
+        const transitionKeys = { "Inspection In Progress": "start_inspection", "Documents Required": "request_documents", "On Hold": "place_on_hold", "Release Hold": "release_hold", Cleared: "clear_customs", Rejected: "reject_customs" };
         await updateCustomsStatus(cargo.cargo_reference, {
           ...form,
           transition_key: transitionKeys[form.status],
@@ -349,13 +384,18 @@ function CustomsActionDialog({ cargo, onClose, onSaved }) {
           <label className="space-y-1.5 text-xs font-semibold">
             Status
             <select className={inputClass} value={form.status} onChange={(event) => setForm((current) => ({ ...current, status: event.target.value }))}>
-              {["Inspection In Progress", "Documents Required", "On Hold", "Cleared", "Rejected"].map((status) => <option key={status} value={status}>{status}</option>)}
+              {statusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
             </select>
           </label>
           <label className="space-y-1.5 text-xs font-semibold">
-            Inspection Notes
-            <textarea className="min-h-24 w-full rounded border border-input bg-background px-2 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring" value={form.notes} onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))} />
+            {reasonRequired ? "Reason / Customs Remarks *" : "Inspection Notes / Customs Remarks"}
+            <textarea required={reasonRequired} className="min-h-24 w-full rounded border border-input bg-background px-2 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring" value={form.notes} onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))} />
           </label>
+          {cargo.customs_status !== "Pending Inspection" && cargo.customs_status !== "On Hold" && <>
+            <label className="space-y-1.5 text-xs font-semibold">Inspection Type<select className={inputClass} value={form.inspection_type || ""} onChange={(event) => setForm((current) => ({ ...current, inspection_type: event.target.value }))}><option value="">Select inspection type</option><option>Document Review</option><option>Physical Inspection</option><option>Joint Inspection</option></select></label>
+            <label className="space-y-1.5 text-xs font-semibold">Document Verification<select className={inputClass} value={form.document_verification || ""} onChange={(event) => setForm((current) => ({ ...current, document_verification: event.target.value }))}><option value="">Select verification result</option><option>Verified</option><option>Discrepancy Found</option><option>Further Documents Required</option></select></label>
+            <label className="space-y-1.5 text-xs font-semibold">Inspection Result<select className={inputClass} value={form.inspection_result || ""} onChange={(event) => setForm((current) => ({ ...current, inspection_result: event.target.value }))}><option value="">Select inspection result</option><option>Passed</option><option>Further Inspection Required</option><option>Hold Recommended</option></select></label>
+          </>}
           <label className="space-y-1.5 text-xs font-semibold">
             Documents Requested
             <input className={inputClass} value={form.documents_requested} onChange={(event) => setForm((current) => ({ ...current, documents_requested: event.target.value }))} />
@@ -365,7 +405,7 @@ function CustomsActionDialog({ cargo, onClose, onSaved }) {
             <button type="button" onClick={onClose} className="rounded border border-border px-3 py-2 text-xs font-semibold">Cancel</button>
             <button type="submit" className="inline-flex items-center gap-2 rounded bg-info px-3 py-2 text-xs font-semibold text-info-foreground">
               {form.status === "Cleared" ? <ShieldCheck className="h-4 w-4" /> : form.status === "Rejected" ? <XCircle className="h-4 w-4" /> : <PlayCircle className="h-4 w-4" />}
-              Save Status
+              {cargo.customs_status === "Pending Inspection" ? "Start Inspection" : form.status === "On Hold" ? "Place Hold" : form.status === "Release Hold" ? "Release Hold" : form.status === "Cleared" ? "Grant Clearance" : "Save Inspection"}
             </button>
           </div>
         </div>
