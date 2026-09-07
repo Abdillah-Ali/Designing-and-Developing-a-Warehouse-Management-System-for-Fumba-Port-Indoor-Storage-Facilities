@@ -298,11 +298,13 @@ const buildAuthoritativeGateQueue = async ({ executor = db, at = null } = {}) =>
     row.allowed_to_gate_out=row.management_release_approved
       ? Boolean(row.financially_cleared&&row.operationally_eligible)
       : Boolean(firstPresent&&row.cargo_reference===firstPresent.cargo_reference);
-    row.gate_out_selectable=Boolean(row.management_release_approved||row.financially_cleared&&row.operationally_eligible);
+    const customerUnavailable=row.presence_status==='TEMPORARILY_UNAVAILABLE';
+    row.gate_out_selectable=Boolean(row.management_release_approved||row.financially_cleared&&row.operationally_eligible&&!customerUnavailable);
     row.recommended_cargo_reference=row.allowed_to_gate_out?null:(row.management_release_approved?null:firstPresent?.cargo_reference||null);
-    row.queue_state=queueState({operationallyEligible:row.operationally_eligible,financiallyCleared:row.financially_cleared,firstPresent:row.allowed_to_gate_out,managementReleaseApproved:row.management_release_approved});
+    row.queue_state=queueState({operationallyEligible:row.operationally_eligible,financiallyCleared:row.financially_cleared,firstPresent:row.allowed_to_gate_out,managementReleaseApproved:row.management_release_approved,customerUnavailable});
     if (!row.allowed_to_gate_out) {
       if (!row.financially_cleared || !row.operationally_eligible) row.blocked_reason=row.validation_messages.join(' ')||row.queue_state;
+      else if (customerUnavailable) row.blocked_reason=`Customer is marked unavailable. FPFG has moved to ${firstPresent?.cargo_reference||'the next eligible cargo'}.`;
       else row.blocked_reason=firstPresent?`First-paid cargo ${firstPresent.cargo_reference} should be processed first. Mark its customer unavailable to continue with the next cargo.`:'No eligible cargo is currently available for Gate-Out.';
     } else row.blocked_reason=null;
     row.collection_status=!row.financially_cleared?'FINANCIALLY_BLOCKED':!row.operationally_eligible?'RELEASE_CONDITION_BLOCKED':row.customer_present?'PRESENT_READY':row.presence_status;

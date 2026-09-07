@@ -136,6 +136,7 @@ function ReleaseQueuePage() {
   const [pageSize, setPageSize] = useState(10);
   const [message, setMessage] = useState("");
   const [releaseCargo, setReleaseCargo] = useState(null);
+  const [gateOutRecommendation, setGateOutRecommendation] = useState(null);
   const [emergencyCargo, setEmergencyCargo] = useState(null);
   const [presenceCargo, setPresenceCargo] = useState(null);
   const data = useLoad(() => getGateReleaseQueue({ search, page, page_size: pageSize }), `release-${search}-${page}-${pageSize}`);
@@ -175,7 +176,7 @@ function ReleaseQueuePage() {
                       <button type="button" onClick={() => setPresenceCargo(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">
                         Presence
                       </button>
-                      <button type="button" disabled={!row.gate_out_selectable} onClick={() => row.allowed_to_gate_out ? setReleaseCargo(row) : setMessage(`Recommended Gate-Out: ${row.recommended_cargo_reference}. Mark that customer's presence as unavailable before selecting this cargo.`)} className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground disabled:cursor-not-allowed disabled:opacity-40">
+                      <button type="button" disabled={!row.gate_out_selectable} onClick={() => row.allowed_to_gate_out ? setReleaseCargo(row) : setGateOutRecommendation({ selected: row.cargo_reference, recommended: row.recommended_cargo_reference })} className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground disabled:cursor-not-allowed disabled:opacity-40">
                         Gate Out
                       </button>
                       {!row.release_eligibility?.eligible && !row.release_eligibility?.blocked_requirements?.some((item) => item.requirement === "management_release") && (
@@ -207,6 +208,7 @@ function ReleaseQueuePage() {
         }}
       />
       <PresenceDialog cargo={presenceCargo} onClose={() => setPresenceCargo(null)} onSaved={async (text) => { setMessage(text); setPresenceCargo(null); await data.refresh(); }} />
+      <GateOutRecommendationDialog recommendation={gateOutRecommendation} onClose={() => setGateOutRecommendation(null)} />
       <EmergencyRequestDialog
         cargo={emergencyCargo}
         onClose={() => setEmergencyCargo(null)}
@@ -216,6 +218,25 @@ function ReleaseQueuePage() {
         }}
       />
     </>
+  );
+}
+
+function GateOutRecommendationDialog({ recommendation, onClose }) {
+  if (!recommendation) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true" aria-labelledby="gate-out-recommendation-title">
+      <div className="w-full max-w-md rounded-lg border bg-card p-5 shadow-xl">
+        <div className="flex items-start gap-3">
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
+          <div>
+            <h2 id="gate-out-recommendation-title" className="font-semibold">Recommended Gate-Out</h2>
+            <p className="mt-2 text-sm text-muted-foreground"><span className="font-semibold text-foreground">{recommendation.recommended}</span> was paid before {recommendation.selected} and should be processed first under FPFG.</p>
+            <p className="mt-2 text-sm text-muted-foreground">Use Customer Presence to mark that customer unavailable before selecting the next cargo.</p>
+          </div>
+        </div>
+        <div className="mt-5 flex justify-end"><button type="button" onClick={onClose} className="rounded border border-border px-3 py-2 text-sm font-semibold">Close</button></div>
+      </div>
+    </div>
   );
 }
 
@@ -238,7 +259,7 @@ function PresenceDialog({ cargo, onClose, onSaved }) {
       <form onSubmit={submit} className="w-full max-w-lg rounded-md border border-border bg-card p-4 shadow-xl">
         <div className="flex items-center justify-between"><div><div className="text-sm font-semibold">Customer Presence</div><div className="text-xs text-muted-foreground">{cargo.cargo_reference}</div></div><button type="button" onClick={onClose} className="rounded border border-border px-2 py-1 text-xs">Close</button></div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <label className="text-xs font-semibold">Status<select className={`${inputClass} mt-1`} value={form.status} onChange={event => setForm(current => ({...current,status:event.target.value}))}><option value="PRESENT_READY">Present and ready</option><option value="WAITING_FOR_CUSTOMER">Not present</option><option value="TEMPORARILY_UNAVAILABLE">Temporarily unavailable</option></select></label>
+          <label className="text-xs font-semibold">Status<select className={`${inputClass} mt-1`} value={form.status} onChange={event => setForm(current => ({...current,status:event.target.value}))}><option value="PRESENT_READY">Present and ready</option><option value="WAITING_FOR_CUSTOMER">Waiting for customer (keeps FPFG priority)</option><option value="TEMPORARILY_UNAVAILABLE">Customer unavailable (skip FPFG)</option></select></label>
           <label className="text-xs font-semibold">Collector name<input className={`${inputClass} mt-1`} value={form.collector_name} onChange={event => setForm(current => ({...current,collector_name:event.target.value}))} /></label>
           <label className="text-xs font-semibold">Identity type<input className={`${inputClass} mt-1`} value={form.identity_type} onChange={event => setForm(current => ({...current,identity_type:event.target.value}))} /></label>
           <label className="text-xs font-semibold">Identity number<input className={`${inputClass} mt-1`} value={form.identity_number} onChange={event => setForm(current => ({...current,identity_number:event.target.value}))} /></label>

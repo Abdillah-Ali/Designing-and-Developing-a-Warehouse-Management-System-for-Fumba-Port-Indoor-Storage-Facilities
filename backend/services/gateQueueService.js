@@ -18,10 +18,11 @@ const paginate = (rows, page, pageSize) => {
   return { rows: rows.slice((current - 1) * size, current * size), page: current, page_size: size, total, total_pages: pages };
 };
 
-const queueState = ({ operationallyEligible, financiallyCleared, firstPresent, managementReleaseApproved = false }) => {
+const queueState = ({ operationallyEligible, financiallyCleared, firstPresent, managementReleaseApproved = false, customerUnavailable = false }) => {
   if (!financiallyCleared) return 'Payment/Penalty Required';
   if (!operationallyEligible) return 'Release Condition Blocked';
   if (managementReleaseApproved) return 'Management Release Ready';
+  if (customerUnavailable) return 'Customer Unavailable — Skipped';
   return firstPresent ? 'Ready Now' : 'Blocked by Earlier Present Cargo';
 };
 
