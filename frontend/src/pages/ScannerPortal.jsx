@@ -203,6 +203,7 @@ function ScannerPortal() {
   const [cameraState, setCameraState] = useState("inactive");
   const [actionError, setActionError] = useState("");
   const [keyboardValue, setKeyboardValue] = useState("");
+  const [manualValue, setManualValue] = useState("");
   const [notice, setNotice] = useState(null);
 
   const activeSession = session?.status === "active" ? session : null;
@@ -417,9 +418,7 @@ function ScannerPortal() {
           message: result.completed ? "Placement confirmed automatically." : "Ready for the next barcode."
         }, nextSession);
 
-        if (!result.completed && getSessionStepKey(result.session) === getSessionStepKey(activeSession)) {
-          releaseScanLock();
-        }
+        if (!result.completed) releaseScanLock();
         return true;
       }
 
@@ -803,6 +802,13 @@ function ScannerPortal() {
     submitBarcode(barcode);
   };
 
+  const handleManualSubmit = (event) => {
+    event.preventDefault();
+    const barcode = manualValue;
+    setManualValue("");
+    submitBarcode(barcode);
+  };
+
   return (
     <main className="relative min-h-dvh overflow-hidden bg-slate-950 text-white">
       <div className="absolute inset-0 bg-[linear-gradient(180deg,#0f1b2e_0%,#07111f_52%,#050b14_100%)]" />
@@ -860,6 +866,17 @@ function ScannerPortal() {
 
         <footer className="mx-auto w-full max-w-[760px] space-y-4">
           <StepIndicator session={activeSession || completedSession} />
+
+          {activeSession && (
+            <form onSubmit={handleManualSubmit} className="scanner-glass rounded-xl border border-white/12 bg-black/35 p-3 shadow-2xl backdrop-blur-md">
+              <label className="block text-[11px] font-semibold uppercase tracking-[0.14em] text-white/65" htmlFor="scanner-manual-barcode">{display.instruction}</label>
+              <div className="mt-2 flex gap-2">
+                <input id="scanner-manual-barcode" value={manualValue} onChange={(event) => setManualValue(event.target.value)} placeholder="Scan with a hardware scanner or enter barcode" className="h-11 min-w-0 flex-1 rounded-lg border border-white/20 bg-slate-950/80 px-3 text-sm text-white outline-none placeholder:text-white/35 focus:border-emerald-300" autoComplete="off" />
+                <button type="submit" disabled={!manualValue.trim()} className="rounded-lg bg-emerald-500 px-3 text-sm font-semibold text-slate-950 disabled:opacity-40">Submit</button>
+              </div>
+              <p className="mt-2 text-[11px] text-white/55">Use this if the camera does not capture the barcode. The session validates the required cargo or bin barcode automatically.</p>
+            </form>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <button

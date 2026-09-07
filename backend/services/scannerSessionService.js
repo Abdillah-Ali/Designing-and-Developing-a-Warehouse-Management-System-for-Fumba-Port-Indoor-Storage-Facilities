@@ -172,7 +172,7 @@ const getActiveSessionForAuth = async (auth, executor = db) => {
 
 const buildStaffAuth = async (staffUserId, executor = db) => {
   const result = await executor.query(
-    `SELECT u.id, u.username, u.warehouse_id, u.shift_id
+    `SELECT u.id, u.username, u.role_id, u.warehouse_id, u.shift_id
      FROM users u
      JOIN roles r ON r.id = u.role_id
      WHERE u.id = $1
@@ -190,6 +190,7 @@ const buildStaffAuth = async (staffUserId, executor = db) => {
   return {
     role: STAFF_ROLE,
     userId: staff.id,
+    roleId: staff.role_id,
     username: staff.username,
     warehouseId: staff.warehouse_id,
     shiftId: staff.shift_id
@@ -578,7 +579,7 @@ const submitPlacementCargoScan = async (session, barcode, scannerAuth, policy, e
 };
 
 const submitPlacementBinScan = async (session, barcode, scannerAuth, policy, executor = db) => {
-  const staffAuth = await buildStaffAuth(session.staff_user_id);
+  const staffAuth = await buildStaffAuth(session.staff_user_id, executor);
   const payload = {
     cargo_id: session.context.cargo_id || session.context.cargo_barcode,
     placement_mode: "scan",
@@ -587,7 +588,7 @@ const submitPlacementBinScan = async (session, barcode, scannerAuth, policy, exe
     scanned_bin_barcode: normalizeBarcode(barcode)
   };
 
-  const result = await confirmPlacementOperation(payload, staffAuth);
+  const result = await confirmPlacementOperation(payload, staffAuth, executor);
 
   if (result.rejected) {
     await recordPlacementAttempt(db, {
