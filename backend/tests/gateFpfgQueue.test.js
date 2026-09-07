@@ -19,10 +19,10 @@ test('backend pagination is applied after complete FPFG ordering',()=>{
 });
 
 test('only first present eligible cargo is Ready Now while absent cargo does not block',()=>{
-  assert.equal(queueState({financiallyCleared:true,operationallyEligible:true,present:false,firstPresent:false}),'Waiting for Customer');
-  assert.equal(queueState({financiallyCleared:true,operationallyEligible:true,present:true,firstPresent:true}),'Ready Now');
-  assert.equal(queueState({financiallyCleared:true,operationallyEligible:true,present:true,firstPresent:false}),'Blocked by Earlier Present Cargo');
-  assert.equal(queueState({financiallyCleared:false,operationallyEligible:true,present:true,firstPresent:false}),'Payment/Penalty Required');
+  assert.equal(queueState({financiallyCleared:true,operationallyEligible:true,firstPresent:true}),'Ready Now');
+  assert.equal(queueState({financiallyCleared:true,operationallyEligible:true,firstPresent:false,managementReleaseApproved:true}),'Management Release Ready');
+  assert.equal(queueState({financiallyCleared:true,operationallyEligible:true,firstPresent:false}),'Blocked by Earlier Present Cargo');
+  assert.equal(queueState({financiallyCleared:false,operationallyEligible:true,firstPresent:false}),'Payment/Penalty Required');
 });
 
 test('present-to-absent manipulation requires an accountable reason',()=>{

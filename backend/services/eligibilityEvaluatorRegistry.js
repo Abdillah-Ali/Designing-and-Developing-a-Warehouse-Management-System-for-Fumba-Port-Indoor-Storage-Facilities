@@ -11,11 +11,15 @@ const managementReleaseAuthorization=(c)=>{
  if(status==='REJECTED')return result(false,'MANAGEMENT_RELEASE_REJECTED','Management Release was rejected. Supervisor action is required before Gate-Out.');
  return result(false,'MANAGEMENT_RELEASE_APPROVAL_REQUIRED','Explicit Management Release approval is required before Gate-Out.');
 };
+const financialClearance=(c)=>{
+ const managementApproved=String(c.cargo?.release_type||'').toUpperCase()==='MANAGEMENT'&&String(c.cargo?.management_release_status||'').toUpperCase()==='APPROVED';
+ return result(c.outstanding_cents===0n||managementApproved,'OUTSTANDING_BALANCE','Verified full payment or an approved Management Release is required.',{outstanding_amount:c.outstanding_amount});
+};
 const definitions=Object.freeze({
  registration_state:{supported_policy_targets:['dispatch_request','normal_gate_release'],parameter_schema:{allowed:'state_keys'},evaluate:(c,p)=>result((p.allowed||[]).includes(c.registration_state_key),'REGISTRATION_STATE_BLOCKED','Cargo registration is not approved.')},
  placement_state:{supported_policy_targets:['dispatch_request'],parameter_schema:{allowed:'state_keys'},evaluate:(c,p)=>result((p.allowed||[]).includes(c.placement_state_key),'PLACEMENT_STATE_BLOCKED','Cargo must be placed before dispatch request.')},
  customs_clearance:{supported_policy_targets:['normal_gate_release'],parameter_schema:{required_state:'state_key'},evaluate:(c,p)=>result(c.customs_state_key===p.required_state,'CUSTOMS_NOT_CLEARED','Cargo must be cleared by Customs.')},
- financial_clearance:{supported_policy_targets:['normal_gate_release'],parameter_schema:{maximum_outstanding:'money'},evaluate:(c)=>result(c.outstanding_cents===0n,'OUTSTANDING_BALANCE','Finance confirmation is required.',{outstanding_amount:c.outstanding_amount})},
+ financial_clearance:{supported_policy_targets:['normal_gate_release'],parameter_schema:{maximum_outstanding:'money'},evaluate:financialClearance},
  dispatch_approval:{supported_policy_targets:['normal_gate_release'],parameter_schema:{},evaluate:(c)=>result(Boolean(c.dispatch_request),'DISPATCH_APPROVAL_MISSING','An active approved dispatch request is required.')},
  management_release_authorization:{supported_policy_targets:['normal_gate_release','emergency_gate_release'],parameter_schema:{},evaluate:managementReleaseAuthorization},
  release_state:{supported_policy_targets:targets,parameter_schema:{allowed:'state_keys'},evaluate:(c,p)=>result((p.allowed||[]).includes(c.release_state_key),'ALREADY_RELEASED','Cargo has already been released.')},

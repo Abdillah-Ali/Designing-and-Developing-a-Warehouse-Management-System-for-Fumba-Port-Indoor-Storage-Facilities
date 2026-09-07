@@ -860,6 +860,8 @@ const runUpdates = async () => {
     await applySqlMigration(client, "049_notification_email_outbox.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260906_notification_email_outbox.sql"), "utf8"));
     await applySqlMigration(client, "050_customs_hold_release.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260907_customs_hold_release.sql"), "utf8"));
     await applySqlMigration(client, "051_customs_inspection_register.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260907_customs_inspection_register.sql"), "utf8"));
+    await applySqlMigration(client, "052_automatic_gate_release.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260907_automatic_gate_release.sql"), "utf8"));
+    await applySqlMigration(client, "053_unplaced_gate_out_transition.sql", fs.readFileSync(path.join(__dirname, "migrations", "20260907_unplaced_gate_out_transition.sql"), "utf8"));
     await ensureStandardRolePermissions(client);
   } catch (error) {
     if (transactionOpen) await client.query("ROLLBACK").catch(() => {});

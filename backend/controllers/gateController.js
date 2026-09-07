@@ -201,7 +201,7 @@ const buildEligibilityLegacy = async ({ executor = db, cargo, at = null }) => {
 };
 const buildEligibility=async({executor=db,cargo,at=null})=>{
  const result=await evaluateEligibility({target:'normal_gate_release',cargo,executor,at});
- const aliases={financial_clearance:'payment',customs_clearance:'customs',dispatch_approval:'dispatch',registration_state:'supervisor_approval',management_release_authorization:'management_release',release_state:'gate_out'};
+ const aliases={financial_clearance:'payment',customs_clearance:'customs',registration_state:'supervisor_approval',management_release_authorization:'management_release',release_state:'gate_out'};
  const blocked=result.blocked_requirements.map(item=>({...item,requirement:aliases[item.evaluator_key]||item.evaluator_key}));
  return {...result,blocked_requirements:blocked,billable_days:0,current_accrued_charge:'0.00',amount_paid:'0.00',dispatch_reference:result.dispatch_request?'Approved Dispatch Request':null};
 };
@@ -272,30 +272,39 @@ const buildAuthoritativeGateQueue = async ({ executor = db, at = null } = {}) =>
     const latestPaid=current.fully_paid_at || (source.management_release_status==='APPROVED' ? current.management_release_decided_at : null);
     const financialCleared=(source.management_release_status==='APPROVED' || Number(invoice.outstanding)===0) && Boolean(latestPaid);
     const operationalBlocks=(eligibility.blocked_requirements||[]).filter(item=>item.requirement!=='payment');
-    if (!['Placed','Relocated'].includes(source.placement_status)) operationalBlocks.push({requirement:'warehouse_processing',message:'Required warehouse release processing is incomplete.'});
     const operationallyEligible=operationalBlocks.length===0;
     const present=current.customer_presence_status==='PRESENT_READY';
+    const managementReleaseApproved=source.release_type==='MANAGEMENT'&&source.management_release_status==='APPROVED';
     const row={...toGateCargo({...source,...current,latest_fully_paid_at:latestPaid},{...eligibility,eligible:operationallyEligible&&financialCleared,blocked_requirements:[...(eligibility.blocked_requirements||[]),...(!latestPaid?[{requirement:'payment',message:'A verified latest full-settlement timestamp is required.'}]:[])]}),
       _cargo_record_id:source.cargo_record_id,latest_fully_paid_at:latestPaid,registration_time:source.created_at,
       payment_status:financialCleared?'Fully Paid':current.financial_status,
       penalty_status:Number(invoice.penalties)>0?(Number(invoice.outstanding)>0?'Unpaid':'Paid'):'None',
       penalty_amount:String(invoice.penalties||'0.00'),outstanding_balance:String(invoice.outstanding||'0.00'),
       financially_cleared:financialCleared,operationally_eligible:operationallyEligible,
-      customer_present:present,allowed_to_gate_out:false,queue_position:null,blocked_reason:null};
+      customer_present:present,presence_required:!managementReleaseApproved,allowed_to_gate_out:false,queue_position:null,blocked_reason:null,
+      management_release_approved:managementReleaseApproved,
+      validation_messages:[...(eligibility.blocked_requirements||[]).map(item=>item.message).filter(Boolean)]};
     rows.push(row);
   }
-  rows.sort(compareFpfg);
+  rows.sort((left,right)=>Number(right.management_release_approved)-Number(left.management_release_approved)||compareFpfg(left,right));
   let eligiblePosition=0;
-  const presentEligible=[];
+  const normalEligible=[];
   for (const row of rows) {
-    if(row.financially_cleared&&row.operationally_eligible) row.queue_position=++eligiblePosition;
-    if(row.financially_cleared&&row.operationally_eligible&&row.customer_present) presentEligible.push(row);
+    if(!row.management_release_approved&&row.financially_cleared&&row.operationally_eligible) row.queue_position=++eligiblePosition;
+    if(!row.management_release_approved&&row.financially_cleared&&row.operationally_eligible) normalEligible.push(row);
   }
-  const firstPresent=presentEligible[0]||null;
+  const firstPresent=normalEligible.find(row=>row.presence_status!=='TEMPORARILY_UNAVAILABLE')||null;
   for (const row of rows) {
-    row.allowed_to_gate_out=Boolean(firstPresent&&row.cargo_reference===firstPresent.cargo_reference);
-    row.queue_state=queueState({operationallyEligible:row.operationally_eligible,financiallyCleared:row.financially_cleared,present:row.customer_present,firstPresent:row.allowed_to_gate_out});
-    row.blocked_reason=row.allowed_to_gate_out?null:row.queue_state;
+    row.allowed_to_gate_out=row.management_release_approved
+      ? Boolean(row.financially_cleared&&row.operationally_eligible)
+      : Boolean(firstPresent&&row.cargo_reference===firstPresent.cargo_reference);
+    row.gate_out_selectable=Boolean(row.management_release_approved||row.financially_cleared&&row.operationally_eligible);
+    row.recommended_cargo_reference=row.allowed_to_gate_out?null:(row.management_release_approved?null:firstPresent?.cargo_reference||null);
+    row.queue_state=queueState({operationallyEligible:row.operationally_eligible,financiallyCleared:row.financially_cleared,firstPresent:row.allowed_to_gate_out,managementReleaseApproved:row.management_release_approved});
+    if (!row.allowed_to_gate_out) {
+      if (!row.financially_cleared || !row.operationally_eligible) row.blocked_reason=row.validation_messages.join(' ')||row.queue_state;
+      else row.blocked_reason=firstPresent?`First-paid cargo ${firstPresent.cargo_reference} should be processed first. Mark its customer unavailable to continue with the next cargo.`:'No eligible cargo is currently available for Gate-Out.';
+    } else row.blocked_reason=null;
     row.collection_status=!row.financially_cleared?'FINANCIALLY_BLOCKED':!row.operationally_eligible?'RELEASE_CONDITION_BLOCKED':row.customer_present?'PRESENT_READY':row.presence_status;
     await executor.query('UPDATE cargo SET collection_status=$2 WHERE id=$1 AND collection_status IS DISTINCT FROM $2',[row._cargo_record_id,row.collection_status]);
   }
@@ -420,10 +429,7 @@ const confirmGateOut = async (req, res, next) => {
       if (["Released", "Emergency Released"].includes(cargo.gate_out_status)) {
         throw buildError("Cargo has already been released.", 409);
       }
-      if(cargo.customer_presence_status!=='PRESENT_READY'){
-        blockedQueueAttempt={cargo_reference:cargo.cargo_id,actorId:req.auth?.userId||null,action:'BLOCK_GATE_OUT_CUSTOMER_ABSENT',reason:'Customer or authorized collector must be marked present before Gate-Out.'};
-        throw buildError(blockedQueueAttempt.reason,409,null,'CUSTOMER_NOT_PRESENT');
-      }
+      const managementReleaseApproved=cargo.release_type==='MANAGEMENT'&&cargo.management_release_status==='APPROVED';
       const releaseAt = await getServerNow(client);
       const dispatchRequest = await activeDispatch(client, cargo.id, true);
       const eligibility = await buildEligibility({ executor: client, cargo, at: releaseAt });
@@ -433,12 +439,8 @@ const confirmGateOut = async (req, res, next) => {
       if (eligibility.eligible) {
         const queue=await buildAuthoritativeGateQueue({executor:client,at:releaseAt});
         const target=queue.rows.find(row=>row.cargo_reference===cargo.cargo_id);
-        if(!target?.customer_present) {
-          blockedQueueAttempt={cargo_reference:cargo.cargo_id,actorId:req.auth?.userId||null,action:'BLOCK_GATE_OUT_CUSTOMER_ABSENT',reason:'Customer or authorized collector must be marked present before Gate-Out.'};
-          throw buildError(blockedQueueAttempt.reason,409,null,'CUSTOMER_NOT_PRESENT');
-        }
         if(!target.allowed_to_gate_out) {
-          blockedQueueAttempt={cargo_reference:cargo.cargo_id,actorId:req.auth?.userId||null,action:'BLOCK_FPFG_BYPASS',reason:'An earlier eligible cargo is currently present and must be processed first.',earlier_cargo_reference:queue.firstPresent?.cargo_reference||null};
+          blockedQueueAttempt={cargo_reference:cargo.cargo_id,actorId:req.auth?.userId||null,action:'BLOCK_FPFG_BYPASS',reason:`First-paid cargo ${queue.firstPresent?.cargo_reference||'—'} must be processed first, unless its customer is marked unavailable.`,earlier_cargo_reference:queue.firstPresent?.cargo_reference||null};
           throw buildError(blockedQueueAttempt.reason,409,{earlier_cargo_reference:blockedQueueAttempt.earlier_cargo_reference},'FPFG_ORDER_VIOLATION');
         }
         for(const skipped of queue.rows){

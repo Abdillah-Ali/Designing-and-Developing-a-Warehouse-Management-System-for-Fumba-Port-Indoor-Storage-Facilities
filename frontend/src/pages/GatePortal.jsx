@@ -142,7 +142,7 @@ function ReleaseQueuePage() {
 
   return (
     <>
-      <PageHeader eyebrow="Gate" title="Release Queue" description="Validate Management authorization where required, Customs, Finance, dispatch, and Gate state before release." />
+      <PageHeader eyebrow="Gate" title="Release Queue" description="Gate-Out becomes available automatically after registration approval, Customs clearance, and full payment or Management approval." />
       <div className="flex-1 overflow-auto p-4">
         <SectionCard title="Search or Scan Cargo" icon={PackageSearch}>
           <div className="flex gap-2">
@@ -159,14 +159,14 @@ function ReleaseQueuePage() {
               rows={data.rows || []}
               emptyTitle="No cargo in release queue"
               columns={[
-                { key: "queue_position", label: "FPFG", render: (row) => row.queue_position || "—" },
+                { key: "queue_position", label: "FPFG", render: (row) => row.management_release_approved ? <StatusBadge tone="info">Management Priority</StatusBadge> : row.queue_position || "—" },
                 { key: "cargo_reference", label: "Cargo", className: "font-mono font-semibold" },
                 { key: "latest_fully_paid_at", label: "Latest Settlement", render: (row) => formatDateTime(row.latest_fully_paid_at) },
                 { key: "owner_information", label: "Owner" },
-                { key: "presence_status", label: "Presence", render: (row) => <div className="space-y-1"><StatusBadge tone={row.customer_present ? "success" : "muted"}>{row.presence_status}</StatusBadge><div>{formatDateTime(row.customer_present_at)}</div></div> },
+                { key: "presence_status", label: "Presence", render: (row) => row.presence_required === false ? <StatusBadge tone="info">Not required</StatusBadge> : <div className="space-y-1"><StatusBadge tone={row.customer_present ? "success" : "muted"}>{row.presence_status}</StatusBadge><div>{formatDateTime(row.customer_present_at)}</div></div> },
                 { key: "customs_status", label: "Customs", render: (row) => <StatusBadge tone={statusTone(row.customs_status)}>{row.customs_status}</StatusBadge> },
                 { key: "payment_status", label: "Payment", render: (row) => <div className="space-y-1"><StatusBadge tone={row.financially_cleared ? "success" : "destructive"}>{row.payment_status}</StatusBadge><div>Penalty: {row.penalty_status}</div><div>{formatMoney(row.outstanding_balance)}</div></div> },
-                { key: "queue_state", label: "Gate Status", render: (row) => <div className="space-y-1"><StatusBadge tone={row.allowed_to_gate_out ? "success" : row.financially_cleared ? "warning" : "destructive"}>{row.queue_state}</StatusBadge>{row.blocked_reason && <div>{row.blocked_reason}</div>}</div> },
+                { key: "queue_state", label: "Gate Status", render: (row) => <div className="space-y-1"><StatusBadge tone={row.allowed_to_gate_out ? "success" : row.financially_cleared ? "warning" : "destructive"}>{row.queue_state}</StatusBadge>{row.blocked_reason && <div className="max-w-xs text-xs text-muted-foreground">{row.blocked_reason}</div>}</div> },
                 {
                   key: "actions",
                   label: "Actions",
@@ -175,7 +175,7 @@ function ReleaseQueuePage() {
                       <button type="button" onClick={() => setPresenceCargo(row)} className="rounded border border-border px-2 py-1 text-[11px] font-semibold">
                         Presence
                       </button>
-                      <button type="button" disabled={!row.allowed_to_gate_out} onClick={() => setReleaseCargo(row)} className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground disabled:cursor-not-allowed disabled:opacity-40">
+                      <button type="button" disabled={!row.gate_out_selectable} onClick={() => row.allowed_to_gate_out ? setReleaseCargo(row) : setMessage(`Recommended Gate-Out: ${row.recommended_cargo_reference}. Mark that customer's presence as unavailable before selecting this cargo.`)} className="rounded bg-info px-2 py-1 text-[11px] font-semibold text-info-foreground disabled:cursor-not-allowed disabled:opacity-40">
                         Gate Out
                       </button>
                       {!row.release_eligibility?.eligible && !row.release_eligibility?.blocked_requirements?.some((item) => item.requirement === "management_release") && (

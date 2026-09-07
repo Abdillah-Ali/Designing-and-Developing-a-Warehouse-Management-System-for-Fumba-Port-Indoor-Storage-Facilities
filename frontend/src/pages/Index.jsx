@@ -1573,7 +1573,7 @@ function DispatchOperationPage({ mode }) {
       icon: Truck,
       status: undefined,
       emptyTitle: "No cargo is ready for release",
-      description: "Cargo appears automatically after registration, placement, Customs, and financial controls pass. No dispatch request is required."
+      description: "Cargo appears automatically once its release conditions are satisfied. Placement is not required for Gate-Out."
     },
     gate: {
       title: "Gate Release",

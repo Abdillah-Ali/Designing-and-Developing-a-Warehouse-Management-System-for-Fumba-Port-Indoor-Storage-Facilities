@@ -278,6 +278,10 @@ const applySchema = async () => {
     await applySqlMigration(client, "047_payment_settlement_timestamp.sql", await fs.readFile(path.join(__dirname, "migrations", "20260906_payment_settlement_timestamp.sql"), "utf8"));
     await applySqlMigration(client, "048_configurable_late_penalty.sql", await fs.readFile(path.join(__dirname, "migrations", "20260906_configurable_late_penalty.sql"), "utf8"));
     await applySqlMigration(client, "049_notification_email_outbox.sql", await fs.readFile(path.join(__dirname, "migrations", "20260906_notification_email_outbox.sql"), "utf8"));
+    await applySqlMigration(client, "050_customs_hold_release.sql", await fs.readFile(path.join(__dirname, "migrations", "20260907_customs_hold_release.sql"), "utf8"));
+    await applySqlMigration(client, "051_customs_inspection_register.sql", await fs.readFile(path.join(__dirname, "migrations", "20260907_customs_inspection_register.sql"), "utf8"));
+    await applySqlMigration(client, "052_automatic_gate_release.sql", await fs.readFile(path.join(__dirname, "migrations", "20260907_automatic_gate_release.sql"), "utf8"));
+    await applySqlMigration(client, "053_unplaced_gate_out_transition.sql", await fs.readFile(path.join(__dirname, "migrations", "20260907_unplaced_gate_out_transition.sql"), "utf8"));
     await client.query(
       `INSERT INTO role_permissions (role_id, permission_key)
        SELECT r.id, p.permission_key

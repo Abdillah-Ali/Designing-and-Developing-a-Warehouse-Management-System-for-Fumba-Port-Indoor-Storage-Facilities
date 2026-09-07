@@ -45,6 +45,7 @@ const AUTHORIZATION_ROUTES = Object.freeze([
   route(["POST"], /^\/customs\/cargo\/[^/]+\/start$/, "customs.inspections.create"), route(["POST"], /^\/customs\/cargo\/[^/]+\/status$/, "customs.clearance.update"),
   route(["GET"], /^\/gate\/dashboard$/, "gate.dashboard.view"), route(["GET"], /^\/gate\/release-queue$/, "gate.release_queue.view"),
   route(["GET"], /^\/gate\/records$/, "gate.history.view"), route(["GET"], /^\/gate\/cargo\/[^/]+\/eligibility$/, "gate.release.validate"),
+  route(["POST"], /^\/gate\/cargo\/[^/]+\/presence$/, "gate.gate_out.confirm"),
   route(["POST"], /^\/gate\/cargo\/[^/]+\/gate-out$/, "gate.gate_out.confirm"), route(["GET"], /^\/gate\/emergency-requests$/, "gate.history.view"),
   route(["POST"], /^\/gate\/emergency-requests$/, "gate.emergency_release.request"), route(["POST"], /^\/gate\/emergency-requests\/[^/]+\/(?:approve|reject)$/, "gate.emergency_release.approve"),
   route(["GET"], /^\/management\/dashboard$/, "management.dashboard.view"), route(["GET"], /^\/management\/reports(?:\/export\/(?:pdf|excel))?$/, "management.reports.view"),
