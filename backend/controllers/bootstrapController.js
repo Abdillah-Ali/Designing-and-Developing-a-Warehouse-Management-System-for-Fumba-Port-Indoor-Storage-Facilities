@@ -1,3 +1,4 @@
+const { isEmail, isPhone, EMAIL_MESSAGE, PHONE_MESSAGE, userInputErrors } = require("../utils/inputValidation");
 const db = require("../config/db");
 const { roleNames } = require("../config/systemConfig");
 const { buildError } = require("../utils/apiError");
@@ -6,13 +7,16 @@ const { getMaximumActiveSystemAdministrators } = require("../services/systemConf
 
 const SETUP_LOCK_KEY = 927431;
 const passwordPolicyMessage = "Password must be at least 8 characters and include uppercase, lowercase, number, and special character.";
-const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const phonePattern = /^\+?[0-9][0-9\s()-]{6,18}[0-9]$/;
+const emailPattern = { test: isEmail };
+const phonePattern = { test: isPhone };
 const usernamePattern = /^[A-Za-z0-9._-]{3,50}$/;
 const passwordPattern = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
 const cleanString = (value) => String(value ?? "").trim();
 
 const normalizeFirstAdminPayload = (body = {}) => {
+  for (const key of ["full_name", "username", "email", "phone_number", "password", "confirm_password", "password_confirmation"]) {
+    if (body[key] !== undefined && typeof body[key] !== "string") throw buildError(`${key} must be text.`, 400);
+  }
   const payload = {
     full_name: cleanString(body.full_name),
     username: cleanString(body.username),
@@ -21,14 +25,16 @@ const normalizeFirstAdminPayload = (body = {}) => {
     password: String(body.password ?? ""),
     confirm_password: String(body.confirm_password ?? body.password_confirmation ?? "")
   };
+  const inputErrors = userInputErrors(payload);
+  if (inputErrors.length) throw buildError(inputErrors.join(" "), 400);
   if (payload.full_name.length < 2 || payload.full_name.length > 150) {
     throw buildError("Full name must be between 2 and 150 characters.", 400);
   }
   if (!usernamePattern.test(payload.username)) {
     throw buildError("Username must be 3 to 50 characters and may contain letters, numbers, dots, underscores, or hyphens.", 400);
   }
-  if (!emailPattern.test(payload.email)) throw buildError("Enter a valid email address.", 400);
-  if (!phonePattern.test(payload.phone_number)) throw buildError("Enter a valid phone number.", 400);
+  if (!emailPattern.test(payload.email)) throw buildError(EMAIL_MESSAGE, 400);
+  if (!phonePattern.test(payload.phone_number)) throw buildError(PHONE_MESSAGE, 400);
   if (!passwordPattern.test(payload.password)) throw buildError(passwordPolicyMessage, 400);
   if (payload.password !== payload.confirm_password) throw buildError("Password confirmation does not match.", 400);
   return payload;

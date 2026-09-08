@@ -1,3 +1,4 @@
+const { isEmail, isPhone, EMAIL_MESSAGE, PHONE_MESSAGE, userInputErrors } = require("../utils/inputValidation");
 const crypto = require("node:crypto");
 const db = require("../config/db");
 const {
@@ -65,8 +66,8 @@ const databaseConnectivityCodes = new Set([
   "ETIMEDOUT",
   "EAI_AGAIN"
 ]);
-const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const phonePattern = /^\+?[0-9][0-9\s()-]{6,18}[0-9]$/;
+const emailPattern = { test: isEmail };
+const phonePattern = { test: isPhone };
 const usernamePattern = /^[A-Za-z0-9._-]{3,50}$/;
 const passwordPattern = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
 const SYSTEM_ADMIN_GOVERNANCE_LOCK_KEY = 927432;
@@ -140,7 +141,7 @@ const readId = (value, fieldName, required = false) => {
   }
 
   const id = Number(value);
-  if (!Number.isInteger(id) || id <= 0) {
+  if (!["string", "number"].includes(typeof value) || !/^\d+$/.test(String(value)) || !Number.isSafeInteger(id) || id <= 0 || id > 2147483647) {
     throw buildError(`${fieldName} must be a valid record id.`, 400);
   }
 
@@ -153,7 +154,8 @@ const normalizeUserPayload = (body, mode = "create") => {
 
   for (const field of fields) {
     if (Object.prototype.hasOwnProperty.call(body, field)) {
-      payload[field] = cleanString(body[field]);
+      if (typeof body[field] !== "string") throw buildError(`${field} must be text.`, 400);
+      payload[field] = field === "password" ? body[field] : cleanString(body[field]);
     }
   }
 
@@ -211,6 +213,9 @@ const validateUserRecord = async (client, payload, existing = null) => {
     ...payload
   };
 
+  const inputErrors = userInputErrors(candidate, { create: false });
+  if (inputErrors.length) throw buildError(inputErrors.join(" "), 400);
+
   if (!candidate.full_name || candidate.full_name.length < 2 || candidate.full_name.length > 150) {
     throw buildError("Full name must be between 2 and 150 characters.", 400);
   }
@@ -220,11 +225,11 @@ const validateUserRecord = async (client, payload, existing = null) => {
   }
 
   if (!candidate.email || !emailPattern.test(candidate.email)) {
-    throw buildError("Enter a valid email address.", 400);
+    throw buildError(EMAIL_MESSAGE, 400);
   }
 
   if (!candidate.phone_number || !phonePattern.test(candidate.phone_number)) {
-    throw buildError("Enter a valid phone number using digits and an optional leading +.", 400);
+    throw buildError(PHONE_MESSAGE, 400);
   }
 
   if (!candidate.role_id) {
@@ -1750,16 +1755,18 @@ const updateProfile = async (req, res, next) => {
 
     const payload = {};
     if (Object.prototype.hasOwnProperty.call(req.body || {}, "email")) {
+      if (typeof req.body.email !== "string") throw buildError(EMAIL_MESSAGE, 400);
       payload.email = cleanString(req.body.email);
       if (!payload.email || !emailPattern.test(payload.email)) {
-        throw buildError("Enter a valid email address.", 400);
+        throw buildError(EMAIL_MESSAGE, 400);
       }
     }
 
     if (Object.prototype.hasOwnProperty.call(req.body || {}, "phone_number")) {
+      if (typeof req.body.phone_number !== "string") throw buildError(PHONE_MESSAGE, 400);
       payload.phone_number = cleanString(req.body.phone_number);
       if (!payload.phone_number || !phonePattern.test(payload.phone_number)) {
-        throw buildError("Enter a valid phone number using digits and an optional leading +.", 400);
+        throw buildError(PHONE_MESSAGE, 400);
       }
     }
 

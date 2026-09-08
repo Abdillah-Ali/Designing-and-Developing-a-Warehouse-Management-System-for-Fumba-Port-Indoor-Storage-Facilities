@@ -77,6 +77,16 @@ test("protected cargo registration fields cannot be hidden", async () => {
   );
 });
 
+test("cargo server validation rejects malformed contacts and unsafe numeric inputs", async () => {
+  const errors = await validateConfiguredCargoPayload({
+    consignee_name: "Port User", phone_number: "1------1", email: "a@b..com",
+    quantity: true, weight: "0.001", volume: "10000000000", company_name: "x".repeat(151)
+  }, executor, { skipConfigurationReadiness: true });
+  for (const key of ["phone_number", "email", "quantity", "weight", "volume", "company_name"]) {
+    assert.ok(errors.some((error) => error.field_key === key), key);
+  }
+});
+
 test("configured defaults and configurable required fields are backend enforced", async () => {
   const payload = await applyConfiguredDefaults({ consignee_name: "Port User" }, executor);
   assert.equal(payload.company_name, "Fumba");

@@ -23,6 +23,12 @@ test("bootstrap setup accepts a complete first administrator payload", () => {
   assert.equal(payload.shift_id, undefined);
 });
 
+test("bootstrap rejects malformed contact details and non-string fields", () => {
+  for (const patch of [{email:"a@b..com"}, {phone_number:"1------1"}, {full_name:["Admin"]}, {password:"Secure@123" + "a".repeat(72)}]) {
+    assert.throws(() => normalizeFirstAdminPayload({...validPayload, ...patch}));
+  }
+});
+
 test("bootstrap setup enforces password policy and confirmation", () => {
   assert.throws(
     () => normalizeFirstAdminPayload({ ...validPayload, password: "weak", confirm_password: "weak" }),

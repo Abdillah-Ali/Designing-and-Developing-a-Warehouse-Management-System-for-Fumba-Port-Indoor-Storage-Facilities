@@ -1,3 +1,4 @@
+const { cargoInputErrors } = require("../utils/inputValidation");
 const db = require("../config/db");
 const { buildError } = require("../utils/apiError");
 
@@ -315,13 +316,7 @@ const validateConfiguredCargoPayload = async (payload = {}, executor = db, optio
     if (options.allowSystemManaged) continue;
     if (Object.prototype.hasOwnProperty.call(payload, field.field_key)) errors.push(configurationIssue("CARGO_FIELD_READ_ONLY", `${field.label} is managed by the system and cannot be submitted.`, field.field_key));
   }
-  if (!isBlank(payload.email) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(payload.email).trim())) errors.push(configurationIssue("CARGO_FIELD_FORMAT_INVALID", "Email must be a valid email address.", "email"));
-  if (!isBlank(payload.phone_number) && !/^\+?[0-9][0-9\s()-]{6,18}[0-9]$/.test(String(payload.phone_number).trim())) errors.push(configurationIssue("CARGO_FIELD_FORMAT_INVALID", "Phone Number must be valid and may start with +.", "phone_number"));
-  for (const fieldKey of ["quantity", "weight", "volume"]) {
-    if (!isBlank(payload[fieldKey]) && (!Number.isFinite(Number(payload[fieldKey])) || Number(payload[fieldKey]) <= 0)) {
-      errors.push(configurationIssue("CARGO_FIELD_RANGE_INVALID", `${result.rows.find((field) => field.field_key === fieldKey)?.label || fieldKey} must be greater than zero.`, fieldKey));
-    }
-  }
+  errors.push(...cargoInputErrors(payload).map(({ field, message }) => configurationIssue("CARGO_FIELD_FORMAT_INVALID", message, field)));
   return errors;
 };
 

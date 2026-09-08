@@ -1,3 +1,4 @@
+import { userInputErrors, PHONE_MESSAGE } from "@/lib/input-validation";
 import { RolePermissionTable } from "@/components/wms/RolePermissionTable";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate } from "react-router-dom";
@@ -1523,6 +1524,13 @@ function UserForm({ mode, user, roles, warehouses, shifts, users = [], reference
       payload.password = form.password;
     }
 
+    const inputErrors = userInputErrors(payload, { create: !user?.id });
+    if (inputErrors.length) {
+      setFormError(inputErrors.join(" "));
+      setSaving(false);
+      return;
+    }
+
     if (warehouseChanged && pendingTaskCount > 0) {
       setFormError("Cannot transfer this user because they have pending warehouse tasks. Complete or reassign pending tasks before changing warehouse.");
       setSaving(false);
@@ -1554,16 +1562,16 @@ function UserForm({ mode, user, roles, warehouses, shifts, users = [], reference
       {formError && <ErrorState message={formError} />}
       <div className="grid gap-3 md:grid-cols-2">
         <FormField label="Full Name">
-          <input className={inputClass} value={form.full_name} onChange={(event) => updateField("full_name", event.target.value)} placeholder="Full name" required />
+          <input className={inputClass} value={form.full_name} onChange={(event) => updateField("full_name", event.target.value)} maxLength={150} minLength={2} placeholder="Full name" required />
         </FormField>
         <FormField label="Username">
-          <input className={inputClass} value={form.username} onChange={(event) => updateField("username", event.target.value)} placeholder="Username" required />
+          <input className={inputClass} value={form.username} onChange={(event) => updateField("username", event.target.value)} maxLength={50} minLength={3} placeholder="Username" required />
         </FormField>
         <FormField label="Email">
-          <input className={inputClass} type="email" value={form.email} onChange={(event) => updateField("email", event.target.value)} placeholder="Email address" required />
+          <input className={inputClass} type="email" value={form.email} onChange={(event) => updateField("email", event.target.value)} maxLength={150} placeholder="Email address" required />
         </FormField>
         <FormField label="Phone Number">
-          <input className={inputClass} value={form.phone_number} onChange={(event) => updateField("phone_number", event.target.value)} placeholder="Phone number" required />
+          <input className={inputClass} value={form.phone_number} onChange={(event) => updateField("phone_number", event.target.value)} type="tel" maxLength={40} title={PHONE_MESSAGE} placeholder="0751234567 or +255751234567" required />
         </FormField>
         <FormField label="Role">
           <SelectField value={form.role_id} onChange={(value) => updateField("role_id", value)} required disabled={referenceLoading || protectedRole}>

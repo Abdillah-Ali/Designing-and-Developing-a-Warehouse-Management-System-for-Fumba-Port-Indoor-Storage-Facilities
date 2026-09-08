@@ -1,3 +1,4 @@
+import { isEmail, isPhone, EMAIL_MESSAGE, PHONE_MESSAGE } from "@/lib/input-validation";
 import { useEffect, useState } from "react";
 import { KeyRound, Loader2, Mail, Phone, Save, UserCircle2, Warehouse } from "lucide-react";
 import { ChangePasswordDialog } from "@/components/wms/ChangePasswordDialog";
@@ -14,8 +15,8 @@ import { getProfile, updateProfile } from "@/services/api";
 
 const inputClass =
   "h-9 w-full rounded border border-input bg-background px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring";
-const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const phonePattern = /^\+?[0-9][0-9\s()-]{6,18}[0-9]$/;
+const emailPattern = { test: isEmail };
+const phonePattern = { test: isPhone };
 
 function normalizeProfile(response) {
   return response?.data?.user || response?.data || null;
@@ -75,12 +76,12 @@ function AccountProfilePage({ title = "My Profile", description = "Your account 
     event.preventDefault();
 
     if (!emailPattern.test(form.email)) {
-      setState((current) => ({ ...current, error: "Enter a valid email address.", success: "" }));
+      setState((current) => ({ ...current, error: EMAIL_MESSAGE, success: "" }));
       return;
     }
 
     if (!phonePattern.test(form.phone_number)) {
-      setState((current) => ({ ...current, error: "Enter a valid phone number using digits and an optional leading +.", success: "" }));
+      setState((current) => ({ ...current, error: PHONE_MESSAGE, success: "" }));
       return;
     }
 

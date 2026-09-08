@@ -1,3 +1,4 @@
+import { userInputErrors } from "@/lib/input-validation";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff, Loader2, ShieldCheck } from "lucide-react";
 import { useNavigate } from "react-router-dom";
@@ -35,6 +36,8 @@ function BootstrapAdminSetup() {
   const submit = async (event) => {
     event.preventDefault();
     setError("");
+    const inputErrors = userInputErrors(form);
+    if (inputErrors.length) { setError(inputErrors.join(" ")); return; }
     if (!passwordPattern.test(form.password)) {
       setError("Use at least 8 characters with uppercase, lowercase, number, and special character.");
       return;

@@ -1,3 +1,4 @@
+import { cargoInputErrors, textLimits } from "@/lib/input-validation";
 import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
@@ -991,13 +992,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
 
   const validateCargoForm = () => {
     const errors = [];
-    const positiveNumber = (value) => Number(value) > 0;
-    if (!/^\+?[0-9][0-9\s()-]{6,18}[0-9]$/.test(String(formData.phone_number || "").trim())) {
-      errors.push("Enter a valid phone number using digits and an optional leading +.");
-    }
-    if (!positiveNumber(formData.quantity)) errors.push("Quantity must be greater than zero.");
-    if (!positiveNumber(formData.weight)) errors.push("Weight must be greater than zero.");
-    if (!positiveNumber(formData.volume)) errors.push("Volume must be greater than zero.");
+    errors.push(...cargoInputErrors(formData).map((error) => error.message));
     for (const field of registrationFields) {
       if (field.field_classification === "system_managed" || field.field_type === "file") continue;
       const conditionalRequired = field.conditional_rules?.some((rule) => cargoFieldConditionMatches(rule, formData));
@@ -1255,7 +1250,7 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
     if (field.field_type === "textarea") {
       return (
         <Field key={field.field_key} label={label} className="md:col-span-2 xl:col-span-3">
-          <Textarea value={formData[field.field_key] ?? ""} readOnly={readOnly} required={required} placeholder={field.placeholder || ""} onChange={(event) => handleCargoFieldChange(field.field_key, event.target.value)} />
+          <Textarea maxLength={textLimits[field.field_key]} value={formData[field.field_key] ?? ""} readOnly={readOnly} required={required} placeholder={field.placeholder || ""} onChange={(event) => handleCargoFieldChange(field.field_key, event.target.value)} />
           {commonHelp}
         </Field>
       );
@@ -1268,8 +1263,10 @@ function DetailForm({ initialTab = 0, initialCargoBarcode = "", onCargoSaved }) 
           value={formData[field.field_key] ?? ""}
           readOnly={readOnly}
           required={required}
-          type={isNumber ? "number" : field.field_key === "email" ? "email" : "text"}
+          type={isNumber ? "number" : field.field_key === "email" ? "email" : field.field_key === "phone_number" ? "tel" : "text"}
           min={isNumber ? "0.01" : undefined}
+          max={isNumber ? "9999999999.99" : undefined}
+          maxLength={textLimits[field.field_key]}
           step={isNumber ? "0.01" : undefined}
           placeholder={field.placeholder || ""}
           onChange={(event) => handleCargoFieldChange(field.field_key, event.target.value)}
